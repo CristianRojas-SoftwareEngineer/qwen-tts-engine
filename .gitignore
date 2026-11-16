@@ -1,0 +1,32 @@
+# Rust / Cargo
+/qwen3-tts-rs/target/
+**/*.rs.bk
+
+# C build artifacts & binaries
+*.o
+*.d
+*.a
+*.exe
+*.dll
+qwen3-tts/qwen_tts
+qwen3-tts/qwen_tts_cpbench
+qwen3-tts/qwen_tts_decoder_tool
+qwen3-tts/bench_scalar
+qwen3-tts/bench_simd
+
+# Audio & local test outputs
+*.wav
+*.raw
+*.pcm
+/parity/runs/
+
+# Models, voices & large local assets (shared, never committed)
+/models/
+/voices/
+*.qvoice
+*.safetensors
+
+# OS / Editor / Temp
+.DS_Store
+Thumbs.db
+server_stderr.log
