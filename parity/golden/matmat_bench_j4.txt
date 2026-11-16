@@ -1,0 +1,16 @@
+matmat-bench: B=8, threads=1  (B*matvec [seq] vs matmat [batched])
+  speedup>1 => batching (weight read+unpack once) beats re-reading per stream
+
+  [3072x1024]  (6.0 MB bf16)
+     bf16   seq    2.03 ms   batch    2.26 ms   SPEEDUP 0.90x
+     int8   seq    0.67 ms   batch    0.48 ms   SPEEDUP 1.40x
+     int4   seq    1.20 ms   batch    1.30 ms   SPEEDUP 0.92x
+  [1024x3072]  (6.0 MB bf16)
+     bf16   seq    1.50 ms   batch    2.16 ms   SPEEDUP 0.69x
+     int8   seq    0.55 ms   batch    0.46 ms   SPEEDUP 1.20x
+     int4   seq    1.23 ms   batch    1.25 ms   SPEEDUP 0.98x
+  [2048x1024]  (4.0 MB bf16)
+     bf16   seq    1.06 ms   batch    1.62 ms   SPEEDUP 0.65x
+     int8   seq    0.30 ms   batch    0.32 ms   SPEEDUP 0.94x
+     int4   seq    0.89 ms   batch    0.86 ms   SPEEDUP 1.04x
+

@@ -1,0 +1,59 @@
+qwen-tts kernel self-test (matvec correctness vs f32 reference)
+qwen-tts compiled capabilities:
+  arch:             x86-64
+  matvec + attn:    AVX2 (2-row fused, FMA)
+  int8 dot:         AVX2 _mm256_maddubs_epi16 (integer, no VNNI)
+  bf16 dot:         bf16->f32 conversion + FMA (no AVX-512-BF16)
+  rms/bf16-conv:    AVX2
+  matvec threads:   Win32 pool (1 threads)
+  BLAS (prefill):   OpenBLAS
+  runtime cpu:      sse2 avx avx2 fma
+  lever (x86):      AVX2 maddubs integer dot (no VNNI) for int8 and q4_0
+
+  [3072x1024] matmat(B=8) vs B*matvec: L2_rel=3.07e-07  PASS
+  [3072x1024] bf16 max_rel=8.53e-04 OK | int8 rel_L2=3.82e-03 OK | argmax OK (ref=2090 got=2090)
+  [3072x1024] matmat_int8(B=8) vs B*matvec_int8: L2_rel=0.00e+00  PASS
+  [3072x1024] matvec_q4_0 vs dequant ref: rel_L2=3.82e-03  PASS
+  [3072x1024] matmat_q4_0(B=8) vs B*matvec_q4_0: L2_rel=0.00e+00  PASS
+  [3072x1024] qkv_q4_0 vs 3*matvec_q4_0: PASS (exacto)
+  [3072x1024] matvec_q4_0 fila sola vs en bloque: PASS (exacto)
+  [2048x1024] matmat(B=8) vs B*matvec: L2_rel=3.14e-07  PASS
+  [2048x1024] bf16 max_rel=2.31e-04 OK | int8 rel_L2=3.96e-03 OK | argmax OK (ref=860 got=860)
+  [2048x1024] matmat_int8(B=8) vs B*matvec_int8: L2_rel=0.00e+00  PASS
+  [2048x1024] matvec_q4_0 vs dequant ref: rel_L2=3.95e-03  PASS
+  [2048x1024] matmat_q4_0(B=8) vs B*matvec_q4_0: L2_rel=0.00e+00  PASS
+  [2048x1024] qkv_q4_0 vs 3*matvec_q4_0: PASS (exacto)
+  [2048x1024] matvec_q4_0 fila sola vs en bloque: PASS (exacto)
+  [ 257x 320] matmat(B=8) vs B*matvec: L2_rel=1.90e-07  PASS
+  [ 257x320 ] bf16 max_rel=1.24e-04 OK | int8 rel_L2=4.05e-03 OK | argmax OK (ref=10 got=10)
+  [ 257x 320] matmat_int8(B=8) vs B*matvec_int8: L2_rel=0.00e+00  PASS
+  [ 257x 320] matvec_q4_0 vs dequant ref: rel_L2=4.05e-03  PASS
+  [ 257x 320] matmat_q4_0(B=8) vs B*matvec_q4_0: L2_rel=0.00e+00  PASS
+  [ 257x 320] qkv_q4_0 vs 3*matvec_q4_0: PASS (exacto)
+  [ 257x 320] matvec_q4_0 fila sola vs en bloque: PASS (exacto)
+  [1024x2048] matmat(B=8) vs B*matvec: L2_rel=4.20e-07  PASS
+  [1024x2048] bf16 max_rel=6.29e-05 OK | int8 rel_L2=3.92e-03 OK | argmax OK (ref=462 got=462)
+  [1024x2048] matmat_int8(B=8) vs B*matvec_int8: L2_rel=0.00e+00  PASS
+  [1024x2048] matvec_q4_0 vs dequant ref: rel_L2=3.93e-03  PASS
+  [1024x2048] matmat_q4_0(B=8) vs B*matvec_q4_0: L2_rel=0.00e+00  PASS
+  [1024x2048] qkv_q4_0 vs 3*matvec_q4_0: PASS (exacto)
+  [1024x2048] matvec_q4_0 fila sola vs en bloque: PASS (exacto)
+  [ 255x3072] matmat(B=8) vs B*matvec: L2_rel=5.14e-07  PASS
+  [ 255x3072] bf16 max_rel=1.66e-05 OK | int8 rel_L2=3.70e-03 OK | argmax OK (ref=111 got=111)
+  [ 255x3072] matmat_int8(B=8) vs B*matvec_int8: L2_rel=0.00e+00  PASS
+  [ 255x3072] matvec_q4_0 vs dequant ref: rel_L2=3.66e-03  PASS
+  [ 255x3072] matmat_q4_0(B=8) vs B*matvec_q4_0: L2_rel=0.00e+00  PASS
+  [ 255x3072] qkv_q4_0 vs 3*matvec_q4_0: PASS (exacto)
+  [ 255x3072] matvec_q4_0 fila sola vs en bloque: PASS (exacto)
+  [quantize n=1024] vector vs referencia escalar (bit a bit): PASS
+  [quantize n=1024] ceros vs referencia escalar (bit a bit): PASS
+  [quantize n=1024] columnas (B=5) vs referencia escalar (bit a bit): PASS
+  [quantize n=3072] vector vs referencia escalar (bit a bit): PASS
+  [quantize n=3072] ceros vs referencia escalar (bit a bit): PASS
+  [quantize n=3072] columnas (B=5) vs referencia escalar (bit a bit): PASS
+  [quantize n= 320] vector vs referencia escalar (bit a bit): PASS
+  [quantize n= 320] ceros vs referencia escalar (bit a bit): PASS
+  [quantize n= 320] columnas (B=5) vs referencia escalar (bit a bit): PASS
+
+SELF-TEST PASSED (0 cases failed)
+

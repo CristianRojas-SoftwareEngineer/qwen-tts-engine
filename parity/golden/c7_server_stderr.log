@@ -1,0 +1,63 @@
+Afinidad: un hilo lógico por núcleo físico (8 núcleos, máscara 0x5555)
+Model dir: models/qwen3-tts-0.6b
+Output: output.wav
+[CONFIG] After talker parse: num_layers=28
+[CONFIG] After CP parse: cp_num_layers=5, talker num_layers=28
+Config: hidden=1024 text_hidden=2048 layers=28 heads=16/8 head_dim=128 inter=3072
+  Code Predictor: hidden=1024 layers=5 heads=16 head_dim=128
+  Codec: vocab=3072 codebooks=16 entries=2048
+Threads: 4
+Loading Talker weights (hidden=1024, head_dim=128, layers=28)...
+  Quantizing Talker weights to Q4_0 (4-bit)...
+  Talker Q4_0 quantization done (28 layers)
+  Talker: 28 layers loaded, KV cache 1024 slots
+  q_dim=2048 kv_dim=1024 (head_dim=128), NeoX RoPE theta=1000000
+Loading Code Predictor weights (hidden=1024, layers=5)...
+  [QWEN_CP_PREC=mixed] CP precision decoupled from Talker
+  Quantizing CP weights: attention INT8 + FFN Q4_0...
+  Code Predictor: 5 layers loaded, q_dim=2048 kv_dim=1024 [INT8+Q4_0-FFN]
+Loading Speech Decoder weights...
+  [LOAD] pre_conv_w[:5]: [0.000016, 0.000021, -0.000115, 0.000046, 0.000027] bias[:3]: [-0.001906, 0.000104, -0.000244]
+  Codebooks: 16/16 (dequantized from EMA)
+  Pre-transformer: 8 layers, input_proj=ok
+  ConvNeXt upsample: ok
+  Conv decoder: initial=ok, final=ok
+  Upsample blocks: [ok ok ok ok]
+  Final snake: ok
+  tts_pad_embed[:3]=[0.004978,-0.003639,-0.002433]
+Model loaded in 1575 ms
+seed: 1794869093 (auto/time-based)
+Server listening on http://127.0.0.1:18094
+Endpoints:
+  POST /v1/tts          — generate speech (returns WAV)
+  POST /v1/tts/stream   — generate speech (chunked PCM stream)
+  POST /v1/audio/speech — OpenAI-compatible TTS
+  GET  /v1/speakers     — list speakers
+  GET  /v1/health       — health check
+
+Press Ctrl+C to stop.
+
+[HTTP] GET /v1/health  from 127.0.0.1
+[HTTP] GET /v1/speakers  from 127.0.0.1
+[HTTP] POST /v1/tts (has body) from 127.0.0.1
+[HTTP] TTS: "Hello, this is a streaming test." (speaker=3061, lang=2050, seed=42)
+tokenizer: loaded 151643 vocab entries (max_id=151642)
+tokenizer: loaded 151291 merge rules
+[HTTP] Sent 261164 bytes WAV (5.44s audio) in 4.1s (RTF 0.75)
+[HTTP] Desglose: prefill 356 ms, Talker 788 ms (11.6 ms/f), CP 2476 ms (36.4 ms/f), decodificador 3179 ms, drenaje 331 ms, 68 fotogramas en 7 fragmentos, cola máxima 11 fotogramas
+[HTTP] POST /v1/audio/speech (has body) from 127.0.0.1
+[HTTP] TTS: "Hello, this is a streaming test." (speaker=3061, lang=2050, seed=42)
+[HTTP] Sent 261164 bytes WAV (5.44s audio) in 4.0s (RTF 0.73)
+[HTTP] Desglose: prefill 345 ms, Talker 809 ms (11.9 ms/f), CP 2480 ms (36.5 ms/f), decodificador 3127 ms, drenaje 326 ms, 68 fotogramas en 7 fragmentos, cola máxima 10 fotogramas
+[HTTP] POST /v1/tts/stream (has body) from 127.0.0.1
+[HTTP] TTS stream: "Hello, this is a streaming test." (speaker=3061, lang=2050, seed=42)
+[HTTP] Streamed 130560 samples (5.44s audio) in 4.2s (RTF 0.77)
+[HTTP] Desglose: prefill 346 ms, Talker 859 ms (12.6 ms/f), CP 2650 ms (39.0 ms/f), decodificador 3744 ms, drenaje 336 ms, 68 fotogramas en 15 fragmentos, cola máxima 8 fotogramas
+[HTTP] POST /v1/tts (has body) from 127.0.0.1
+[HTTP] POST /v1/tts (has body) from 127.0.0.1
+[HTTP] POST /v1/tts (has body) from 127.0.0.1
+[HTTP] POST /v1/tts/stream (has body) from 127.0.0.1
+[HTTP] POST /v1/tts/stream (has body) from 127.0.0.1
+[HTTP] TTS stream: "Esta es una frase larga para probar la cancelacion de la entrega. Esta es una frase larga para probar la cancelacion de la entrega. Esta es una frase larga para probar la cancelacion de la entrega. Esta es una frase larga para probar la cancelacion de la entrega." (speaker=3061, lang=2054, seed=42)
+[HTTP] TTS stream cancelado: el cliente se desconectó tras 1.1 s
+[HTTP] GET /v1/health  from 127.0.0.1

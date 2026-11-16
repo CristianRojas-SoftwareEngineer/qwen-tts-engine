@@ -1,0 +1,35 @@
+err_notext exit=1: Afinidad: un hilo lógico por núcleo físico (8 núcleos, máscara 0x5555)
+Error: --text, --compose or --serve is required
+err_nomodel exit=1: Afinidad: un hilo lógico por núcleo físico (8 núcleos, máscara 0x5555)
+Model dir: nonexistent_dir_xyz
+Text: "x"
+Output: nul
+Failed to load model
+err_novoice exit=1: Afinidad: un hilo lógico por núcleo físico (8 núcleos, máscara 0x5555)
+Model dir: models/qwen3-tts-0.6b
+Text: "x"
+Output: nul
+[CONFIG] After talker parse: num_layers=28
+[CONFIG] After CP parse: cp_num_layers=5, talker num_layers=28
+Config: hidden=1024 text_hidden=2048 layers=28 heads=16/8 head_dim=128 inter=3072
+  Code Predictor: hidden=1024 layers=5 heads=16 head_dim=128
+  Codec: vocab=3072 codebooks=16 entries=2048
+Threads: 1
+Loading Talker weights (hidden=1024, head_dim=128, layers=28)...
+  Talker: 28 layers loaded, KV cache 1024 slots
+  q_dim=2048 kv_dim=1024 (head_dim=128), NeoX RoPE theta=1000000
+Loading Code Predictor weights (hidden=1024, layers=5)...
+  Code Predictor: 5 layers loaded, q_dim=2048 kv_dim=1024 [BF16]
+Loading Speech Decoder weights...
+  [LOAD] pre_conv_w[:5]: [0.000016, 0.000021, -0.000115, 0.000046, 0.000027] bias[:3]: [-0.001906, 0.000104, -0.000244]
+  Codebooks: 16/16 (dequantized from EMA)
+  Pre-transformer: 8 layers, input_proj=ok
+  ConvNeXt upsample: ok
+  Conv decoder: initial=ok, final=ok
+  Upsample blocks: [ok ok ok ok]
+  Final snake: ok
+  tts_pad_embed[:3]=[0.004978,-0.003639,-0.002433]
+Model loaded in 413 ms
+seed: 1794868922 (auto/time-based)
+Cross-model voice: loading speaker embedding into CustomVoice model
+Error: cannot open voice file nonexistent.qvoice
