@@ -1,0 +1,47 @@
+use std::env;
+use std::path::PathBuf;
+
+fn main() {
+    let target = env::var("TARGET").unwrap_or_default();
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+
+    println!("cargo:rerun-if-env-changed=OPENBLAS_LIB_DIR");
+
+    if target_os == "macos" {
+        println!("cargo:rustc-link-lib=framework=Accelerate");
+        return;
+    }
+
+    if target_os == "windows" {
+        let lib_dir = env::var("OPENBLAS_LIB_DIR")
+            .unwrap_or_else(|_| "C:/msys64/ucrt64/lib".to_string());
+        println!("cargo:rustc-link-search=native={lib_dir}");
+
+        if target.contains("gnu") {
+            // Static OpenBLAS + OpenMP + gfortran runtime (matches C Makefile on UCRT64)
+            println!("cargo:rustc-link-lib=static=openblas");
+            println!("cargo:rustc-link-lib=static=gomp");
+            println!("cargo:rustc-link-lib=static=gfortran");
+            println!("cargo:rustc-link-lib=static=quadmath");
+            println!("cargo:rustc-link-lib=static=winpthread");
+            println!("cargo:rustc-link-lib=ws2_32");
+        } else {
+            println!("cargo:rustc-link-lib=openblas");
+        }
+        return;
+    }
+
+    // Linux / Unix: prefer static libopenblas.a if present, else dynamic openblas
+    if let Ok(lib_dir) = env::var("OPENBLAS_LIB_DIR") {
+        println!("cargo:rustc-link-search=native={lib_dir}");
+        if PathBuf::from(&lib_dir).join("libopenblas.a").exists() {
+            println!("cargo:rustc-link-lib=static=openblas");
+            println!("cargo:rustc-link-lib=static=gfortran");
+            if target.contains("x86_64") {
+                println!("cargo:rustc-link-lib=static=quadmath");
+            }
+            return;
+        }
+    }
+    println!("cargo:rustc-link-lib=openblas");
+}
