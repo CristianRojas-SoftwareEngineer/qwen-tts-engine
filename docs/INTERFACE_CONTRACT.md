@@ -22,12 +22,12 @@ Define la superficie pública que el binario Rust (`qwen-app`) debe respetar par
 
 | Categoría | Flag(s) | Default | Contrato / Validación |
 |---|---|---:|---|
-| **Modelo y texto** | `-d, --model-dir <path>` | *(obligatorio)* | Error `exit 1` si falta o si el modelo no es `0.6B`. |
-| | `-t, --text <string>` | `NULL` | Obligatorio salvo `--serve`, `--compose` o `--save-voice` sin texto. |
+| **Modelo y texto** | `-d, --model-dir <path>` | *(obligatorio con modelo)* | Error `exit 1` si falta (salvo modos de §1.1) o si el modelo no es `0.6B`. |
+| | `-t, --text <string>` | `NULL` | Obligatorio salvo `--serve`, `--compose`, `--save-voice` sin texto o `--batch-test`/`--batch-bench`. |
 | | `-o, --output <path>` | `output.wav` | WAV 24 kHz, PCM s16le mono. |
 | **Voz e idioma** | `-s, --speaker <name>` | `ryan` (`3061`) | Rechaza nombres desconocidos (`exit 1`). Presets: `ryan`, `vivian`, `serena`, `aiden`, `eric`, `dylan`, `uncle_fu`, `ono_anna`, `sohee`. |
 | | `-l, --language <name>` | `English` (`2050`) | Rechaza idiomas desconocidos (`exit 1`). Ver tabla en `SPEC_06B.md`. |
-| **Muestreo** | `-T, --temperature <f>` | `0.9` *(CLI)* / `0.5` *(server)* | `0.0` = greedy. |
+| **Muestreo** | `-T, --temperature <f>` | `0.9` *(CLI)* / `0.5` *(server)* | `0.0` = greedy. Si se sustituye un `[tag]` paralingüístico inline sin `-T`, toma la `T` de la etiqueta (`1.1`, o `1.0` en `[scoff]`). |
 | | `-k, --top-k <n>` | `50` | — |
 | | `-p, --top-p <f>` | `1.0` | — |
 | | `-r, --rep-penalty <f>` | `1.05` | — |
@@ -60,7 +60,9 @@ Define la superficie pública que el binario Rust (`qwen-app`) debe respetar par
 | | `--watch-stdin` | off | Vigila `stdin`; al detectar EOF (muerte del lanzador) termina inmediatamente (`_exit(0)`). Un fallo al iniciar el vigía aborta (`exit 1`). |
 | **Sistema / Diagnóstico** | `-j, --threads <n>` | `0` (auto: `min(ncpus, 4)`) | Hilos de cómputo del pool. |
 | | `-S, --silent`, `-D, --debug` | off | `--silent` suprime logs en `stderr`, **nunca** el WAV de salida. |
-| | `--batch`, `--batch-words`, `--batch-dry`, `--batch-test`, `--batch-bench`, `--batch-multi-test`, `--onset-fade`, `--tail-trim`, `--seed-audition`, `--audition-keep` | — | Modos auxiliares de lote/audición/benchmark. |
+| | `--batch`, `--batch-words <n>`, `--batch-dry` | `words=16` (`min 4`) | Síntesis long-form por lotes de texto concatenados (`--batch-dry` imprime partición y sale). |
+| | `--batch-test`, `--batch-bench`, `--batch-multi-test <N>` | — | Diagnóstico de paridad/throughput del motor por lotes. |
+| | `--onset-fade <ms>`, `--tail-trim`, `--seed-audition <N>`, `--audition-keep` | `0`, off, `0`, off | Post-procesado de ataque/cola y audición secuencial de hasta `64` semillas (no streaming). |
 
 ---
 
@@ -71,14 +73,16 @@ Define la superficie pública que el binario Rust (`qwen-app`) debe respetar par
 - **Límite de cuerpo**: máximo `1 MiB` (`1024 * 1024` bytes) por petición HTTP; `OPTIONS` responde `204 No Content` con cabeceras CORS (`Access-Control-Allow-Origin: *`).
 - **Errores**: `{"error":"<causa>"}` con `Content-Type: application/json`.
 
-### 2.2 Endpoints
+### 2.2 Endpoints y Esquema JSON
 | Método y Ruta | Entrada | Respuesta exitosa | Reglas específicas |
 |---|---|---|---|
 | `GET /v1/health` | — | `200` `{"status":"ok"}` | — |
-| `GET /v1/speakers` | — | `200` `{"speakers":[...]}` | Lista los 9 presets (`name`, `language`, `gender`). |
+| `GET /v1/speakers` | — | `200` `{"speakers":[...]}` | Array de 9 objetos `{name, language, gender}`: `ryan`/`aiden` (`English`, `male`), `vivian`/`serena` (`Chinese`, `female`), `uncle_fu`/`dylan`/`eric` (`Chinese`, `male`), `ono_anna` (`Japanese`, `female`), `sohee` (`Korean`, `female`). |
 | `POST /v1/tts` | JSON TTS | `200` `audio/wav` (24 kHz s16le mono) | Usa tamaño de fragmento constante `10` (`DEFAULT_CHUNK_FRAMES`). |
 | `POST /v1/audio/speech` | JSON OpenAI (`input`, `voice`, ...) | `200` `audio/wav` | Equivalente a `POST /v1/tts` (`input`→`text`, `voice`→`speaker`). |
 | `POST /v1/tts/stream` | JSON TTS (`chunk_frames` opcional `2..250`, default `10`) | `200` `audio/pcm` (`Transfer-Encoding: chunked`) | Cabeceras obligatorias: `X-Sample-Rate: 24000`, `X-Sample-Format: s16le`, `X-Channels: 1`. Rechaza `rate != 1.0` con `400`. |
+
+**Campos JSON aceptados en `POST`**: `text` o `input` (string, obligatorio), `speaker` o `voice` (string, default `ryan`), `language` (string, default `English`), `temperature` (`f32`, default `0.5`), `top_k` (`i32`, default `50`), `top_p` (`f32`, default `1.0`), `rep_penalty` (`f32`, default `1.05`), `seed` (`i32`, `-1` = tiempo), `emotion` (string opcional), `volume` (`f32`, default `1.0`), `rate` (`f32`, default `1.0`), `chunk_frames` (`i32`, default `10`, solo stream), `voice_design` (string `"true"`/`"1"`, rechazado en `0.6B` con `400`).
 
 ### 2.3 Validación única HTTP `400`
 Toda petición en modo normal, worker o batch se valida antes de sintetizar. **Nada se recorta ni se sustituye en silencio**:
@@ -110,7 +114,7 @@ Toda petición en modo normal, worker o batch se valida antes de sintetizar. **N
 - **Líneas de log contractuales (observadas por scripts/tests y diagnóstico)**:
   - Carga de Code Predictor: `Code Predictor: 5 layers loaded ... [BF16|INT8|Q4_0|INT8+Q4_0-FFN]`.
   - Semilla resuelta: `seed: <u32> ...`.
-  - Generación CLI: `Generated <N> frames (...)` (comprobado por tests).
+  - Generación CLI: `Generated <N> frames (<S>s audio)` (comprobado por tests).
   - Servidor tras cada `/v1/tts` o `/v1/tts/stream` exitoso:
     ```text
     [HTTP] Sent <bytes> bytes (<dur>s audio) in <sec>s (RTF <rtf>)

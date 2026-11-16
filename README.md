@@ -10,9 +10,9 @@ Workspace de migración y rediseño del motor de inferencia TTS **Qwen3-TTS 0.6B
 - `parity/` — Arnés de pruebas cruzadas C vs Rust y artefactos de línea base.
 - `models/` — *(Opcional, ignorado en Git)* Pesos `0.6B` y perfiles `.qvoice`/`.bin` compartidos por ambos motores.
 
-## Entorno local auditado (Fase D0)
+## Entorno de referencia verificado
 
 - **Git**: `2.53.0.windows.1`
 - **Rust**: `rustc 1.96.0` / `cargo 1.96.0` (host `x86_64-pc-windows-msvc`; targets instalados: `x86_64-pc-windows-msvc`, `x86_64-pc-windows-gnu`, `x86_64-unknown-linux-gnu`)
 - **Compilador C / OpenBLAS (MSYS2 UCRT64)**: `C:\msys64\ucrt64\bin\gcc.exe` (`16.2.0`), `C:\msys64\ucrt64\include\openblas\cblas.h`, `C:\msys64\ucrt64\lib\libopenblas.a`
-- **Modelos locales en este workspace**: ninguno descargado actualmente (solo `qwen3-tts/config.json` y `qwen3-tts/speech_tokenizer_config.json` de referencia).
+- **Modelos en `models/`**: no versionados en Git (los pesos `0.6B` se descargan o enlazan bajo demanda; en `qwen3-tts/` se incluyen `config.json` y `speech_tokenizer_config.json` de referencia).

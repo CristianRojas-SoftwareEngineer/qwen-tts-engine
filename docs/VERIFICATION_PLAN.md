@@ -6,7 +6,7 @@ Define cómo validar de forma objetiva cada fase de la migración de `qwen3-tts`
 
 ## 1. Corpus Dorado y Entorno de Medición (Fase 0)
 
-### 1.1 Regla de comparación A/B (`AGENTS.md`)
+### 1.1 Regla de comparación A/B (`qwen3-tts/AGENTS.md`)
 Toda comparación entre C y Rust debe fijar parámetros explícitos idénticos: `--seed <N>`, `-s <speaker>`, `-l <language>`, mismo `--text`, mismo `-j <threads>`, mismo `-d <model_dir>` y (en Windows con OpenBLAS OpenMP) `OMP_NUM_THREADS = -j` sin `OPENBLAS_NUM_THREADS`.
 
 ### 1.2 Casos del corpus (`parity/corpus.json`)

@@ -17,8 +17,8 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | Formato | Layout por bloque / fila | Regla de cuantización | Uso en `0.6B` |
 |---|---|---|---|
 | **INT8** | `int8_t[rows, cols]` + `float scale[rows]` | Por fila: `s = absmax / 127.0`, `round(w * 127.0 / absmax)` saturado a `[-128, 127]`. | `--int8`; atención + 15 `lm_head` en `--quant-mixed`. |
-| **Q4_0** (`18 B / 32 pesos`) | `scale_f16` (IEEE fp16 `u16`) + `qs[16]` | **Mínimos cuadrados ponderados (`q4_0s1`)**: mapea el máximo con signo `vmax` a `-8`, redondea, reescala `s* = sum(v^2 * v * q) / sum(v^2 * q^2)`. Empaque **intercalado**: `qs[i] = (q[2i]+8) \| ((q[2i+1]+8) << 4)`. | `--int4`; Talker + FFN del CP en `--quant-mixed`. |
-| **Q2_0** (`12 B / 32 pesos`) | `float scale` (`f32`) + `qs[8]` | 4 niveles simétricos `{-1.5, -0.5, 0.5, 1.5} * scale`, `scale = absmax / 1.5`; 4 códigos/byte (`(i%4)*2`). | Solo `down_q2_rough` bajo `--roughness > 0`. |
+| **Q4_0** (`18 B / 32 pesos`) | `scale_f16` (IEEE fp16 `u16`) + `qs[16]` | **Mínimos cuadrados ponderados (`q4_0s1`)**: toma el elemento de mayor magnitud `vmax` (con su signo), fija `isc = -8.0 / vmax`, `q[i] = clamp(round(v[i] * isc), -8, 7)` y reescala `s* = sum(v^2 * v * q) / sum(v^2 * q^2)`. Empaque **intercalado**: `qs[i] = (q[2i]+8) \| ((q[2i+1]+8) << 4)`. | `--int4`; Talker + FFN del CP en `--quant-mixed`. |
+| **Q2_0** (`12 B / 32 pesos`) | `float scale` (`f32`) + `qs[8]` | 4 niveles simétricos `{-1.5, -0.5, 0.5, 1.5} * scale`: `scale = absmax / 1.5`, `code = clamp(round(v / scale + 1.5), 0, 3)`; 4 códigos/byte (`(i%4)*2`). | Solo `down_q2_rough` bajo `--roughness > 0`, mezclado en `down_proj` del CP: `proj = (1 - r) * proj + r * proj_q2`. |
 
 - **Prohibido usar fallbacks en coma flotante**: todas las ISA (AVX2 `maddubs`, VNNI `dpbusd`, ARM SDOT `vdotq_s32`, escalar `i32`) acumulan en producto escalar entero.
 - **Matriz `gate_up` intercalada**: la fila `2r` corresponde a `gate[r]` y la `2r+1` a `up[r]`. En modos cuantizados se cuantiza directamente desde `gate_bf16` y `up_bf16` sin materializar `gate_up_fused_bf16`.
@@ -49,7 +49,8 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 |---|---|---|
 | **Global / Kernels** | Usar FMA explícito en kernels SIMD (`_mm256_fmadd_ps` / `vmlaq_f32`) | El `Makefile` documentó que `-ffp-contract=off -fno-fast-math` corrompía frases cortas (`dub`). |
 | **`SpeechEncoder` (RVQ)** | Mantener cálculo de distancia L2 (`||x - e||^2`) en **IEEE-754 estricto** (sin reordenamientos agresivos) | En `Makefile:281`, `-ffast-math` rompió la búsqueda de vecino más cercano. |
-| **`convnext_mlp` (`SpeechDecoder`)** | **LayerNorm de 2 pasadas** (`mean`, luego `var = sum((x - mean)^2) / C`) | Una pasada (`E[x^2] - mean^2`) altera el audio respecto al streaming validado (`DIVERGENCIAS.md`). |
+| **`convnext_mlp` (`SpeechDecoder`)** | **LayerNorm de 2 pasadas** (`mean`, luego `var = sum((x - mean)^2) / C`) | Una pasada (`E[x^2] - mean^2`) altera el audio respecto al streaming validado (`qwen3-tts/DIVERGENCIAS.md`). |
+| **Activación Snake (`SpeechDecoder`)** | `y = x + exp(-log_beta) * sin^2(exp(log_alpha) * x)` (en F32) | Los tensores `{alpha, beta}` del modelo están almacenados en escala logarítmica. *(Nota: `QWEN_SD_INT8` es experimental y queda fuera de la ruta de producción).* |
 | **`causal_conv1d` / `conv_transpose1d`** | `conv_transpose1d`: 1 único `cblas_sgemm` + dispersión en orden ascendente de `k`; `causal_conv1d` (`k>1`): `k` `cblas_sgemm` acumulados sobre entrada con relleno izquierdo sobre `W_k` pre-reordenado `[k][out][in]` | Elimina copias `im2col`; mantiene SNR ≥ 96–98 dB vs la implementación original. |
 | **`CodePredictor` prefill** | Usar siempre **`PREFILL2`** (`matmat(B=2)`) cuando las 5 capas están en `int8` y/o `q4_0` en cualquier mezcla | Lee cada matriz 1 vez para posiciones 0 y 1 con resultado idéntico al secuencial. |
 

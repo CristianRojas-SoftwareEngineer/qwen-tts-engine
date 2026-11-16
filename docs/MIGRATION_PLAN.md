@@ -41,9 +41,9 @@ Hoja de ruta ejecutiva para la implementación de `qwen3-tts-rs/` (`0.6B`) y mat
 
 ---
 
-## 3. Matriz de Trazabilidad: `DIVERGENCIAS.md` → Rust
+## 3. Matriz de Trazabilidad: `qwen3-tts/DIVERGENCIAS.md` → Rust
 
-| Divergencia en `DIVERGENCIAS.md` | Módulo Rust responsable | Verificación (`VERIFICATION_PLAN.md`) |
+| Divergencia en `qwen3-tts/DIVERGENCIAS.md` | Módulo Rust responsable | Verificación (`VERIFICATION_PLAN.md`) |
 |---|---|---|
 | Bind `--host` + loopback `127.0.0.1` por defecto | `qwen-app/src/main.rs`, `server/http.rs` | Gate G5 (test CLI `--host` inválido y bind) |
 | Vigía `--watch-stdin` (`_exit(0)` en EOF) | `qwen-app/src/main.rs` | Gate G5 (test cierre de pipe padre) |
@@ -69,4 +69,4 @@ Hoja de ruta ejecutiva para la implementación de `qwen3-tts-rs/` (`0.6B`) y mat
 | Validación única HTTP `400` + chunk `0` solo en éxito + `[HTTP] Desglose:` | `qwen-app/src/server/{validation.rs, http.rs}` | Gate G5 (`C7_server`) |
 | Atención Talker paralela por cabezas + `gate_up` fusionado solo en `bf16` | `qwen-kernels` + `qwen-engine/src/talker.rs` | Gate G3 (`C3_long_it` + RSS) |
 | Caché KV inicial `1024` + conversión `bf16->f32` prefill paralelizada | `qwen-engine/src/talker.rs` | Gate G3 (`TTFA` + RSS) |
-| Uso de `OMP_NUM_THREADS = -j` (sin `OPENBLAS_NUM_THREADS`) | `docs/INTERFACE_CONTRACT.md` + `qwen-kernels/src/blas.rs` | Gate G3 + Gate G5 |
+| Uso de `OMP_NUM_THREADS = -j` (sin `OPENBLAS_NUM_THREADS`) | `qwen-kernels/src/blas.rs` (`INTERFACE_CONTRACT.md`) | Gate G3 + Gate G5 |

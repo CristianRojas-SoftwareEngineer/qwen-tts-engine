@@ -16,7 +16,9 @@ Al restringir el motor al `0.6B`, todas estas dimensiones son constantes conocid
 | **Talker** | `text_hidden_size` / `hidden_size` | `2048` / **`1024`** |
 | | `num_layers` / `num_heads` / `num_kv_heads` / `head_dim` | `28` / `16` / `8` / `128` |
 | | `q_dim` / `kv_dim` / `intermediate_size` | `2048` / `1024` / **`3072`** |
-| | `rms_norm_eps` / `rope_theta` / `mrope_section` | `1e-6` / `1e6` / `[24, 20, 20]` |
+| | `rms_norm_eps` / `rope_theta` / estilo RoPE real en C | `1e-6` / `1e6` / **NeoX split-half** |
+
+> **Nota crítica sobre RoPE**: Aunque `qwen3-tts/MODEL.md` describe M-RoPE *interleaved*, la implementación C validada (`qwen_tts_talker.c`, `qwen_tts_code_predictor.c`, `qwen_tts_speech_decoder.c` y `qwen_tts_speech_encoder.c`) aplica **RoPE estilo NeoX split-half**: `inv_freq[i] = 1.0 / theta^(2*i / head_dim)` para `i = 0..head_dim/2 - 1`, rotando pares `(x[i], x[i + head_dim/2])`. En Rust debe implementarse exactamente **NeoX split-half**.
 | **Code Predictor** | `cp_hidden_size` / `cp_num_layers` | **`1024`** / `5` |
 | | `cp_num_heads` / `cp_num_kv_heads` / `cp_head_dim` / `cp_intermediate` | `16` / `8` / `128` / `3072` |
 | | `small_to_mtp_projection` | **No existe en 0.6B** (`talker_h == cp_h`) |
@@ -90,7 +92,8 @@ Secuencia secuencial en disco (ver `main.c:1760-2699`):
    - Payload: `fc1` (`2048×2048×u16`), `fc1_bias` (`2048×f32`), `fc2` (`1024×2048×u16`), `fc2_bias` (`1024×f32`), `codec_emb[0..2048]` (`2048×1024×u16`). Si no hubo `TPAD`, recalcula `tts_pad/bos/eos`.
 5. **Sección `WDLT` o `WFULL`** (opcional; **omitida si `--icl-only`**):
    - `"WDLT"` (`4B`) + `target_hidden` (`u32`, debe ser `1024` o falla) + `n_tensors` (`u32`). *(En `"WFULL"` (`5B`) falta `target_hidden`).*
-   - Por cada tensor: `name_len` (`u16`), `tname` (`name_len B`), `data_bytes` (`u32`), `dtype_flag` (`u8`: `4` = delta `i16` de patrón de bits BF16 comprimido con LZ4 respecto a `CustomVoice`; `2/3` = legacy zlib no soportado; otro = raw), `compressed_size` (`u32`), payload (`compressed_size B`).
+   - Por cada tensor: `name_len` (`u16`), `tname` (`name_len B`), `data_bytes` (`u32`), `dtype_flag` (`u8`: `4` = delta `i16` comprimido con LZ4 respecto a los bits BF16 originales del `CustomVoice` antes de `WOVR`; `2/3` = legacy zlib no soportado; otro = raw), `compressed_size` (`u32`), payload (`compressed_size B`).
+   - Reconstrucción de `WDELTA` (`dtype_flag == 4`): `bf16_result[i] = (uint16_t)(cv_orig[i] + delta16[i])`. Si `--voice-strength < 1.0`, se interpola linealmente en F32 (`vc + alpha * (vcl - vc)`) solo en las proyecciones `self_attn.*_proj.weight` y `mlp.*_proj.weight` de `talker.model.layers.{vs_l0..vs_l1}` (default `11..27`).
 
 ### 3.2 Archivos `.bin` y `emovoice` (`0.6B`)
 - **`.bin` x-vector**: exactamente `1024 × f32` (`4096 B`) raw little-endian.
@@ -98,7 +101,8 @@ Secuencia secuencial en disco (ver `main.c:1760-2699`):
   1. Busca primero junto a `--load-voice` y luego en `presets/emovoice/` un activo `<voice_key>_<tok>.qvoice` (cargado como `--icl-only`) o `<voice_key>_<tok>.bin` (`--xvector-only`).
   2. Si no existe y hay un clon cargado, busca `presets/emovoice/dir_<tok>.bin` (`1024 × f32`) y lo suma preservando la norma L2 del embedding original `n0`:
      `emb_new = normalize_to(emb + emotion_strength * n0 * dir, n0)`.
-  3. Tokens canónicos (`qwen_tts_emotion.c`): `sad`, `joy`, `ang`, `fear`, `disgust`, `surprise`, `contempt`, `awe`, `nostalgia`, `disapproval`, `remorse`, `outrage`, `despair`.
+  3. **Tabla de nombres y alias (`qwen_tts_emotion.c`)**:
+     `sad`/`sadness`→`sad`, `joy`/`happy`/`joyful`→`joy`, `anger`/`angry`/`rage`→`ang`, `fear`/`afraid`→`fear`, `disgust`/`disgusted`→`disgust`, `surprise`/`surprised`→`surprise`, `contempt`/`scorn`→`contempt`, `awe`/`wonder`→`awe`, `nostalgia`/`wistful`→`nostalgia`, `disapproval`→`disapproval`, `remorse`/`regret`→`remorse`, `outrage`→`outrage`, `despair`→`despair`.
 
 ---
 
@@ -123,13 +127,18 @@ Prefijo codec (`codec_tokens`): con idioma `[2154, 2156, lang_id, 2157, speaker_
    - **Sección 3' (`N_ref + N + 1` pos)**: `text_proj(BPE(ref_text) + BPE(text)) + tts_eos` **+** `codec_pad`.
    - **Sección 4' (`n_ref_frames + 1` pos)**: `tts_pad` **+** `codec_bos` seguido de `talker.codec_embedding(ref_codes[f][0]) + sum_{g=1..15} cp_codec_emb[g-1](ref_codes[f][g])`. *(En modo ICL se recortan los primeros `QWEN_ICL_TRIM_FRAMES` = `2` fotogramas = 3840 muestras de audio generado al inicio para evitar transitorio "tud".)*
 
-### 4.3 Reglas de generación y paralingüística `0.6B`
+### 4.3 Reglas de generación, muestreo, recorte y paralingüística `0.6B`
+- **Recorte de silencio final en audio de referencia (`qwen_trim_trailing_silence`)**: antes de ECAPA/RVQ (si `n_samples >= 3 * 24000` y no existe `QWEN_NO_REF_TRIM`), escanea ventanas de `20 ms` desde el final con umbral `max(0.18 * global_rms, 0.004)`, añade `+50 ms` de margen y limita el recorte a como máximo `40 %` de la duración conservando al menos `2 s`.
 - **EOS boosting** (`qwen_tts.c:1626-1636`): `expected = text_content_len * 3`. Si `text_content_len <= 11`: `start = expected * 3 / 2`, `+1.0/frame` (tope `+15.0`). Si `> 11`: `start = expected * 2`, `+0.5/frame` (tope `+10.0`). Se suprimen tokens `>= 2048` excepto `CODEC_EOS`, y `CODEC_EOS` se suprime en `frame < 2`.
-- **Sustitución paralingüística inline `small_model = 1`** (`qwen_tts_compose.c:66-84`):
-  - `[laugh]`/`[laughs]` → `"哈哈哈"` (`seed=2024`, `T=1.1`)
-  - `[sigh]`/`[sighs]` → `"唉"` (`seed=42`, `T=1.1`) o `"ahh"` (`seed=7` si `vivian`)
-  - `[yawn]`/`[yawns]` → `"哈啊"` (`seed=42`, `T=1.1`)
-  - `[wow]` → `"哇"` (`seed=2024`, `T=1.1`)
-  - `[giggle]`/`[giggles]` → `"嘿嘿"` (`seed=42`, `T=1.1`)
-  - `[scoff]` → `"切"` (`seed=42`, `T=1.0`)
-  - Pausas: `[pause:400ms]`, `[pause:1s]`, `[break:...]`, `[0.5]`.
+- **Pipeline de muestreo y LCG (`qwen_tts_sampling.c`)**:
+  1. Penalización de repetición sobre `prev_tokens`: si `logit > 0`, `logit /= rep_penalty`; si `<= 0`, `logit *= rep_penalty`.
+  2. Si `temperature < 1e-6`, argmax greedy; si no: `softmax(logits / temperature)` → `top_k` (quickselect) → `top_p` (ordenación parcial por selección sobre índices `idx[]` hasta `cumsum > p`) → renormalización → muestreo con LCG `seed = seed.wrapping_mul(1103515245).wrapping_add(12345)`, `r = ((seed >> 16) & 0x7FFF) as f32 / 32768.0`.
+- **Paralingüística inline y `--compose` en `0.6B` (`qwen_tts_compose.c`)**:
+  - Paso 1 (`para_substitute`, antes del compositor salvo `--no-compose`): sustituye `[tag]` por onomatopeya delimitada por comas en una sola generación y fija la semilla/temperatura de la primera etiqueta:
+    - `[laugh]`/`[laughs]` → `"哈哈哈"` (`seed=2024`, `T=1.1`)
+    - `[sigh]`/`[sighs]` → `"唉"` (`seed=42`, `T=1.1`) o `"ahh"` (`seed=7` si `vivian`)
+    - `[yawn]`/`[yawns]` → `"哈啊"` (`seed=42`, `T=1.1`)
+    - `[wow]` → `"哇"` (`seed=2024`, `T=1.1`)
+    - `[giggle]`/`[giggles]` → `"嘿嘿"` (`seed=42`, `T=1.1`)
+    - `[scoff]` → `"切"` (`seed=42`, `T=1.0`)
+  - Paso 2 (`qwen_compose_parse`, si quedan `[pause:...]`, `[break:...]`, `[0.5]`, `|` o `--compose`): divide en tramos independientes (prefill frío por tramo) y concatena silencios/audios. En `0.6B`, los tags `[emotion]` dentro de `--compose` no inyectan steering (`hidden_size < 2048`, se sintetizan neutros).
