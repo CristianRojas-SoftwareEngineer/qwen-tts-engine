@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/qwen-kernels",
     "crates/qwen-core",
+    "crates/qwen-engine",
 ]
 
 [workspace.package]

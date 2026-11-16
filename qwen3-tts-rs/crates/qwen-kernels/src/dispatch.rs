@@ -46,6 +46,8 @@ pub type AttnBf16KvFn = fn(
 );
 pub type RopeNeoxFn = fn(&mut [f32], usize, usize, &[f32], &[f32], usize);
 pub type Bf16VecOpFn = fn(&mut [f32], &[u16]);
+pub type F32ToBf16VecFn = fn(&mut [u16], &[f32]);
+pub type F32MatvecAccumFn = fn(&mut [f32], &[f32], &[f32], usize, usize);
 pub type SnakeRowFn = fn(&mut [f32], f32, f32);
 
 pub struct KernelDispatch {
@@ -66,6 +68,8 @@ pub struct KernelDispatch {
     pub rope_neox_fn: RopeNeoxFn,
     pub bf16_accum_f32_fn: Bf16VecOpFn,
     pub bf16_to_f32_vec_fn: Bf16VecOpFn,
+    pub f32_to_bf16_vec_fn: F32ToBf16VecFn,
+    pub f32_matvec_accum_fn: F32MatvecAccumFn,
     pub snake_row_fn: SnakeRowFn,
 }
 
@@ -87,6 +91,8 @@ static SCALAR_DISPATCH: KernelDispatch = KernelDispatch {
     rope_neox_fn: scalar::apply_rope_neox_inplace,
     bf16_accum_f32_fn: scalar::bf16_accum_f32,
     bf16_to_f32_vec_fn: scalar::bf16_to_f32_vec,
+    f32_to_bf16_vec_fn: scalar::f32_to_bf16_vec,
+    f32_matvec_accum_fn: scalar::f32_matvec_accum,
     snake_row_fn: scalar::snake_row,
 };
 
@@ -250,6 +256,12 @@ mod avx2_wrappers {
     pub fn bf16_to_f32_vec(dst: &mut [f32], src_bf16: &[u16]) {
         unsafe { avx2::bf16_to_f32_vec(dst, src_bf16) }
     }
+    pub fn f32_to_bf16_vec(dst: &mut [u16], src: &[f32]) {
+        unsafe { avx2::f32_to_bf16_vec(dst, src) }
+    }
+    pub fn f32_matvec_accum(y: &mut [f32], w: &[f32], x: &[f32], rows: usize, cols: usize) {
+        unsafe { avx2::f32_matvec_accum(y, w, x, rows, cols) }
+    }
     pub fn snake_row(row: &mut [f32], log_alpha: f32, log_beta: f32) {
         unsafe { avx2::snake_row(row, log_alpha, log_beta) }
     }
@@ -274,6 +286,8 @@ static AVX2_DISPATCH: KernelDispatch = KernelDispatch {
     rope_neox_fn: avx2_wrappers::rope_neox,
     bf16_accum_f32_fn: avx2_wrappers::bf16_accum_f32,
     bf16_to_f32_vec_fn: avx2_wrappers::bf16_to_f32_vec,
+    f32_to_bf16_vec_fn: avx2_wrappers::f32_to_bf16_vec,
+    f32_matvec_accum_fn: avx2_wrappers::f32_matvec_accum,
     snake_row_fn: avx2_wrappers::snake_row,
 };
 
@@ -296,6 +310,8 @@ static NEON_DISPATCH: KernelDispatch = KernelDispatch {
     rope_neox_fn: neon::apply_rope_neox_inplace,
     bf16_accum_f32_fn: neon::bf16_accum_f32,
     bf16_to_f32_vec_fn: neon::bf16_to_f32_vec,
+    f32_to_bf16_vec_fn: neon::f32_to_bf16_vec,
+    f32_matvec_accum_fn: neon::f32_matvec_accum,
     snake_row_fn: neon::snake_row,
 };
 
@@ -334,12 +350,15 @@ impl KernelDispatch {
         cols: usize,
         b_dim: usize,
     ) {
-        let mut col = vec![0.0f32; cols];
+        let mut col_uninit = std::mem::MaybeUninit::<[f32; QWEN_QACT_MAX]>::uninit();
+        let col = unsafe {
+            std::slice::from_raw_parts_mut(col_uninit.as_mut_ptr() as *mut f32, cols)
+        };
         for b in 0..b_dim {
             for k in 0..cols {
                 col[k] = x[k * b_dim + b];
             }
-            sx[b] = self.quantize_act_int8(&mut qxt[b * cols..(b + 1) * cols], &col);
+            sx[b] = self.quantize_act_int8(&mut qxt[b * cols..(b + 1) * cols], col);
         }
     }
 
@@ -527,13 +546,16 @@ impl KernelDispatch {
         cols: usize,
     ) {
         debug_assert!(cols > 0 && cols <= QWEN_QACT_MAX && cols % Q4_0_BLOCK_SIZE == 0);
-        let mut qx_buf = [0i8; QWEN_QACT_MAX];
-        let sx = self.quantize_act_int8(&mut qx_buf[..cols], &x[..cols]);
-        let qx_slice = &qx_buf[..cols];
+        let mut qx_uninit = std::mem::MaybeUninit::<[i8; QWEN_QACT_MAX]>::uninit();
+        let qx_slice = unsafe {
+            std::slice::from_raw_parts_mut(qx_uninit.as_mut_ptr() as *mut i8, cols)
+        };
+        let sx = self.quantize_act_int8(qx_slice, &x[..cols]);
         let nt = pool.n_threads();
         if nt > 1 && rows >= 256 {
             let f = self.int8_matvec_slice_fn;
             let y_ptr = y.as_mut_ptr() as usize;
+            let qx_ref: &[i8] = qx_slice;
             pool.parallel(nt, |tid, n| {
                 let r0 = tid * rows / n;
                 let r1 = (tid + 1) * rows / n;
@@ -542,7 +564,7 @@ impl KernelDispatch {
                 };
                 f(
                     y_slice,
-                    qx_slice,
+                    qx_ref,
                     sx,
                     &w[r0 * cols..r1 * cols],
                     &scale[r0..r1],
@@ -571,25 +593,45 @@ impl KernelDispatch {
             return;
         }
         let b_dim = b_dim.min(64);
-        let mut qxt = vec![0i8; b_dim * cols];
-        let mut sx = [0.0f32; 64];
-        self.quantize_act_int8_cols(&mut qxt, &mut sx[..b_dim], x, cols, b_dim);
-        let nt = pool.n_threads();
-        if nt > 1 && rows >= 256 {
-            let f = self.int8_matmat_slice_fn;
-            let y_ptr = y.as_mut_ptr() as usize;
-            let y_len = rows * b_dim;
-            let sx_ref = &sx[..b_dim];
-            let qxt_ref = &qxt;
-            pool.parallel(nt, |tid, n| {
-                let r0 = tid * rows / n;
-                let r1 = (tid + 1) * rows / n;
-                let y_slice = unsafe { std::slice::from_raw_parts_mut(y_ptr as *mut f32, y_len) };
-                f(y_slice, w, scale, qxt_ref, sx_ref, r0, r1, cols, b_dim);
-            });
-            return;
+        thread_local! {
+            static QXT_INT8: RefCell<Vec<i8>> = const { RefCell::new(Vec::new()) };
         }
-        (self.int8_matmat_slice_fn)(y, w, scale, &qxt, &sx[..b_dim], 0, rows, cols, b_dim);
+        QXT_INT8.with(|cell| {
+            let mut qxt = cell.borrow_mut();
+            let need = b_dim * cols;
+            if qxt.len() < need {
+                qxt.resize(need, 0);
+            }
+            let mut sx = [0.0f32; 64];
+            self.quantize_act_int8_cols(&mut qxt[..need], &mut sx[..b_dim], x, cols, b_dim);
+            let nt = pool.n_threads();
+            if nt > 1 && rows >= 256 {
+                let f = self.int8_matmat_slice_fn;
+                let y_ptr = y.as_mut_ptr() as usize;
+                let y_len = rows * b_dim;
+                let sx_ref = &sx[..b_dim];
+                let qxt_ref = &qxt[..need];
+                pool.parallel(nt, |tid, n| {
+                    let r0 = tid * rows / n;
+                    let r1 = (tid + 1) * rows / n;
+                    let y_slice =
+                        unsafe { std::slice::from_raw_parts_mut(y_ptr as *mut f32, y_len) };
+                    f(y_slice, w, scale, qxt_ref, sx_ref, r0, r1, cols, b_dim);
+                });
+                return;
+            }
+            (self.int8_matmat_slice_fn)(
+                y,
+                w,
+                scale,
+                &qxt[..need],
+                &sx[..b_dim],
+                0,
+                rows,
+                cols,
+                b_dim,
+            );
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -610,9 +652,83 @@ impl KernelDispatch {
         q_dim: usize,
         kv_dim: usize,
     ) {
-        self.matvec_int8(pool, q, wq, sq, x, q_dim, in_dim);
-        self.matvec_int8(pool, k, wk, sk, x, kv_dim, in_dim);
-        self.matvec_int8(pool, v, wv, sv, x, kv_dim, in_dim);
+        let mut qx_uninit = std::mem::MaybeUninit::<[i8; QWEN_QACT_MAX]>::uninit();
+        let qx_slice = unsafe {
+            std::slice::from_raw_parts_mut(qx_uninit.as_mut_ptr() as *mut i8, in_dim)
+        };
+        let sx = self.quantize_act_int8(qx_slice, &x[..in_dim]);
+        let nt = pool.n_threads();
+        let total = q_dim + 2 * kv_dim;
+        if nt > 1 {
+            let f = self.int8_matvec_slice_fn;
+            let qp = q.as_mut_ptr() as usize;
+            let kp = k.as_mut_ptr() as usize;
+            let vp = v.as_mut_ptr() as usize;
+            let qx_ref: &[i8] = qx_slice;
+            pool.parallel(nt, |tid, n| {
+                let r0 = tid * total / n;
+                let r1 = (tid + 1) * total / n;
+                let mut r = r0;
+                while r < r1 {
+                    if r < q_dim {
+                        let end = r1.min(q_dim);
+                        let len = end - r;
+                        let out = unsafe {
+                            std::slice::from_raw_parts_mut((qp as *mut f32).add(r), len)
+                        };
+                        f(
+                            out,
+                            qx_ref,
+                            sx,
+                            &wq[r * in_dim..end * in_dim],
+                            &sq[r..end],
+                            in_dim,
+                            len,
+                        );
+                        r = end;
+                    } else if r < q_dim + kv_dim {
+                        let local = r - q_dim;
+                        let end = r1.min(q_dim + kv_dim);
+                        let local_end = end - q_dim;
+                        let len = local_end - local;
+                        let out = unsafe {
+                            std::slice::from_raw_parts_mut((kp as *mut f32).add(local), len)
+                        };
+                        f(
+                            out,
+                            qx_ref,
+                            sx,
+                            &wk[local * in_dim..local_end * in_dim],
+                            &sk[local..local_end],
+                            in_dim,
+                            len,
+                        );
+                        r = end;
+                    } else {
+                        let local = r - q_dim - kv_dim;
+                        let local_end = r1 - q_dim - kv_dim;
+                        let len = local_end - local;
+                        let out = unsafe {
+                            std::slice::from_raw_parts_mut((vp as *mut f32).add(local), len)
+                        };
+                        f(
+                            out,
+                            qx_ref,
+                            sx,
+                            &wv[local * in_dim..local_end * in_dim],
+                            &sv[local..local_end],
+                            in_dim,
+                            len,
+                        );
+                        r = r1;
+                    }
+                }
+            });
+            return;
+        }
+        (self.int8_matvec_slice_fn)(&mut q[..q_dim], qx_slice, sx, wq, sq, in_dim, q_dim);
+        (self.int8_matvec_slice_fn)(&mut k[..kv_dim], qx_slice, sx, wk, sk, in_dim, kv_dim);
+        (self.int8_matvec_slice_fn)(&mut v[..kv_dim], qx_slice, sx, wv, sv, in_dim, kv_dim);
     }
 
     pub fn argmax_matvec_int8(
@@ -655,21 +771,24 @@ impl KernelDispatch {
         cols: usize,
     ) {
         debug_assert!(cols > 0 && cols <= QWEN_QACT_MAX && cols % Q4_0_BLOCK_SIZE == 0);
-        let mut qx_buf = [0i8; QWEN_QACT_MAX];
-        let sx = self.quantize_act_int8(&mut qx_buf[..cols], &x[..cols]);
-        let qx_slice = &qx_buf[..cols];
+        let mut qx_uninit = std::mem::MaybeUninit::<[i8; QWEN_QACT_MAX]>::uninit();
+        let qx_slice = unsafe {
+            std::slice::from_raw_parts_mut(qx_uninit.as_mut_ptr() as *mut i8, cols)
+        };
+        let sx = self.quantize_act_int8(qx_slice, &x[..cols]);
         let nb = cols / Q4_0_BLOCK_SIZE;
         let nt = pool.n_threads();
         if nt > 1 && rows >= 256 {
             let f = self.q4_0_matvec_slice_fn;
             let y_ptr = y.as_mut_ptr() as usize;
+            let qx_ref: &[i8] = qx_slice;
             pool.parallel(nt, |tid, n| {
                 let r0 = tid * rows / n;
                 let r1 = (tid + 1) * rows / n;
                 let y_slice = unsafe {
                     std::slice::from_raw_parts_mut((y_ptr as *mut f32).add(r0), r1 - r0)
                 };
-                f(y_slice, qx_slice, sx, &w[r0 * nb..r1 * nb], cols, r1 - r0);
+                f(y_slice, qx_ref, sx, &w[r0 * nb..r1 * nb], cols, r1 - r0);
             });
             return;
         }
@@ -691,25 +810,35 @@ impl KernelDispatch {
             return;
         }
         let b_dim = b_dim.min(64);
-        let mut qxt = vec![0i8; b_dim * cols];
-        let mut sx = [0.0f32; 64];
-        self.quantize_act_int8_cols(&mut qxt, &mut sx[..b_dim], x, cols, b_dim);
-        let nt = pool.n_threads();
-        if nt > 1 && rows >= 256 {
-            let f = self.q4_0_matmat_slice_fn;
-            let y_ptr = y.as_mut_ptr() as usize;
-            let y_len = rows * b_dim;
-            let sx_ref = &sx[..b_dim];
-            let qxt_ref = &qxt;
-            pool.parallel(nt, |tid, n| {
-                let r0 = tid * rows / n;
-                let r1 = (tid + 1) * rows / n;
-                let y_slice = unsafe { std::slice::from_raw_parts_mut(y_ptr as *mut f32, y_len) };
-                f(y_slice, w, qxt_ref, sx_ref, r0, r1, cols, b_dim);
-            });
-            return;
+        thread_local! {
+            static QXT_Q4: RefCell<Vec<i8>> = const { RefCell::new(Vec::new()) };
         }
-        (self.q4_0_matmat_slice_fn)(y, w, &qxt, &sx[..b_dim], 0, rows, cols, b_dim);
+        QXT_Q4.with(|cell| {
+            let mut qxt = cell.borrow_mut();
+            let need = b_dim * cols;
+            if qxt.len() < need {
+                qxt.resize(need, 0);
+            }
+            let mut sx = [0.0f32; 64];
+            self.quantize_act_int8_cols(&mut qxt[..need], &mut sx[..b_dim], x, cols, b_dim);
+            let nt = pool.n_threads();
+            if nt > 1 && rows >= 256 {
+                let f = self.q4_0_matmat_slice_fn;
+                let y_ptr = y.as_mut_ptr() as usize;
+                let y_len = rows * b_dim;
+                let sx_ref = &sx[..b_dim];
+                let qxt_ref = &qxt[..need];
+                pool.parallel(nt, |tid, n| {
+                    let r0 = tid * rows / n;
+                    let r1 = (tid + 1) * rows / n;
+                    let y_slice =
+                        unsafe { std::slice::from_raw_parts_mut(y_ptr as *mut f32, y_len) };
+                    f(y_slice, w, qxt_ref, sx_ref, r0, r1, cols, b_dim);
+                });
+                return;
+            }
+            (self.q4_0_matmat_slice_fn)(y, w, &qxt[..need], &sx[..b_dim], 0, rows, cols, b_dim);
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -727,9 +856,11 @@ impl KernelDispatch {
         q_dim: usize,
         kv_dim: usize,
     ) {
-        let mut qx_buf = [0i8; QWEN_QACT_MAX];
-        let sx = self.quantize_act_int8(&mut qx_buf[..in_dim], &x[..in_dim]);
-        let qx_slice = &qx_buf[..in_dim];
+        let mut qx_uninit = std::mem::MaybeUninit::<[i8; QWEN_QACT_MAX]>::uninit();
+        let qx_slice = unsafe {
+            std::slice::from_raw_parts_mut(qx_uninit.as_mut_ptr() as *mut i8, in_dim)
+        };
+        let sx = self.quantize_act_int8(qx_slice, &x[..in_dim]);
         let nb = in_dim / Q4_0_BLOCK_SIZE;
         let nt = pool.n_threads();
         let total = q_dim + 2 * kv_dim;
@@ -1021,6 +1152,101 @@ impl KernelDispatch {
     #[inline]
     pub fn bf16_to_f32_vec(&self, dst: &mut [f32], src_bf16: &[u16]) {
         (self.bf16_to_f32_vec_fn)(dst, src_bf16);
+    }
+
+    #[inline]
+    pub fn f32_to_bf16_vec(&self, dst: &mut [u16], src: &[f32]) {
+        (self.f32_to_bf16_vec_fn)(dst, src);
+    }
+
+    #[inline]
+    pub fn f32_matvec_accum(
+        &self,
+        y: &mut [f32],
+        w: &[f32],
+        x: &[f32],
+        rows: usize,
+        cols: usize,
+    ) {
+        (self.f32_matvec_accum_fn)(y, w, x, rows, cols);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn convert_talker_layer_bf16_to_f32(
+        &self,
+        pool: &ComputePool,
+        wq_dst: &mut [f32],
+        wq_src: &[u16],
+        wk_dst: &mut [f32],
+        wk_src: &[u16],
+        wv_dst: &mut [f32],
+        wv_src: &[u16],
+        wo_dst: &mut [f32],
+        wo_src: &[u16],
+        gate_up_dst: &mut [f32],
+        gate_src: &[u16],
+        up_src: &[u16],
+        down_dst: &mut [f32],
+        down_src: &[u16],
+        inter: usize,
+        hidden: usize,
+    ) {
+        let nt = pool.n_threads();
+        if nt <= 1 {
+            self.bf16_to_f32_vec(wq_dst, wq_src);
+            self.bf16_to_f32_vec(wk_dst, wk_src);
+            self.bf16_to_f32_vec(wv_dst, wv_src);
+            self.bf16_to_f32_vec(wo_dst, wo_src);
+            self.bf16_to_f32_vec(down_dst, down_src);
+            crate::quant::gate_up_to_f32(gate_up_dst, gate_src, up_src, inter, hidden);
+            return;
+        }
+        let nq = wq_dst.len().min(wq_src.len());
+        let nk = wk_dst.len().min(wk_src.len());
+        let nv = wv_dst.len().min(wv_src.len());
+        let no = wo_dst.len().min(wo_src.len());
+        let nd = down_dst.len().min(down_src.len());
+        let wq_p = wq_dst.as_mut_ptr() as usize;
+        let wk_p = wk_dst.as_mut_ptr() as usize;
+        let wv_p = wv_dst.as_mut_ptr() as usize;
+        let wo_p = wo_dst.as_mut_ptr() as usize;
+        let gu_p = gate_up_dst.as_mut_ptr() as usize;
+        let dn_p = down_dst.as_mut_ptr() as usize;
+        let conv_fn = self.bf16_to_f32_vec_fn;
+        pool.parallel(nt, |tid, n| {
+            let slice_conv = |dst_ptr: usize, src: &[u16], total: usize| {
+                let a = tid * total / n;
+                let b = (tid + 1) * total / n;
+                if b > a {
+                    let dst = unsafe {
+                        std::slice::from_raw_parts_mut((dst_ptr as *mut f32).add(a), b - a)
+                    };
+                    conv_fn(dst, &src[a..b]);
+                }
+            };
+            slice_conv(wq_p, wq_src, nq);
+            slice_conv(wk_p, wk_src, nk);
+            slice_conv(wv_p, wv_src, nv);
+            slice_conv(wo_p, wo_src, no);
+            slice_conv(dn_p, down_src, nd);
+            let r0 = tid * inter / n;
+            let r1 = (tid + 1) * inter / n;
+            if r1 > r0 {
+                let gu_slice = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        (gu_p as *mut f32).add(2 * r0 * hidden),
+                        2 * (r1 - r0) * hidden,
+                    )
+                };
+                crate::quant::gate_up_to_f32(
+                    gu_slice,
+                    &gate_src[r0 * hidden..r1 * hidden],
+                    &up_src[r0 * hidden..r1 * hidden],
+                    r1 - r0,
+                    hidden,
+                );
+            }
+        });
     }
 
     pub fn snake_activation(

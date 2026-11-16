@@ -69,6 +69,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "qwen-engine"
+version = "0.1.0"
+dependencies = [
+ "qwen-core",
+ "qwen-kernels",
+]
+
+[[package]]
 name = "qwen-kernels"
 version = "0.1.0"
 dependencies = [

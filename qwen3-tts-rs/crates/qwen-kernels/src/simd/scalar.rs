@@ -416,6 +416,24 @@ pub fn bf16_to_f32_vec(dst: &mut [f32], src_bf16: &[u16]) {
     }
 }
 
+pub fn f32_to_bf16_vec(dst: &mut [u16], src: &[f32]) {
+    let n = dst.len().min(src.len());
+    for i in 0..n {
+        dst[i] = crate::quant::f32_to_bf16_trunc(src[i]);
+    }
+}
+
+pub fn f32_matvec_accum(y: &mut [f32], w: &[f32], x: &[f32], rows: usize, cols: usize) {
+    for r in 0..rows {
+        let row = &w[r * cols..(r + 1) * cols];
+        let mut sum = 0.0f32;
+        for c in 0..cols {
+            sum += row[c] * x[c];
+        }
+        y[r] += sum;
+    }
+}
+
 pub fn snake_row(row: &mut [f32], log_alpha: f32, log_beta: f32) {
     let a = log_alpha.exp();
     let inv_b = (-log_beta).exp();

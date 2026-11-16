@@ -1,0 +1,8 @@
+[package]
+name = "qwen-engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+qwen-kernels = { path = "../qwen-kernels" }
+qwen-core = { path = "../qwen-core" }

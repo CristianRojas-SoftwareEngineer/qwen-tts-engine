@@ -40,7 +40,7 @@ pub fn f32_to_bf16_round(v: f32) -> u16 {
     ((bits.wrapping_add(0x8000u32)) >> 16) as u16
 }
 
-#[inline]
+#[inline(always)]
 pub fn f16_to_f32(h: u16) -> f32 {
     let sign = ((h & 0x8000) as u32) << 16;
     let em = (h & 0x7FFF) as u32;
@@ -158,7 +158,7 @@ pub fn quantize_bf16_to_int8_into(
         let dst_row = &mut dst_int8[r * cols..(r + 1) * cols];
         for (k, &b) in row.iter().enumerate() {
             let val = bf16_to_f32(b);
-            let v = (val * inv_s).round() as i32;
+            let v = (val * inv_s).round_ties_even() as i32;
             dst_row[k] = v.clamp(-128, 127) as i8;
         }
     }
@@ -313,6 +313,14 @@ pub fn quantize_gate_up_q4_0(
         );
     }
     dst
+}
+
+#[inline]
+pub fn erff(x: f32) -> f32 {
+    extern "C" {
+        fn erff(x: f32) -> f32;
+    }
+    unsafe { erff(x) }
 }
 
 pub fn gate_up_to_f32(dst: &mut [f32], gate: &[u16], up: &[u16], rows: usize, cols: usize) {

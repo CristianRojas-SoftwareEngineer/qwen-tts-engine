@@ -1,3 +1,4 @@
+use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -15,11 +16,16 @@ pub fn default_num_threads() -> usize {
 
 fn env_spin_budget() -> usize {
     match std::env::var("QWEN_POOL_SPIN") {
-        Ok(val) => val.trim().parse::<isize>().map(|v| v.max(0) as usize).unwrap_or(QWEN_POOL_SPIN_DEFAULT),
+        Ok(val) => val
+            .trim()
+            .parse::<isize>()
+            .map(|v| v.max(0) as usize)
+            .unwrap_or(QWEN_POOL_SPIN_DEFAULT),
         Err(_) => QWEN_POOL_SPIN_DEFAULT,
     }
 }
 
+#[derive(Default)]
 struct JobSlot {
     fn_ptr: usize,
     ctx_ptr: usize,
@@ -40,15 +46,17 @@ struct PoolInner {
     mtx: Mutex<SleepState>,
     wake: Condvar,
     complete: Condvar,
+    sleeping_atomic: AtomicUsize,
     generation: AtomicU64,
     completed: AtomicUsize,
     stop: AtomicBool,
-    // Raw pointer to active job slot for lock-free worker access during a synchronous parallel() call.
-    // Safety: `parallel()` holds `submit_mtx` for the entire lifetime of `job_ref`, and waits until
-    // all workers finish `run_chunks` (`completed == n_workers`) before returning.
-    active_job: AtomicUsize,
+    // Protected by `submit_mtx` during `parallel()`; workers only read between
+    // `generation` increment (Release/SeqCst) and `completed` increment (AcqRel).
+    job_slot: UnsafeCell<JobSlot>,
     workers: Mutex<Vec<JoinHandle<()>>>,
 }
+
+unsafe impl Sync for PoolInner {}
 
 /// Instanciable persistent thread pool (no global singleton state), matching C's
 /// spin-wait (`QWEN_POOL_SPIN=4096` + `spin_loop()`) + `Condvar` + per-worker `ftz_on()`.
@@ -78,10 +86,11 @@ impl ComputePool {
             }),
             wake: Condvar::new(),
             complete: Condvar::new(),
+            sleeping_atomic: AtomicUsize::new(0),
             generation: AtomicU64::new(0),
             completed: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
-            active_job: AtomicUsize::new(0),
+            job_slot: UnsafeCell::new(JobSlot::default()),
             workers: Mutex::new(Vec::with_capacity(n_workers)),
         });
 
@@ -136,25 +145,20 @@ impl ComputePool {
         }
 
         let _submit_guard = self.inner.submit_mtx.lock().unwrap();
-        let job_box = Box::new(JobSlot {
-            fn_ptr: trampoline::<F> as *const () as usize,
-            ctx_ptr: (&f as *const F) as usize,
-            nt,
-            next: AtomicUsize::new(0),
-        });
-        let job_raw = &*job_box as *const JobSlot as usize;
-        self.inner.active_job.store(job_raw, Ordering::Release);
+        let job = unsafe { &mut *self.inner.job_slot.get() };
+        job.fn_ptr = trampoline::<F> as *const () as usize;
+        job.ctx_ptr = (&f as *const F) as usize;
+        job.nt = nt;
+        job.next.store(0, Ordering::Relaxed);
         self.inner.completed.store(0, Ordering::Relaxed);
 
-        {
-            let guard = self.inner.mtx.lock().unwrap();
-            self.inner.generation.fetch_add(1, Ordering::Release);
-            if guard.sleeping > 0 {
-                self.inner.wake.notify_all();
-            }
+        self.inner.generation.fetch_add(1, Ordering::SeqCst);
+        if self.inner.sleeping_atomic.load(Ordering::SeqCst) > 0 {
+            let _guard = self.inner.mtx.lock().unwrap();
+            self.inner.wake.notify_all();
         }
 
-        run_chunks(&*job_box);
+        run_chunks(job);
 
         let mut budget = self.inner.spin_budget;
         while budget > 0
@@ -171,18 +175,15 @@ impl ComputePool {
             }
             guard.main_sleeping = false;
         }
-
-        self.inner.active_job.store(0, Ordering::Release);
-        drop(job_box);
     }
 }
 
 impl Drop for PoolInner {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.stop.store(true, Ordering::SeqCst);
         {
             let _guard = self.mtx.lock().unwrap();
-            self.generation.fetch_add(1, Ordering::Release);
+            self.generation.fetch_add(1, Ordering::SeqCst);
             self.wake.notify_all();
         }
         let mut handles = self.workers.lock().unwrap();
@@ -219,12 +220,14 @@ fn worker_main(inner: Arc<PoolInner>, mut seen: u64) {
         if inner.generation.load(Ordering::Acquire) == seen && !inner.stop.load(Ordering::Acquire) {
             let mut guard = inner.mtx.lock().unwrap();
             guard.sleeping += 1;
-            while !inner.stop.load(Ordering::Acquire)
-                && inner.generation.load(Ordering::Relaxed) == seen
+            inner.sleeping_atomic.store(guard.sleeping, Ordering::SeqCst);
+            while !inner.stop.load(Ordering::SeqCst)
+                && inner.generation.load(Ordering::SeqCst) == seen
             {
                 guard = inner.wake.wait(guard).unwrap();
             }
             guard.sleeping -= 1;
+            inner.sleeping_atomic.store(guard.sleeping, Ordering::Release);
         }
 
         if inner.stop.load(Ordering::Acquire) {
@@ -232,11 +235,8 @@ fn worker_main(inner: Arc<PoolInner>, mut seen: u64) {
         }
 
         seen = inner.generation.load(Ordering::Acquire);
-        let job_raw = inner.active_job.load(Ordering::Acquire);
-        if job_raw != 0 {
-            let job = unsafe { &*(job_raw as *const JobSlot) };
-            run_chunks(job);
-        }
+        let job = unsafe { &*inner.job_slot.get() };
+        run_chunks(job);
 
         if inner.completed.fetch_add(1, Ordering::AcqRel) + 1 == inner.n_workers {
             let guard = inner.mtx.lock().unwrap();

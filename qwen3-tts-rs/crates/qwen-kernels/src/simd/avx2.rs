@@ -1228,6 +1228,38 @@ unsafe fn vsin2_avx2(y: __m256) -> __m256 {
 }
 
 #[target_feature(enable = "avx2,fma")]
+pub unsafe fn f32_to_bf16_vec(dst: &mut [u16], src: &[f32]) {
+    let n = dst.len().min(src.len());
+    let dp = dst.as_mut_ptr();
+    let sp = src.as_ptr();
+    let mut i = 0usize;
+    while i + 8 <= n {
+        let u = _mm256_srli_epi32::<16>(_mm256_castps_si256(_mm256_loadu_ps(sp.add(i))));
+        let packed = _mm_packus_epi32(
+            _mm256_castsi256_si128(u),
+            _mm256_extracti128_si256::<1>(u),
+        );
+        _mm_storeu_si128(dp.add(i) as *mut __m128i, packed);
+        i += 8;
+    }
+    while i < n {
+        *dp.add(i) = (*sp.add(i).cast::<u32>() >> 16) as u16;
+        i += 1;
+    }
+}
+
+#[target_feature(enable = "avx2,fma")]
+pub unsafe fn f32_matvec_accum(y: &mut [f32], w: &[f32], x: &[f32], rows: usize, cols: usize) {
+    let wp = w.as_ptr();
+    let xp = x.as_ptr();
+    let yp = y.as_mut_ptr();
+    for r in 0..rows {
+        let row = wp.add(r * cols);
+        *yp.add(r) += dot_f32(row, xp, cols);
+    }
+}
+
+#[target_feature(enable = "avx2,fma")]
 pub unsafe fn snake_row(row: &mut [f32], log_alpha: f32, log_beta: f32) {
     const QWEN_SIN_POLY_MAX: f32 = 8192.0;
     let a = log_alpha.exp();
