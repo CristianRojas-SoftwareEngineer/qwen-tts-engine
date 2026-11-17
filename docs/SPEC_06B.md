@@ -6,7 +6,7 @@
 
 ## 1. Geometría fija del modelo `0.6B`
 
-Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en compilación (`qwen-core/src/config.rs`, sin `small_to_mtp_projection`):
+Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en compilación (`qwen-core/src/config.rs`):
 
 | Componente | Parámetro | Valor fijo `0.6B` |
 |---|---|---:|
@@ -19,7 +19,7 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 | | `rms_norm_eps` / `rope_theta` / estilo RoPE | `1e-6` / `1e6` / **NeoX split-half** |
 | **Code Predictor** | `cp_hidden_size` / `cp_num_layers` | **`1024`** / `5` |
 | | `cp_num_heads` / `cp_num_kv_heads` / `cp_head_dim` / `cp_intermediate` | `16` / `8` / `128` / `3072` |
-| | `small_to_mtp_projection` | **No existe en 0.6B** (`talker_h == cp_h`) |
+| | `Acoplamiento Talker ↔ CP` | **Proyección directa** (`talker_hidden_size == cp_hidden_size == 1024`) |
 | **Speech Decoder** | `dec_num_layers` / `dec_hidden_size` / `dec_latent_dim` | `8` / `512` / `1024` |
 | | `dec_codebook_dim` / `dec_decoder_dim` / `dec_intermediate_size` | `512` / `1536` / `1024` |
 | | `dec_num_heads` / `dec_head_dim` / `dec_sliding_window` | `16` / `64` / `72` |

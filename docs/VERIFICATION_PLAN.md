@@ -6,7 +6,23 @@
 
 ## 1. Suites automatizadas (`cargo test`)
 
-Ejecuta todas las pruebas unitarias y de integración del workspace con `cargo test --workspace --release` (en Windows GNU añade `--target x86_64-pc-windows-gnu`, `OMP_NUM_THREADS=4` y sin `OPENBLAS_NUM_THREADS`). Como higiene previa a cualquier PR, valida además `cargo clippy --workspace --all-targets -- -D warnings`.
+Ejecuta todas las pruebas unitarias y de integración del workspace con el perfil `release`:
+
+```bash
+# Linux / macOS
+cargo test --workspace --release
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+```powershell
+# Windows (x86_64-pc-windows-gnu)
+$env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+$env:OMP_NUM_THREADS = "4"
+Remove-Item Env:OPENBLAS_NUM_THREADS -ErrorAction SilentlyContinue
+
+cargo test --workspace --release --target x86_64-pc-windows-gnu
+cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+```
 
 | Suite | Qué valida |
 |---|---|

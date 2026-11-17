@@ -1,6 +1,6 @@
 # Qwen TTS Engine (`qwen-tts-engine`)
 
-Motor de inferencia TTS en CPU escrito en Rust estable para Qwen3-TTS 0.6B, sin Python, LibTorch ni Candle.
+Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 0.6B.
 
 [![CI](https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
@@ -33,7 +33,7 @@ Motor de inferencia TTS en CPU escrito en Rust estable para Qwen3-TTS 0.6B, sin 
   - **Servidor HTTP (`--serve`)**: rutas `/v1/audio/speech` (compatible con OpenAI), `/v1/tts` y `/v1/tts/stream`, con *continuous batching* (`--batch-size N`).
   - **Librería Rust (`qwen-engine`)**: API segura (`#![forbid(unsafe_code)]`) para incrustar el motor compartiendo `Arc<Model06B>` entre hilos.
 
-> **Alcance exclusivo (`0.6B` only)**: este motor soporta únicamente checkpoints **Qwen3-TTS `0.6B`** (`CustomVoice` y `Base`). Los modelos `1.7B` o `VoiceDesign` y sus flags (`--voice-design`, `--instruct`, `--expr`, `--expr-weight`, `--ml-steer`) son rechazados explícitamente al validar argumentos o `config.json`.
+> **Modelo soportado (`Qwen3-TTS 0.6B`)**: este motor ejecuta exclusivamente checkpoints **Qwen3-TTS `0.6B`** (`CustomVoice` para voces preset y `Base` para clonación de voz). Al cargar un modelo, `config.json` valida automáticamente esta geometría (`HIDDEN_SIZE=1024`, `28` capas Talker, `5` capas Code Predictor).
 
 ---
 
@@ -49,7 +49,7 @@ Motor de inferencia TTS en CPU escrito en Rust estable para Qwen3-TTS 0.6B, sin 
 
 ### Variante opcional 100 % Rust (`--features faer-blas`)
 
-Si prefieres compilar sin dependencia FFI de OpenBLAS/Accelerate, habilita `--features faer-blas` (backend `PureRustBlas` basado en `faer`) y actívalo en tiempo de ejecución con `QWEN_BLAS=faer`. Consulta los compromisos de rendimiento en [`docs/adr/002-blas-strategy.md`](docs/adr/002-blas-strategy.md).
+Para compilar una variante en Rust puro mediante el backend `PureRustBlas` (basado en `faer`), habilita `--features faer-blas` y selecciónalo en ejecución con `QWEN_BLAS=faer`. Consulta la comparativa técnica en [`docs/adr/002-blas-strategy.md`](docs/adr/002-blas-strategy.md).
 
 ---
 
@@ -134,7 +134,16 @@ curl -X POST http://127.0.0.1:8080/v1/tts/stream \
 
 ### 4. Librería embebida en Rust (`qwen-engine`)
 
-Agrega `qwen-engine`, `qwen-core` y `qwen-kernels` desde este workspace en tu `Cargo.toml` (vía `path`) y sintetiza directamente en memoria:
+Agrega las dependencias del workspace en tu `Cargo.toml`:
+
+```toml
+[dependencies]
+qwen-engine = { path = "crates/qwen-engine" }
+qwen-core = { path = "crates/qwen-core" }
+qwen-kernels = { path = "crates/qwen-kernels" }
+```
+
+Ejemplo mínimo de síntesis directa en memoria:
 
 ```rust
 use std::path::Path;
@@ -176,9 +185,13 @@ Comprueba los kernels numéricos del binario compilado y la batería de pruebas 
 cargo test --workspace --release
 ```
 
-En Windows (`x86_64-pc-windows-gnu`), con `C:\msys64\ucrt64\bin` en `PATH`, `OMP_NUM_THREADS=4` y sin `OPENBLAS_NUM_THREADS`:
+En Windows (`x86_64-pc-windows-gnu`):
 
 ```powershell
+$env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+$env:OMP_NUM_THREADS = "4"
+Remove-Item Env:OPENBLAS_NUM_THREADS -ErrorAction SilentlyContinue
+
 .\target\x86_64-pc-windows-gnu\release\qwen_tts.exe --self-test
 cargo test --workspace --release --target x86_64-pc-windows-gnu
 ```

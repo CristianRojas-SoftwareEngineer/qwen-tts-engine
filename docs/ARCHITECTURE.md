@@ -44,7 +44,7 @@ Arc<Model06B>  [Inmutable, Send + Sync — compartido por todo el proceso]
 Arc<VoiceBindings>  [Inmutable por voz — 0 B en preset, ~25 MB con WOVR]
  ├── identity: VoiceIdentity              // Preset(i32) | XVector(Vec<f32>) | IclGraft
  └── wovr / emo_ref_*                     // TextProjOverride y ancla prosódica opcionales
-     (Al cargar WDLT en QVoice, load_voice_from_file muta Model06B antes de envolver en Arc.)
+     (Al cargar deltas de pesos `WDLT` desde un `.qvoice`, `load_voice_from_file` muta `Model06B` antes de envolverlo en `Arc`.)
 
 SessionScratch  [Mutable, exclusivo por worker o sesión — cero locks internos]
  ├── talker_kv / cp_kv                    // KV caches BF16 (Talker inicia en 1024 posiciones)

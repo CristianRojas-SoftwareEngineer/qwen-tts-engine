@@ -27,7 +27,7 @@ Por cada fotograma de `80 ms`, el `Code Predictor` y el `Talker` ejecutan ciento
 ### Positivas
 
 - Baja latencia de despacho en bucles `matvec` cortos.
-- Portabilidad nativa en Windows, Linux y macOS sin bifurcaciones de plataforma (`GCD`/`Win32`/`pthread`).
+- Portabilidad nativa en Windows, Linux y macOS sobre `std::thread` y `std::sync` con una única implementación compartida.
 - Aislamiento completo entre instancias de `ComputeRuntime`.
 
 ### Riesgos y mitigación

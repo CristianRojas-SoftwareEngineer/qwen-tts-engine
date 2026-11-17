@@ -1,6 +1,6 @@
 # ADR-004: Despacho SIMD en runtime sobre Rust estable
 
-> Registro de decisión arquitectónica sobre la selección dinámica de kernels SIMD y la portabilidad multiplataforma sin `nightly` ni binarios separados.
+> Registro de decisión arquitectónica sobre la selección dinámica de kernels SIMD y la portabilidad multiplataforma mediante un único binario compilado en Rust estable.
 
 - **Estado**: Aceptado
 - **Fecha**: 2026-11-16

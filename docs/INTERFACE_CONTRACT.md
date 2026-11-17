@@ -28,7 +28,7 @@
 | | `-t, --text <string>` | `None` | Obligatorio salvo `--serve`, `--compose`, `--save-voice` sin texto (con `--ref-audio`), `--batch-test` o `--batch-bench`. |
 | | `-o, --output <path>` | `output.wav` | Ruta de salida WAV (24 kHz, PCM s16le mono). |
 | **Voz e idioma** | `-s, --speaker <name>` | `ryan` (`3061`) | Presets: `ryan`, `vivian`, `serena`, `aiden`, `eric`, `dylan`, `uncle_fu`, `ono_anna`, `sohee`. Nombre desconocido → `exit 1`. |
-| | `-l, --language <name>` | `English` (`2050`) *(o `META` en `--load-voice`)* | Acepta 12 idiomas *case-insensitive* (ver tabla en [`SPEC_06B.md`](SPEC_06B.md)). Si se omite con `--load-voice`, usa `META.lang_id` del `.qvoice` si es `> 0`. Desconocido → `exit 1`. |
+| | `-l, --language <name>` | `English` (`2050`) *(o `META` en `--load-voice`)* | Acepta 12 idiomas *case-insensitive*: `english`, `german`, `spanish`, `chinese`, `japanese`, `french`, `sichuan_dialect`, `korean`, `russian`, `italian`, `portuguese`, `beijing_dialect`. Con `--load-voice`, si se omite usa `META.lang_id` si es `> 0`. Desconocido → `exit 1`. |
 | **Muestreo** | `-T, --temperature <f>` | `0.9` *(CLI)* / `0.5` *(HTTP)* | `0.0` = greedy. Si hay sustitución paralingüística inline sin `-T`, usa la `T` de la etiqueta (`1.1`, o `1.0` en `[scoff]`). |
 | | `-k, --top-k <n>` | `50` | Límite de candidatos *top-k*. |
 | | `-p, --top-p <f>` | `1.0` | Umbral acumulado *nucleus sampling*. |
@@ -72,12 +72,12 @@
 | | `--target-cv <dir>` | `None` | Directorio `0.6B-CustomVoice` usado para calcular deltas `WDLT` al guardar `.qvoice`. |
 | | `--voice-strength <a>` | `1.0` | Factor de mezcla aplicado sobre proyecciones de `WDLT` en las capas `vs_layers`. |
 | | `--vs-layers <a-b>` | `14-27` | Rango de capas del Talker moduladas por `--voice-strength`. |
-| **Expresividad** | `--emotion <name>` | `None` | Busca `<key>_<tok>.{qvoice,bin}` junto a `--load-voice` o en `presets/emovoice/`, o `dir_<tok>.bin` sobre voz clonada (ignorado si se pasa `--compose`). |
+| **Expresividad** | `--emotion <name>` | `None` | Emociones válidas: `sad`/`sadness`, `joy`/`happy`/`joyful`, `anger`/`angry`/`rage`, `fear`/`afraid`, `disgust`/`disgusted`, `surprise`/`surprised`, `contempt`/`scorn`, `awe`/`wonder`, `nostalgia`/`wistful`, `disapproval`, `remorse`/`regret`, `outrage`, `despair`. Busca `<key>_<tok>.{qvoice,bin}` junto a `--load-voice` o en `presets/emovoice/`, o `dir_<tok>.bin` sobre voz clonada (ignorado si se pasa `--compose`). |
 | | `--emotion-strength <f>` | `0.25` | Dosis de desplazamiento `dir_<tok>.bin` preservando norma L2. |
 | | `--emo-ref <path>` | `None` | Audio WAV 24 kHz mono como ancla de prosodia ICL; exige `--emo-ref-text`. |
 | | `--emo-ref-text <str>` | `None` | Transcripción de `--emo-ref`. |
 | | `--roughness <0..1>` | `0.0` | Mezcla pesos `Q2_0` en `down_proj` del Code Predictor. |
-| | `--compose <spec>` | `None` | Síntesis multi-span no streaming con pausas `[pause:...]`, `[0.5]` o `\|`. |
+| | `--compose <spec>` | `None` | Síntesis multi-span no streaming con pausas `[pause:<s>]`, `[break:<s>]`, `[0.5]` o `\|`, y tags paralingüísticos inline (`[laugh]`, `[sigh]`, `[yawn]`, `[wow]`, `[giggle]`, `[scoff]`). |
 | | `--compose-pause <s>` | `0.12` | Pausa por defecto entre spans hablados en `--compose` / `--batch`. |
 | | `--no-compose` | off | Desactiva la sustitución de `[tags]` y el auto-compose en `--text`. |
 
