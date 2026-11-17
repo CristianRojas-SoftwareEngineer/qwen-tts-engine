@@ -80,7 +80,7 @@ Remove-Item Env:OPENBLAS_NUM_THREADS -ErrorAction SilentlyContinue
 
 cargo build -p qwen-app --release --target x86_64-pc-windows-gnu
 .\target\x86_64-pc-windows-gnu\release\qwen_tts.exe --caps
-.\target\x86_64-pc-windows-gnu\release\qwen_tts.exe -d models\qwen3-tts-0.6b -j 4 --seed 42 -s ryan -l English --quant-mixed --text "Hello, world!" -o output.wav
+.\target\x86_64-pc-windows-gnu\release\qwen_tts.exe -d models\qwen3-tts-0.6b -j 4 --seed 4 -s ryan -l English --quant-mixed --text "Hello, world!" -o output.wav
 ```
 
 #### Linux / macOS
@@ -88,10 +88,10 @@ cargo build -p qwen-app --release --target x86_64-pc-windows-gnu
 ```bash
 cargo build -p qwen-app --release
 ./target/release/qwen_tts --caps
-./target/release/qwen_tts -d models/qwen3-tts-0.6b -j 4 --seed 42 -s ryan -l English --quant-mixed --text "Hello, world!" -o output.wav
+./target/release/qwen_tts -d models/qwen3-tts-0.6b -j 4 --seed 4 -s ryan -l English --quant-mixed --text "Hello, world!" -o output.wav
 ```
 
-> **Nota**: `--quant-mixed` es el perfil recomendado para producción en `0.6B`; añade `--stream` si necesitas escribir audio progresivamente conforme se decodifica. En Windows GNU, mantén `OPENBLAS_NUM_THREADS` sin definir para que el motor ajuste los hilos entre *prefill* y generación.
+> **Nota**: `--quant-mixed` es el perfil recomendado para producción en `0.6B` (los valores por defecto de muestreo son `temperature = 0.325` y `seed = 4`); añade `--stream` si necesitas escribir audio progresivamente conforme se decodifica. En Windows GNU, mantén `OPENBLAS_NUM_THREADS` sin definir para que el motor ajuste los hilos entre *prefill* y generación.
 
 ### 2. Clonación de voz (`0.6B-Base`)
 

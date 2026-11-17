@@ -54,7 +54,7 @@ SessionScratch  [Mutable, exclusivo por worker o sesión — cero locks internos
  └── emb_lru + sampler + rng: LcgRng      // caché texto local + muestreador + RNG propio
 
 RequestExecution  [Efímero por petición — se destruye al finalizar]
- ├── config: RequestConfig                // speaker_id, temperature, top_k, top_p, rep_penalty, ...
+ ├── config: RequestConfig                // speaker_id, temperature (0.325), seed (4), top_k, top_p, rep_penalty, ...
  └── abort: AbortHandle                   // Arc<AtomicBool> + poll opcional acoplado por RAII (Drop)
 ```
 

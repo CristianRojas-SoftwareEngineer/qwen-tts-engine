@@ -35,7 +35,7 @@
 | | `-r, --rep-penalty <f>` | `1.05` | Penalización de repetición sobre tokens previos en `[0.5, 2.0]`. |
 | | `-m, --max-tokens <n>` | `8192` | Tope de fotogramas generados (`>= 1`). |
 | | `--max-duration <secs>` | `None` | Si es `> 0`, sobrescribe `--max-tokens` con `max(1, floor(secs * 12.5))`. |
-| | `--seed <n>` | tiempo (`< 0`) | Entero `0..=u32::MAX` fija semilla; negativo usa reloj del sistema; `> u32::MAX` → `exit 1`. |
+| | `--seed <n>` | `4` (`< 0` reloj) | Entero `0..=u32::MAX` fija semilla; omitido usa `DEFAULT_SEED = 4` (salvo sustitución paralingüística inline); negativo usa reloj del sistema; `> u32::MAX` → `exit 1`. |
 | | `--greedy-warmup <n>` | `0` | Primeros `n` fotogramas con `T=0.0, top_k=1`. |
 | **Cuantización** | `--int8` | off | Talker + Code Predictor en `INT8`. |
 | | `--int4` | off | Talker + Code Predictor en `Q4_0`. |
@@ -131,7 +131,7 @@
 | `top_k` | `integer` | `50` | Rango válido `[0, 3072]`. |
 | `top_p` | `number` | `1.0` | Rango válido `[0.0, 1.0]`. |
 | `rep_penalty` | `number` | `1.05` | Rango válido `[0.5, 2.0]`. |
-| `seed` | `integer` | reloj (`< 0`) | Entero `0..=u32::MAX` fija semilla; negativo usa reloj; `> u32::MAX` devuelve `400`. |
+| `seed` | `integer` | `4` (`< 0` reloj) | Entero `0..=u32::MAX` fija semilla; omitido usa `DEFAULT_SEED = 4` (salvo sustitución paralingüística inline); negativo usa reloj; `> u32::MAX` devuelve `400`. |
 | `emotion` | `string` | `None` | Se valida el tipo `string` si se envía; no aplica steering en `0.6B` HTTP. |
 | `volume` | `number` | `1.0` | Ganancia PCM lineal; rango válido `[0.0, 10.0]`. |
 | `rate` | `number` | `1.0` | WSOLA pitch-preserving en `/v1/tts` (`[0.25, 4.0]`); prohibido `!= 1.0` en `/v1/tts/stream`. |
@@ -215,7 +215,7 @@ let exec = RequestExecution::new(RequestConfig {
     speaker_id: 3061,
     language_id: Some(2050), // English
     temperature: 0.325,
-    seed: 42,
+    seed: 4,
     ..Default::default()
 });
 let (samples, timing) = synthesize_to_samples(
