@@ -29,13 +29,13 @@
 | | `-o, --output <path>` | `output.wav` | Ruta de salida WAV (24 kHz, PCM s16le mono). |
 | **Voz e idioma** | `-s, --speaker <name>` | `ryan` (`3061`) | Presets: `ryan`, `vivian`, `serena`, `aiden`, `eric`, `dylan`, `uncle_fu`, `ono_anna`, `sohee`. Nombre desconocido → `exit 1`. |
 | | `-l, --language <name>` | `English` (`2050`) *(o `META` en `--load-voice`)* | Acepta 12 idiomas *case-insensitive*: `english`, `german`, `spanish`, `chinese`, `japanese`, `french`, `sichuan_dialect`, `korean`, `russian`, `italian`, `portuguese`, `beijing_dialect`. Con `--load-voice`, si se omite usa `META.lang_id` si es `> 0`. Desconocido → `exit 1`. |
-| **Muestreo** | `-T, --temperature <f>` | `0.9` *(CLI)* / `0.5` *(HTTP)* | `0.0` = greedy. Si hay sustitución paralingüística inline sin `-T`, usa la `T` de la etiqueta (`1.1`, o `1.0` en `[scoff]`). |
-| | `-k, --top-k <n>` | `50` | Límite de candidatos *top-k*. |
-| | `-p, --top-p <f>` | `1.0` | Umbral acumulado *nucleus sampling*. |
-| | `-r, --rep-penalty <f>` | `1.05` | Penalización de repetición sobre tokens previos. |
-| | `-m, --max-tokens <n>` | `8192` | Tope de fotogramas generados. |
+| **Muestreo** | `-T, --temperature <f>` | `0.9` *(CLI)* / `0.5` *(HTTP)* | Rango `[0.0, 2.0]`; `0.0` = greedy. Si hay sustitución paralingüística inline sin `-T`, usa la `T` de la etiqueta (`1.1`, o `1.0` en `[scoff]`). |
+| | `-k, --top-k <n>` | `50` | Límite de candidatos *top-k* en `[0, 3072]`. |
+| | `-p, --top-p <f>` | `1.0` | Umbral acumulado *nucleus sampling* en `[0.0, 1.0]`. |
+| | `-r, --rep-penalty <f>` | `1.05` | Penalización de repetición sobre tokens previos en `[0.5, 2.0]`. |
+| | `-m, --max-tokens <n>` | `8192` | Tope de fotogramas generados (`>= 1`). |
 | | `--max-duration <secs>` | `None` | Si es `> 0`, sobrescribe `--max-tokens` con `max(1, floor(secs * 12.5))`. |
-| | `--seed <n>` | tiempo (`< 0`) | Entero `>= 0` fija semilla `u32`; negativo usa reloj del sistema. |
+| | `--seed <n>` | tiempo (`< 0`) | Entero `0..=u32::MAX` fija semilla; negativo usa reloj del sistema; `> u32::MAX` → `exit 1`. |
 | | `--greedy-warmup <n>` | `0` | Primeros `n` fotogramas con `T=0.0, top_k=1`. |
 | **Cuantización** | `--int8` | off | Talker + Code Predictor en `INT8`. |
 | | `--int4` | off | Talker + Code Predictor en `Q4_0`. |
@@ -48,8 +48,8 @@
 | `--stream` | off | Escribe el WAV progresivamente conforme se decodifican chunks. Incompatible con `--rate != 1.0` (`exit 1`). |
 | `--stdout` | off | Implica `--stream` y `--silent`; emite PCM crudo s16le 24 kHz mono a `stdout`. |
 | `--stream-chunk <n>` | `10` | Fotogramas máximos por chunk (`clamp(2, 250)`). Rampa: `2` en el primer fragmento y `min(n, 4 + 2 * (k / 8))` para `k = 0, 1, 2, ...` en los siguientes. |
-| `--volume <f>` | `1.0` | Ganancia lineal aplicada sobre las muestras PCM con *clamp* a `[-1.0, 1.0]`. |
-| `--rate <f>` | `1.0` | Cambio de velocidad WSOLA preservando pitch (incompatible con `--stream`). |
+| `--volume <f>` | `1.0` | Ganancia lineal en `[0.0, 10.0]` aplicada sobre las muestras PCM con *clamp* a `[-1.0, 1.0]`. |
+| `--rate <f>` | `1.0` | Cambio de velocidad WSOLA en `[0.25, 4.0]` preservando pitch (incompatible con `--stream`). |
 | `--onset-fade <ms>` | `0` | Rampa de entrada sobre el ataque real detectado (solo modo buffer no-batch / `--compose`). |
 | `--tail-trim` | off | Recorta cola metálica degenerada detectada al final (solo modo buffer no-batch / `--compose`). |
 | `--seed-audition <N>` | `0` | Evalúa hasta `N` (`1..64`) semillas consecutivas y elige la mejor (solo modo no-streaming). |
@@ -71,12 +71,12 @@
 | | `--max-ref-duration <s>` | `30.0` | Duración máxima en segundos leída de `--ref-audio` (`0` = audio completo). |
 | | `--target-cv <dir>` | `None` | Directorio `0.6B-CustomVoice` usado para calcular deltas `WDLT` al guardar `.qvoice`. |
 | | `--voice-strength <a>` | `1.0` | Factor de mezcla aplicado sobre proyecciones de `WDLT` en las capas `vs_layers`. |
-| | `--vs-layers <a-b>` | `14-27` | Rango de capas del Talker moduladas por `--voice-strength`. |
+| | `--vs-layers <a-b>` | `14-27` | Rango de capas del Talker moduladas por `--voice-strength` (`0 <= a <= b`). |
 | **Expresividad** | `--emotion <name>` | `None` | Emociones válidas: `sad`/`sadness`, `joy`/`happy`/`joyful`, `anger`/`angry`/`rage`, `fear`/`afraid`, `disgust`/`disgusted`, `surprise`/`surprised`, `contempt`/`scorn`, `awe`/`wonder`, `nostalgia`/`wistful`, `disapproval`, `remorse`/`regret`, `outrage`, `despair`. Busca `<key>_<tok>.{qvoice,bin}` junto a `--load-voice` o en `presets/emovoice/`, o `dir_<tok>.bin` sobre voz clonada (ignorado si se pasa `--compose`). |
 | | `--emotion-strength <f>` | `0.25` | Dosis de desplazamiento `dir_<tok>.bin` preservando norma L2. |
 | | `--emo-ref <path>` | `None` | Audio WAV 24 kHz mono como ancla de prosodia ICL; exige `--emo-ref-text`. |
 | | `--emo-ref-text <str>` | `None` | Transcripción de `--emo-ref`. |
-| | `--roughness <0..1>` | `0.0` | Mezcla pesos `Q2_0` en `down_proj` del Code Predictor. |
+| | `--roughness <0..1>` | `0.0` | Mezcla pesos `Q2_0` en `down_proj` del Code Predictor (`[0.0, 1.0]`). |
 | | `--compose <spec>` | `None` | Síntesis multi-span no streaming con pausas `[pause:<s>]`, `[break:<s>]`, `[0.5]` o `\|`, y tags paralingüísticos inline (`[laugh]`, `[sigh]`, `[yawn]`, `[wow]`, `[giggle]`, `[scoff]`). |
 | | `--compose-pause <s>` | `0.12` | Pausa por defecto entre spans hablados en `--compose` / `--batch`. |
 | | `--no-compose` | off | Desactiva la sustitución de `[tags]` y el auto-compose en `--text`. |
@@ -88,7 +88,7 @@
 | `--serve <port>` | `None` | Inicia el servidor HTTP en `<port>` (`> 0`). |
 | `--host <ipv4>` | `127.0.0.1` | Dirección `Ipv4Addr` validada antes de cargar el modelo. Inválida → `exit 1`. |
 | `--workers <n>` | `1` | Número de *workers* concurrentes (`WorkerPoolScheduler`) cuando `--batch-size < 2`. |
-| `--batch-size <n>` | `1` | Con `n >= 2` activa `ContinuousBatchScheduler` en servidor HTTP. |
+| `--batch-size <n>` | `1` | Con `n >= 2` activa `ContinuousBatchScheduler` en servidor HTTP (acotado a `64` ranuras). |
 | `--watch-stdin` | off | Vigila `stdin` en un hilo dedicado; al recibir EOF termina el proceso (`exit 0`). |
 | `-j, --threads <n>` | `0` *(auto)* | Hilos de cómputo (`0` = `min(ncpus, 4)`). |
 | `-S, --silent` | off | Suprime logs en `stderr`; no afecta el audio en `--stdout`. |
@@ -116,9 +116,9 @@
 |---|---|---|---|
 | `GET /v1/health` | — | `200` `{"status":"ok"}` | Comprobación de disponibilidad. |
 | `GET /v1/speakers` | — | `200` `{"speakers":[...]}` | Lista los 9 presets `{name, language, gender}`. |
-| `POST /v1/tts` | JSON TTS | `200` `audio/wav` (24 kHz s16le mono) | Usa `DEFAULT_CHUNK_FRAMES = 10` y `max_tokens = 8192`. |
+| `POST /v1/tts` | JSON TTS | `200` `audio/wav` (24 kHz s16le mono) | Usa `DEFAULT_CHUNK_FRAMES = 10`; `max_tokens = 8192` en `WorkerPoolScheduler`/fallback, o `600` (y prompt `<= 512`) en `ContinuousBatchScheduler`. |
 | `POST /v1/audio/speech` | JSON OpenAI (`input`, `voice`, ...) | `200` `audio/wav` | Alias completo de `POST /v1/tts` (`input` → `text`, `voice` → `speaker`). |
-| `POST /v1/tts/stream` | JSON TTS | `200` `audio/pcm` (`Transfer-Encoding: chunked`) | Cabeceras: `X-Sample-Rate: 24000`, `X-Sample-Format: s16le`, `X-Channels: 1`. Rechaza `rate != 1.0` (`400`). |
+| `POST /v1/tts/stream` | JSON TTS | `200` `audio/pcm` (`Transfer-Encoding: chunked`) | Cabeceras: `X-Sample-Rate: 24000`, `X-Sample-Format: s16le`, `X-Channels: 1`. Rechaza `rate != 1.0` (`400`); `max_tokens = 8192` / `600` en *continuous batching*. |
 
 **Campos JSON aceptados en `POST`**:
 
@@ -131,10 +131,10 @@
 | `top_k` | `integer` | `50` | Rango válido `[0, 3072]`. |
 | `top_p` | `number` | `1.0` | Rango válido `[0.0, 1.0]`. |
 | `rep_penalty` | `number` | `1.05` | Rango válido `[0.5, 2.0]`. |
-| `seed` | `integer` | reloj (`< 0`) | Entero `>= 0` fija semilla `u32`. |
+| `seed` | `integer` | reloj (`< 0`) | Entero `0..=u32::MAX` fija semilla; negativo usa reloj; `> u32::MAX` devuelve `400`. |
 | `emotion` | `string` | `None` | Se valida el tipo `string` si se envía; no aplica steering en `0.6B` HTTP. |
-| `volume` | `number` | `1.0` | Ganancia PCM lineal. |
-| `rate` | `number` | `1.0` | WSOLA pitch-preserving en `/v1/tts`; prohibido `!= 1.0` en `/v1/tts/stream`. |
+| `volume` | `number` | `1.0` | Ganancia PCM lineal; rango válido `[0.0, 10.0]`. |
+| `rate` | `number` | `1.0` | WSOLA pitch-preserving en `/v1/tts` (`[0.25, 4.0]`); prohibido `!= 1.0` en `/v1/tts/stream`. |
 | `chunk_frames` | `integer` | `10` | Solo en `/v1/tts/stream`; se acota con `clamp(2, 250)`. |
 | `voice_design` | `bool \| string \| number` | `false` | `true`, `"true"`, `"1"` o `1` devuelven `400` (`0.6B` no soporta `VoiceDesign`). |
 
@@ -142,10 +142,10 @@
 
 Toda petición se valida en `ValidatedTtsRequest::parse` antes de planificar o encolar síntesis:
 
-- Cuerpo JSON inválido o no objeto → `400`.
+- Cuerpo JSON inválido, no objeto, `Content-Length` inválido o tamaño mayor que `1 MiB` → `400`.
 - `text`/`input` ausente, vacío, solo whitespace (o `\n`/`\t`/`\r` escapados) o `> 8192` bytes → `400`.
 - `language` o `speaker`/`voice` desconocidos → `400`.
-- `temperature` fuera de `[0.0, 2.0]`, `top_k` fuera de `[0, 3072]`, `top_p` fuera de `[0.0, 1.0]` o `rep_penalty` fuera de `[0.5, 2.0]` → `400`.
+- `temperature` fuera de `[0.0, 2.0]`, `top_k` fuera de `[0, 3072]`, `top_p` fuera de `[0.0, 1.0]`, `rep_penalty` fuera de `[0.5, 2.0]`, `volume` fuera de `[0.0, 10.0]`, `rate` fuera de `[0.25, 4.0]` o `seed > u32::MAX` → `400`.
 - `rate != 1.0` en `/v1/tts/stream` → `400`.
 - `voice_design` activo → `400`.
 - `chunk_frames` en `/v1/tts/stream` se acota silenciosamente a `[2, 250]`.
@@ -250,7 +250,7 @@ Sinks incluidos en `qwen_engine`: `MemorySink`, `WavStreamSink`, `StdoutRawSink`
   abort.cancel();
   // `synthesize_to_samples` / `synthesize_to_sink` retornan `Err(EngineError::Aborted)`.
   ```
-- **Marcado y multi-span (`qwen_core::MarkupPlanner` + `qwen_engine::compose`)**: usa `prepare_markup_06b(...)` para detectar `[tags]`, seguido de `MarkupPlanner::parse_spans(&prep.text)` y `render_spans_buffer(...)` o `render_spans_stream(...)`.
+- **Marcado y multi-span (`qwen_core::MarkupPlanner` + `qwen_engine::compose`)**: usa `prepare_markup_06b(...)` para detectar `[tags]`, seguido de `MarkupPlanner::parse_spans(&prep.text)` y `render_spans_buffer(...)` o `render_spans_stream(...)` (que delega la ganancia base `exec.config.volume` al `AudioSink` del llamador, igual que `synthesize_to_sink`).
 
 ---
 

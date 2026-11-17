@@ -13,7 +13,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 1. `amax = max(|x_i|)`. Si `amax == 0.0`, `qx = [0; n]` y `scale = 0.0`.
 2. `inv = 127.0 / amax`, `scale = amax / 127.0`.
 3. `qx[i] = clamp(round_half_even(x[i] * inv), -128, 127)` (`round_ties_even` / `_mm256_cvtps_epi32`).
-4. Límite de pila: `QWEN_QACT_MAX = 8192`. Toda matriz cuantizada debe cumplir `cols > 0 && cols <= 8192 && cols % 32 == 0`.
+4. Límite de pila y lote: `QWEN_QACT_MAX = 8192`. Toda matriz cuantizada debe cumplir `cols > 0 && cols <= 8192 && cols % 32 == 0`, y toda llamada `matmat_*` exige explícitamente `b_dim <= 64`.
 
 ### 1.2 Formatos `INT8`, `Q4_0` y `Q2_0`
 
@@ -35,7 +35,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 
 ## 2. Hardware, alineación y kernels `AVX2`
 
-1. **FTZ / DAZ por hilo (`ftz_on`)**: las activaciones cuantizadas entran con frecuencia en rango subnormal (penalización ~100×). El hilo principal y cada hilo de `ComputePool` activan al arrancar:
+1. **FTZ / DAZ por hilo (`ftz_on`)**: las activaciones cuantizadas entran con frecuencia en rango subnormal (penalización ~100×). El hilo principal (`ComputeRuntime`), cada hilo trabajador de `ComputePool` y los puntos de entrada cuantizados de `KernelDispatch` activan:
    - **x86-64**: `MXCSR |= 0x8040` (`FTZ` + `DAZ`).
    - **ARM64**: `FPCR |= (1 << 24)` (`FZ`).
 2. **Alineación a línea de caché**: activaciones, KV cache, pesos cuantizados, `W_k` y workspaces del decodificador usan `AlignedBuf<64>`.

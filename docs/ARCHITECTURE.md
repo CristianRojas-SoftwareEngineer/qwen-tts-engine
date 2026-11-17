@@ -21,7 +21,7 @@
 
 | Crate | Módulos principales | Política `unsafe` |
 |---|---|---|
-| **`qwen-kernels`** | `aligned`, `caps`, `pool`, `ftz`, `blas`, `quant`, `simd/{scalar,avx2}`, `dispatch`, `selftest`, `bench`. | **Permitido y aislado** (intrínsecos `AVX2+FMA`, `std::alloc`, `MXCSR`/`FPCR`, FFI BLAS / `faer`). |
+| **`qwen-kernels`** | `aligned`, `caps`, `pool`, `ftz`, `blas`, `quant`, `simd/{scalar,avx2}` *(internos del crate)*, `dispatch`, `selftest`, `bench`. | **Permitido y aislado** (intrínsecos `AVX2+FMA`, `std::alloc`, `MXCSR`/`FPCR`, FFI BLAS / `faer`); la API segura `KernelDispatch` valida límites antes de despachar. |
 | **`qwen-core`** | `config`, `error`, `mmap_store`, `tokenizer`, `sampling`, `qvoice`, `markup`. | **Solo `Mmap::map` y cast de slices alineadas** en `mmap_store.rs`; resto 100 % seguro. |
 | **`qwen-engine`** | `model`, `talker`, `code_predictor`, `speech_decoder`, `speech_encoder`, `voice_clone`, `emotion`, `compose`, `batch`, `audio`, `pipeline`, `error`. | **`#![forbid(unsafe_code)]`** |
 | **`qwen-app`** | `main`, `cli`, `affinity`, `build.rs` + manifiesto UTF-8, `server/{mod,http,validation,scheduler}`. | **Solo llamada puntual** a Win32 (`SetProcessAffinityMask` / `GetLogicalProcessorInformationEx`). |
@@ -34,12 +34,13 @@ El diseño separa los datos en cuatro niveles de vida para compartir pesos inmut
 
 ```text
 Arc<Model06B>  [Inmutable, Send + Sync — compartido por todo el proceso]
- ├── _mmaps (en Bf16Weight/F32Ref)        // mantiene vivos los safetensors BF16/F32
+ ├── Bf16Weight::Mmap / F32Ref::Mmap      // Arc<Mmap> manteniendo vivos los safetensors
  ├── tokenizer: BpeTokenizer
  ├── talker: TalkerWeights                // 28 capas (BF16 mmap o INT8/Q4_0) + embeddings
  ├── cp: CodePredictorWeights             // 5 capas + 15 lm_head + 15 codec_emb
  ├── decoder: SpeechDecoderWeights        // F32 + Arc<Codebooks> + W_k pre-reordenado
- └── encoder: Option<SpeechEncoderWeights>// ECAPA-TDNN + RVQ encoder (comparte Arc<Codebooks>)
+ ├── speaker_encoder: Option<Arc<SpeakerEncoderWeights>> // ECAPA-TDNN (0.6B-Base)
+ └── speech_encoder: Option<Arc<SpeechEncoderWeights>>   // RVQ encoder (comparte Arc<Codebooks>)
 
 Arc<VoiceBindings>  [Inmutable por voz — 0 B en preset, ~25 MB con WOVR]
  ├── identity: VoiceIdentity              // Preset(i32) | XVector(Vec<f32>) | IclGraft
