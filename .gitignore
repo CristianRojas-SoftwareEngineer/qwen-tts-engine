@@ -18,3 +18,6 @@
 .DS_Store
 Thumbs.db
 server_stderr.log
+
+# Local operational workbooks & baseline artifacts
+/.work/
