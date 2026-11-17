@@ -947,7 +947,7 @@ pub fn batch_bench(runtime: &ComputeRuntime, model: &Model06B) -> Result<(), Eng
     Ok(())
 }
 
-// ── Sentence-aware text splitter (--batch) matching main.c ─────────────────
+// ── Sentence-aware text splitter (--batch) ─────────────────────────────────
 
 fn word_count(s: &str) -> usize {
     s.split_whitespace().count()
@@ -1103,21 +1103,16 @@ pub fn generate_batch_multi(
         for b in 0..b_dim {
             let r = &reqs[g0 + b];
             let preset_override;
-            let voice_ref: &VoiceBindings = if base_voice.wovr.is_none()
-                && matches!(base_voice.identity, crate::model::VoiceIdentity::Preset(_))
-            {
-                preset_override = VoiceBindings {
-                    identity: crate::model::VoiceIdentity::Preset(r.speaker_id),
-                    wovr: None,
-                    icl_frames_cap: base_voice.icl_frames_cap,
-                    graft_mode: base_voice.graft_mode,
-                    emo_ref_codes: base_voice.emo_ref_codes.clone(),
-                    emo_ref_text: base_voice.emo_ref_text.clone(),
+            let voice_ref: &VoiceBindings =
+                if matches!(base_voice.identity, crate::model::VoiceIdentity::Preset(_)) {
+                    preset_override = VoiceBindings {
+                        identity: crate::model::VoiceIdentity::Preset(r.speaker_id),
+                        ..base_voice.clone()
+                    };
+                    &preset_override
+                } else {
+                    base_voice
                 };
-                &preset_override
-            } else {
-                base_voice
-            };
             let rc = RequestConfig {
                 language_id: r.language_id,
                 temperature: r.temperature,
@@ -1480,21 +1475,16 @@ pub fn run_continuous_batch<T>(
 
             runtime.blas.set_threads(nt);
             let preset_override;
-            let voice_ref: &VoiceBindings = if base_voice.wovr.is_none()
-                && matches!(base_voice.identity, crate::model::VoiceIdentity::Preset(_))
-            {
-                preset_override = VoiceBindings {
-                    identity: crate::model::VoiceIdentity::Preset(job.req.speaker_id),
-                    wovr: None,
-                    icl_frames_cap: base_voice.icl_frames_cap,
-                    graft_mode: base_voice.graft_mode,
-                    emo_ref_codes: base_voice.emo_ref_codes.clone(),
-                    emo_ref_text: base_voice.emo_ref_text.clone(),
+            let voice_ref: &VoiceBindings =
+                if matches!(base_voice.identity, crate::model::VoiceIdentity::Preset(_)) {
+                    preset_override = VoiceBindings {
+                        identity: crate::model::VoiceIdentity::Preset(job.req.speaker_id),
+                        ..base_voice.clone()
+                    };
+                    &preset_override
+                } else {
+                    base_voice
                 };
-                &preset_override
-            } else {
-                base_voice
-            };
             let rc = RequestConfig {
                 language_id: job.req.language_id,
                 temperature: job.req.temperature,
@@ -1789,7 +1779,7 @@ pub fn run_continuous_batch<T>(
                     ramp.min(chunk_frames)
                 };
                 if avail >= target {
-                    let ramped = !(!slots[b].first_chunk_emitted && chunk_frames > 2);
+                    let ramped = slots[b].first_chunk_emitted || chunk_frames <= 2;
                     let start = slots[b].decoded_frames * NUM_CODEBOOKS;
                     let end = (slots[b].decoded_frames + target) * NUM_CODEBOOKS;
                     let chunk_codes = slots[b].codes[start..end].to_vec();

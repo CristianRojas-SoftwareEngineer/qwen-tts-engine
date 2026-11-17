@@ -2,7 +2,7 @@ use qwen_core::config::SAMPLE_RATE;
 use qwen_core::{MarkupPlanner, SpanSpec, VoiceClass};
 use qwen_kernels::ComputeRuntime;
 
-use crate::audio::{apply_gain, time_stretch, AudioSink};
+use crate::audio::AudioSink;
 use crate::error::EngineError;
 use crate::model::{
     Model06B, RequestExecution, SessionScratch, VoiceBindings, VoiceIdentity,
@@ -106,7 +106,7 @@ fn synth_one_span_06b(
     Ok(samples)
 }
 
-/// Multi-span synthesis into a single mono 24 kHz `f32` buffer (matching `qwen_compose_render_buffer`).
+/// Multi-span synthesis into a single mono 24 kHz `f32` buffer.
 /// Applies inter-span pauses, WSOLA rate/volume DSP, and 45 ms filler overlap-add crossfade.
 pub fn render_spans_buffer(
     runtime: &ComputeRuntime,
@@ -196,11 +196,10 @@ pub fn render_spans_buffer(
             out.len() as f64 / SAMPLE_RATE as f64
         );
     }
-    let _ = (apply_gain, time_stretch);
     Ok((out, spoken))
 }
 
-/// Streaming multi-span synthesis (`qwen_compose_render_stream` equivalent).
+/// Streaming multi-span synthesis.
 pub fn render_spans_stream(
     runtime: &ComputeRuntime,
     model: &Model06B,

@@ -134,9 +134,9 @@ pub fn run_kernel_selftest(rt: &ComputeRuntime) -> (usize, String) {
 
         let mut amax_ref = 0usize;
         let mut amax_val = ref_y[0];
-        for r in 1..rows {
-            if ref_y[r] > amax_val {
-                amax_val = ref_y[r];
+        for (r, &v) in ref_y.iter().enumerate().take(rows).skip(1) {
+            if v > amax_val {
+                amax_val = v;
                 amax_ref = r;
             }
         }

@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+
 use crate::quant::{
     bf16_to_f32, f16_to_f32, quantize_act_int8_scalar, Q2_0Block, Q4_0Block, Q2_0_BLOCK_SIZE,
     Q4_0_BLOCK_SIZE,

@@ -50,7 +50,6 @@ pub struct QVoiceWeightTensor {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QVoiceWeightsOverride {
-    pub is_wdelta: bool,
     pub target_hidden: u32,
     pub tensors: Vec<QVoiceWeightTensor>,
 }
@@ -146,31 +145,6 @@ fn write_fixed_cstr<W: Write>(w: &mut W, s: &str, len: usize) -> Result<(), Core
 }
 
 impl QVoiceFile {
-    pub fn validate_header(path: &Path) -> Result<(u32, u32), CoreError> {
-        let mut f = File::open(path)?;
-        let mut magic = [0u8; 4];
-        f.read_exact(&mut magic)?;
-        if &magic != QVCE_MAGIC {
-            return Err(CoreError::QVoice(format!(
-                "{} is not a valid .qvoice file (missing QVCE header)",
-                path.display()
-            )));
-        }
-        let version = read_u32(&mut f)?;
-        if !(1..=3).contains(&version) {
-            return Err(CoreError::QVoice(format!(
-                "Unsupported .qvoice version {version} in {}",
-                path.display()
-            )));
-        }
-        let enc_dim = if version >= 2 {
-            read_u32(&mut f)?
-        } else {
-            ENC_DIM as u32
-        };
-        Ok((version, enc_dim))
-    }
-
     pub fn read_from_file(path: &Path, icl_only: bool) -> Result<Self, CoreError> {
         let f = File::open(path)?;
         let mut r = BufReader::new(f);
@@ -184,16 +158,12 @@ impl QVoiceFile {
             )));
         }
         let version = read_u32(&mut r)?;
-        if !(1..=3).contains(&version) {
+        if version != 3 {
             return Err(CoreError::QVoice(format!(
-                "Unsupported .qvoice version {version}"
+                "Unsupported .qvoice version {version} (expected v3)"
             )));
         }
-        let enc_dim = if version >= 2 {
-            read_u32(&mut r)?
-        } else {
-            ENC_DIM as u32
-        };
+        let enc_dim = read_u32(&mut r)?;
         if enc_dim as usize != ENC_DIM {
             return Err(CoreError::QVoice(format!(
                 "Incompatible .qvoice enc_dim={enc_dim} (expected {ENC_DIM} for 0.6B)"
@@ -225,36 +195,102 @@ impl QVoiceFile {
         let mut wovr = None;
         let mut weights = None;
 
-        if version >= 3 {
-            let mut tag4 = [0u8; 4];
-            let mut pending: Option<[u8; 4]> = None;
+        let mut tag4 = [0u8; 4];
+        let mut pending: Option<[u8; 4]> = None;
 
+        let n = read_exact_or_eof(&mut r, &mut tag4)?;
+        if n == 4 {
+            if &tag4 == b"META" {
+                let lang_id = read_u32(&mut r)?;
+                let mut lang_raw = [0u8; 16];
+                r.read_exact(&mut lang_raw)?;
+                let model_size = read_u32(&mut r)?;
+                let meta_enc_dim = read_u32(&mut r)?;
+                let ref_dur = read_f32(&mut r)?;
+                let mut vname_raw = [0u8; 64];
+                r.read_exact(&mut vname_raw)?;
+                let flags = read_u32(&mut r)?;
+                meta = Some(QVoiceMeta {
+                    lang_id,
+                    lang_name: fixed_cstr(&lang_raw),
+                    model_size,
+                    enc_dim: meta_enc_dim,
+                    ref_dur,
+                    voice_name: fixed_cstr(&vname_raw),
+                    flags,
+                });
+            } else {
+                pending = Some(tag4);
+            }
+        }
+
+        let next4 = if let Some(p) = pending.take() {
+            Some(p)
+        } else {
             let n = read_exact_or_eof(&mut r, &mut tag4)?;
-            if n == 4 {
-                if &tag4 == b"META" {
-                    let lang_id = read_u32(&mut r)?;
-                    let mut lang_raw = [0u8; 16];
-                    r.read_exact(&mut lang_raw)?;
-                    let model_size = read_u32(&mut r)?;
-                    let meta_enc_dim = read_u32(&mut r)?;
-                    let ref_dur = read_f32(&mut r)?;
-                    let mut vname_raw = [0u8; 64];
-                    r.read_exact(&mut vname_raw)?;
-                    let flags = read_u32(&mut r)?;
-                    meta = Some(QVoiceMeta {
-                        lang_id,
-                        lang_name: fixed_cstr(&lang_raw),
-                        model_size,
-                        enc_dim: meta_enc_dim,
-                        ref_dur,
-                        voice_name: fixed_cstr(&vname_raw),
-                        flags,
-                    });
-                } else {
-                    pending = Some(tag4);
-                }
-            }
+            if n == 4 { Some(tag4) } else { None }
+        };
 
+        if let Some(t4) = next4 {
+            if &t4 == b"TPAD" {
+                let hidden = read_u32(&mut r)?;
+                if hidden as usize != HIDDEN_SIZE {
+                    return Err(CoreError::QVoice(format!(
+                        "Incompatible TPAD hidden={hidden} (expected {HIDDEN_SIZE})"
+                    )));
+                }
+                let tts_pad_embed = read_f32_vec(&mut r, HIDDEN_SIZE)?;
+                let tts_bos_embed = read_f32_vec(&mut r, HIDDEN_SIZE)?;
+                let tts_eos_embed = read_f32_vec(&mut r, HIDDEN_SIZE)?;
+                tpad = Some(QVoiceTpad {
+                    hidden,
+                    tts_pad_embed,
+                    tts_bos_embed,
+                    tts_eos_embed,
+                });
+            } else {
+                pending = Some(t4);
+            }
+        }
+
+        let next4 = if let Some(p) = pending.take() {
+            Some(p)
+        } else {
+            let n = read_exact_or_eof(&mut r, &mut tag4)?;
+            if n == 4 { Some(tag4) } else { None }
+        };
+
+        if let Some(t4) = next4 {
+            if &t4 == b"WOVR" {
+                let wh = read_u32(&mut r)?;
+                let wth = read_u32(&mut r)?;
+                let wcv = read_u32(&mut r)?;
+                if wh as usize != HIDDEN_SIZE || wth as usize != TEXT_HIDDEN_SIZE {
+                    return Err(CoreError::QVoice(format!(
+                        "Incompatible WOVR dimensions wh={wh} wth={wth} (expected {HIDDEN_SIZE}/{TEXT_HIDDEN_SIZE})"
+                    )));
+                }
+                let fc1_bf16 = read_u16_vec(&mut r, wth as usize * wth as usize)?;
+                let fc1_bias = read_f32_vec(&mut r, wth as usize)?;
+                let fc2_bf16 = read_u16_vec(&mut r, wh as usize * wth as usize)?;
+                let fc2_bias = read_f32_vec(&mut r, wh as usize)?;
+                let codec_emb_bf16 = read_u16_vec(&mut r, wcv as usize * wh as usize)?;
+                wovr = Some(QVoiceWovr {
+                    wh,
+                    wth,
+                    wcv,
+                    fc1_bf16,
+                    fc1_bias,
+                    fc2_bf16,
+                    fc2_bias,
+                    codec_emb_bf16,
+                });
+            } else {
+                pending = Some(t4);
+            }
+        }
+
+        if !icl_only {
             let next4 = if let Some(p) = pending.take() {
                 Some(p)
             } else {
@@ -263,117 +299,36 @@ impl QVoiceFile {
             };
 
             if let Some(t4) = next4 {
-                if &t4 == b"TPAD" {
-                    let hidden = read_u32(&mut r)?;
-                    if hidden as usize != HIDDEN_SIZE {
+                if &t4 == b"WDLT" {
+                    let target_hidden = read_u32(&mut r)?;
+                    if target_hidden as usize != HIDDEN_SIZE {
                         return Err(CoreError::QVoice(format!(
-                            "Incompatible TPAD hidden={hidden} (expected {HIDDEN_SIZE})"
+                            "Incompatible WDELTA target_hidden={target_hidden} (expected {HIDDEN_SIZE})"
                         )));
                     }
-                    let tts_pad_embed = read_f32_vec(&mut r, HIDDEN_SIZE)?;
-                    let tts_bos_embed = read_f32_vec(&mut r, HIDDEN_SIZE)?;
-                    let tts_eos_embed = read_f32_vec(&mut r, HIDDEN_SIZE)?;
-                    tpad = Some(QVoiceTpad {
-                        hidden,
-                        tts_pad_embed,
-                        tts_bos_embed,
-                        tts_eos_embed,
-                    });
-                } else {
-                    pending = Some(t4);
-                }
-            }
-
-            let next4 = if let Some(p) = pending.take() {
-                Some(p)
-            } else {
-                let n = read_exact_or_eof(&mut r, &mut tag4)?;
-                if n == 4 { Some(tag4) } else { None }
-            };
-
-            if let Some(t4) = next4 {
-                if &t4 == b"WOVR" {
-                    let wh = read_u32(&mut r)?;
-                    let wth = read_u32(&mut r)?;
-                    let wcv = read_u32(&mut r)?;
-                    if wh as usize != HIDDEN_SIZE || wth as usize != TEXT_HIDDEN_SIZE {
-                        return Err(CoreError::QVoice(format!(
-                            "Incompatible WOVR dimensions wh={wh} wth={wth} (expected {HIDDEN_SIZE}/{TEXT_HIDDEN_SIZE})"
-                        )));
-                    }
-                    let fc1_bf16 = read_u16_vec(&mut r, wth as usize * wth as usize)?;
-                    let fc1_bias = read_f32_vec(&mut r, wth as usize)?;
-                    let fc2_bf16 = read_u16_vec(&mut r, wh as usize * wth as usize)?;
-                    let fc2_bias = read_f32_vec(&mut r, wh as usize)?;
-                    let codec_emb_bf16 = read_u16_vec(&mut r, wcv as usize * wh as usize)?;
-                    wovr = Some(QVoiceWovr {
-                        wh,
-                        wth,
-                        wcv,
-                        fc1_bf16,
-                        fc1_bias,
-                        fc2_bf16,
-                        fc2_bias,
-                        codec_emb_bf16,
-                    });
-                } else {
-                    pending = Some(t4);
-                }
-            }
-
-            if !icl_only {
-                let next4 = if let Some(p) = pending.take() {
-                    Some(p)
-                } else {
-                    let n = read_exact_or_eof(&mut r, &mut tag4)?;
-                    if n == 4 { Some(tag4) } else { None }
-                };
-
-                if let Some(t4) = next4 {
-                    let (is_wdelta, target_hidden) = if &t4 == b"WDLT" {
-                        let th = read_u32(&mut r)?;
-                        if th as usize != HIDDEN_SIZE {
-                            return Err(CoreError::QVoice(format!(
-                                "Incompatible WDELTA target_hidden={th} (expected {HIDDEN_SIZE})"
-                            )));
-                        }
-                        (true, th)
-                    } else if &t4 == b"WFUL" {
-                        let fifth = read_u8(&mut r)?;
-                        if fifth != b'L' {
-                            return Err(CoreError::QVoice("Corrupt WFULL magic".to_string()));
-                        }
-                        (false, HIDDEN_SIZE as u32)
-                    } else {
-                        (false, 0)
-                    };
-
-                    if target_hidden > 0 {
-                        let n_tensors = read_u32(&mut r)?;
-                        let mut tensors = Vec::with_capacity(n_tensors as usize);
-                        for _ in 0..n_tensors {
-                            let name_len = read_u16(&mut r)? as usize;
-                            let mut name_buf = vec![0u8; name_len];
-                            r.read_exact(&mut name_buf)?;
-                            let name = String::from_utf8_lossy(&name_buf).into_owned();
-                            let data_bytes = read_u32(&mut r)?;
-                            let dtype_flag = read_u8(&mut r)?;
-                            let compressed_size = read_u32(&mut r)? as usize;
-                            let mut payload = vec![0u8; compressed_size];
-                            r.read_exact(&mut payload)?;
-                            tensors.push(QVoiceWeightTensor {
-                                name,
-                                data_bytes,
-                                dtype_flag,
-                                payload,
-                            });
-                        }
-                        weights = Some(QVoiceWeightsOverride {
-                            is_wdelta,
-                            target_hidden,
-                            tensors,
+                    let n_tensors = read_u32(&mut r)?;
+                    let mut tensors = Vec::with_capacity(n_tensors as usize);
+                    for _ in 0..n_tensors {
+                        let name_len = read_u16(&mut r)? as usize;
+                        let mut name_buf = vec![0u8; name_len];
+                        r.read_exact(&mut name_buf)?;
+                        let name = String::from_utf8_lossy(&name_buf).into_owned();
+                        let data_bytes = read_u32(&mut r)?;
+                        let dtype_flag = read_u8(&mut r)?;
+                        let compressed_size = read_u32(&mut r)? as usize;
+                        let mut payload = vec![0u8; compressed_size];
+                        r.read_exact(&mut payload)?;
+                        tensors.push(QVoiceWeightTensor {
+                            name,
+                            data_bytes,
+                            dtype_flag,
+                            payload,
                         });
                     }
+                    weights = Some(QVoiceWeightsOverride {
+                        target_hidden,
+                        tensors,
+                    });
                 }
             }
         }
@@ -396,10 +351,8 @@ impl QVoiceFile {
         let mut w = BufWriter::new(f);
 
         w.write_all(QVCE_MAGIC)?;
-        w.write_all(&self.version.to_le_bytes())?;
-        if self.version >= 2 {
-            w.write_all(&self.enc_dim.to_le_bytes())?;
-        }
+        w.write_all(&3u32.to_le_bytes())?;
+        w.write_all(&self.enc_dim.to_le_bytes())?;
         for &v in &self.speaker_embedding {
             w.write_all(&v.to_le_bytes())?;
         }
@@ -413,68 +366,62 @@ impl QVoiceFile {
             w.write_all(&c.to_le_bytes())?;
         }
 
-        if self.version >= 3 {
-            if let Some(m) = &self.meta {
-                w.write_all(b"META")?;
-                w.write_all(&m.lang_id.to_le_bytes())?;
-                write_fixed_cstr(&mut w, &m.lang_name, 16)?;
-                w.write_all(&m.model_size.to_le_bytes())?;
-                w.write_all(&m.enc_dim.to_le_bytes())?;
-                w.write_all(&m.ref_dur.to_le_bytes())?;
-                write_fixed_cstr(&mut w, &m.voice_name, 64)?;
-                w.write_all(&m.flags.to_le_bytes())?;
+        if let Some(m) = &self.meta {
+            w.write_all(b"META")?;
+            w.write_all(&m.lang_id.to_le_bytes())?;
+            write_fixed_cstr(&mut w, &m.lang_name, 16)?;
+            w.write_all(&m.model_size.to_le_bytes())?;
+            w.write_all(&m.enc_dim.to_le_bytes())?;
+            w.write_all(&m.ref_dur.to_le_bytes())?;
+            write_fixed_cstr(&mut w, &m.voice_name, 64)?;
+            w.write_all(&m.flags.to_le_bytes())?;
+        }
+        if let Some(t) = &self.tpad {
+            w.write_all(b"TPAD")?;
+            w.write_all(&t.hidden.to_le_bytes())?;
+            for &v in &t.tts_pad_embed {
+                w.write_all(&v.to_le_bytes())?;
             }
-            if let Some(t) = &self.tpad {
-                w.write_all(b"TPAD")?;
-                w.write_all(&t.hidden.to_le_bytes())?;
-                for &v in &t.tts_pad_embed {
-                    w.write_all(&v.to_le_bytes())?;
-                }
-                for &v in &t.tts_bos_embed {
-                    w.write_all(&v.to_le_bytes())?;
-                }
-                for &v in &t.tts_eos_embed {
-                    w.write_all(&v.to_le_bytes())?;
-                }
+            for &v in &t.tts_bos_embed {
+                w.write_all(&v.to_le_bytes())?;
             }
-            if let Some(wv) = &self.wovr {
-                w.write_all(b"WOVR")?;
-                w.write_all(&wv.wh.to_le_bytes())?;
-                w.write_all(&wv.wth.to_le_bytes())?;
-                w.write_all(&wv.wcv.to_le_bytes())?;
-                for &u in &wv.fc1_bf16 {
-                    w.write_all(&u.to_le_bytes())?;
-                }
-                for &v in &wv.fc1_bias {
-                    w.write_all(&v.to_le_bytes())?;
-                }
-                for &u in &wv.fc2_bf16 {
-                    w.write_all(&u.to_le_bytes())?;
-                }
-                for &v in &wv.fc2_bias {
-                    w.write_all(&v.to_le_bytes())?;
-                }
-                for &u in &wv.codec_emb_bf16 {
-                    w.write_all(&u.to_le_bytes())?;
-                }
+            for &v in &t.tts_eos_embed {
+                w.write_all(&v.to_le_bytes())?;
             }
-            if let Some(wo) = &self.weights {
-                if wo.is_wdelta {
-                    w.write_all(b"WDLT")?;
-                    w.write_all(&wo.target_hidden.to_le_bytes())?;
-                } else {
-                    w.write_all(b"WFULL")?;
-                }
-                w.write_all(&(wo.tensors.len() as u32).to_le_bytes())?;
-                for t in &wo.tensors {
-                    let nb = t.name.as_bytes();
-                    w.write_all(&(nb.len() as u16).to_le_bytes())?;
-                    w.write_all(nb)?;
-                    w.write_all(&t.data_bytes.to_le_bytes())?;
-                    w.write_all(&[t.dtype_flag])?;
-                    w.write_all(&(t.payload.len() as u32).to_le_bytes())?;
-                    w.write_all(&t.payload)?;
-                }
+        }
+        if let Some(wv) = &self.wovr {
+            w.write_all(b"WOVR")?;
+            w.write_all(&wv.wh.to_le_bytes())?;
+            w.write_all(&wv.wth.to_le_bytes())?;
+            w.write_all(&wv.wcv.to_le_bytes())?;
+            for &u in &wv.fc1_bf16 {
+                w.write_all(&u.to_le_bytes())?;
+            }
+            for &v in &wv.fc1_bias {
+                w.write_all(&v.to_le_bytes())?;
+            }
+            for &u in &wv.fc2_bf16 {
+                w.write_all(&u.to_le_bytes())?;
+            }
+            for &v in &wv.fc2_bias {
+                w.write_all(&v.to_le_bytes())?;
+            }
+            for &u in &wv.codec_emb_bf16 {
+                w.write_all(&u.to_le_bytes())?;
+            }
+        }
+        if let Some(wo) = &self.weights {
+            w.write_all(b"WDLT")?;
+            w.write_all(&wo.target_hidden.to_le_bytes())?;
+            w.write_all(&(wo.tensors.len() as u32).to_le_bytes())?;
+            for t in &wo.tensors {
+                let nb = t.name.as_bytes();
+                w.write_all(&(nb.len() as u16).to_le_bytes())?;
+                w.write_all(nb)?;
+                w.write_all(&t.data_bytes.to_le_bytes())?;
+                w.write_all(&[t.dtype_flag])?;
+                w.write_all(&(t.payload.len() as u32).to_le_bytes())?;
+                w.write_all(&t.payload)?;
             }
         }
 
@@ -539,14 +486,10 @@ pub fn decode_wdelta_bf16(
             }
             Ok(out)
         }
-        2 | 3 => Err(CoreError::QVoice(format!(
-            ".qvoice uses legacy zlib compression (dtype={}) for '{}'",
-            tensor.dtype_flag, tensor.name
-        ))),
-        _ => {
-            if tensor.payload.len() % 2 != 0 {
+        0 => {
+            if !tensor.payload.len().is_multiple_of(2) {
                 return Err(CoreError::QVoice(format!(
-                    "WFULL tensor '{}' odd byte count",
+                    "Raw .qvoice tensor '{}' odd byte count",
                     tensor.name
                 )));
             }
@@ -556,6 +499,10 @@ pub fn decode_wdelta_bf16(
                 .map(|c| u16::from_le_bytes([c[0], c[1]]))
                 .collect())
         }
+        other => Err(CoreError::QVoice(format!(
+            "Unsupported .qvoice tensor dtype_flag={other} for '{}'",
+            tensor.name
+        ))),
     }
 }
 

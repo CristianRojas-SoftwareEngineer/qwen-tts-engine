@@ -66,22 +66,6 @@ pub fn emotion_name_to_tok(name: &str) -> Option<&'static str> {
     }
 }
 
-pub const EMOTION_TOKENS: &[&str] = &[
-    "sad",
-    "joy",
-    "ang",
-    "fear",
-    "disgust",
-    "surprise",
-    "contempt",
-    "awe",
-    "nostalgia",
-    "disapproval",
-    "remorse",
-    "outrage",
-    "despair",
-];
-
 fn para_pick_06b(tag: &str, voice_class: VoiceClass) -> Option<(&'static str, u32, f32)> {
     match tag.to_ascii_lowercase().as_str() {
         "laugh" | "laughs" => Some(("\u{54c8}\u{54c8}\u{54c8}", 2024, 1.1)),
@@ -203,24 +187,6 @@ impl MarkupPlanner {
                         return true;
                     }
                     if emotion_name_to_tok(t).is_some() {
-                        return true;
-                    }
-                }
-            }
-            search = &search[open + 1..];
-        }
-        false
-    }
-
-    pub fn has_para_event(text: &str) -> bool {
-        let mut search = text;
-        while let Some(open) = search.find('[') {
-            let after = &search[open + 1..];
-            if let Some(close) = after.find(']') {
-                if close < 64 {
-                    let t = after[..close].trim();
-                    let tl = t.to_ascii_lowercase();
-                    if is_para_event_tag(t) || COMPOSE_MACROS.iter().any(|m| m.tag == tl) {
                         return true;
                     }
                 }

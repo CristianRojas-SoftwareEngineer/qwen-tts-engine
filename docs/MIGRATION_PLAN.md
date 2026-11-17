@@ -1,13 +1,13 @@
 # Plan Maestro de Migración y Trazabilidad (`MIGRATION_PLAN.md`)
 
-Hoja de ruta ejecutiva para la implementación de `qwen3-tts-rs/` (`0.6B`) y matriz completa de trazabilidad contra `qwen3-tts/` y `DIVERGENCIAS.md`.
+Registro histórico cerrado de la migración del motor `Qwen3-TTS 0.6B` hacia `qwen3-tts-rs/` (Gates **G0–G6** completados). Para el diseño y contrato vivos actuales, véanse [ARCHITECTURE.md](ARCHITECTURE.md), [INTERFACE_CONTRACT.md](INTERFACE_CONTRACT.md), [SPEC_06B.md](SPEC_06B.md) y [NUMERIC_CONTRACT.md](NUMERIC_CONTRACT.md).
 
 ---
 
 ## 1. Fases de Implementación y Criterios de Cierre
 
 1. **Fase 0 — Baseline C (`parity/`)**: Compilar oráculo C y capturar métricas/dumps dorados (`Gate G0`) — **Completado (`aeb466f`)**.
-2. **Fase 1 — `qwen-kernels`**: `AlignedBuf<64>`, `CpuCaps`, `ComputePool` instanciable (`spin-wait` + `FTZ/DAZ`), `BlasBackend` (`FfiBlas`), cuantización (`int8`/`q4_0`/`q2_0`) y kernels SIMD estables (`AVX2+FMA`, `NEON+SDOT`, escalar) + `--caps`, `--self-test`, `--matmat-bench` (`Gate G1`) — **Completado (`d7b3efd`)**.
+2. **Fase 1 — `qwen-kernels`**: `AlignedBuf<64>`, `CpuCaps`, `ComputePool` instanciable (`spin-wait` + `FTZ/DAZ`), `BlasBackend` (`FfiBlas`), cuantización (`int8`/`q4_0`/`q2_0`) y kernels SIMD estables (`AVX2+FMA` en x86-64, fallback entero escalar portable) + `--caps`, `--self-test`, `--matmat-bench` (`Gate G1`) — **Completado (`d7b3efd`)**.
 3. **Fase 2 — `qwen-core`**: Constantes `0.6B`, `MmapStore` (`safetensors` + `config.json`), `BpeTokenizer`, `Sampler`/`LcgRng`, `.qvoice`/`.bin`, `MarkupPlanner` (`small_model=1`) (`Gate G2`) — **Completado (`675460c`)**.
 4. **Fase 3 — `qwen-engine` (Inferencia y Streaming)**: `Model06B`, `VoiceBindings` (`WOVR`), `SessionScratch`, `Talker`, `CodePredictor` (`PREFILL2`, `--quant-mixed`), `SpeechDecoder` (`conv_decoder_forward`, `DecoderWorkspace`, `W_k`, tiling `up2`/`up3`), `AudioSink` y pipeline productor-consumidor (`Gate G3`) — **Completado (`44631c0`)**.
 5. **Fase 4 — `qwen-engine` (Clonación y Emoción 0.6B)**: `ECAPA-TDNN`, `SpeechEncoder` RVQ (sin singleton), flujo `.qvoice`, `emovoice` (`dir_*.bin`), `--emo-ref`, `--roughness`, composición inline (`Gate G4`) — **Completado (`a391aaf`)**.
@@ -32,7 +32,7 @@ Hoja de ruta ejecutiva para la implementación de `qwen3-tts-rs/` (`0.6B`) y mat
 | `qwen_tts_code_predictor.c` | `qwen-engine/src/{code_predictor.rs,batch.rs}` | **Completado (G3/G5)** |
 | `qwen_tts_speech_decoder.c` | `qwen-engine/src/speech_decoder.rs` | **Completado (G3)** |
 | `qwen_tts_speech_encoder.c` | `qwen-engine/src/speech_encoder.rs` | **Completado (G4)** |
-| `qwen_tts_kernels.h`, `qwen_tts_kernels.c` | `qwen-kernels/src/{aligned,caps,ftz,blas,quant,selftest,bench,dispatch,simd/*}` | **Completado (G1/G6)** |
+| `qwen_tts_kernels.h`, `qwen_tts_kernels.c` | `qwen-kernels/src/{aligned,caps,ftz,blas,quant,selftest,bench,dispatch,simd/{scalar,avx2}}` | **Completado (G1/G6)** |
 | `qwen_tts_thread.h`, `qwen_tts_thread.c` | `qwen-kernels/src/pool.rs` | **Completado (G1)** |
 | `qwen_tts_audio.h`, `qwen_tts_audio.c` | `qwen-engine/src/audio.rs` | **Completado (G3/G4)** |
 | `qwen_tts_sampling.c` | `qwen-core/src/sampling.rs` | **Completado (G2)** |
@@ -42,7 +42,7 @@ Hoja de ruta ejecutiva para la implementación de `qwen3-tts-rs/` (`0.6B`) y mat
 | `qwen_tts_compose.h`, `qwen_tts_compose.c` | `qwen-core/src/markup.rs` + `qwen-engine/src/compose.rs` | **Completado (G2/G4)** |
 | `qwen_tts_emotion.h`, `qwen_tts_emotion.c` | `qwen-core/src/markup.rs` + `qwen-engine/src/emotion.rs` | **Completado (G2/G4)** |
 | `qwen_tts.exe.manifest`, `qwen_tts_manifest.rc` | `qwen-app/{build.rs,qwen_app.exe.manifest,qwen_app_manifest.rc}` | **Completado (G5)** |
-| `bench_scalar.c`, `bench_simd.c`, `test_decoder_standalone.c` | `qwen-kernels` (`selftest`, `bench`, `qwen-kernels-cli`) + `qwen-app` (`decode-dump`, `--self-test`, `--matmat-bench`) | **Completado (G1/G6)** |
+| `bench_scalar.c`, `bench_simd.c`, `test_decoder_standalone.c` | `qwen-kernels` (`selftest`, `bench`) + `qwen-app` (`decode-dump`, `--self-test`, `--matmat-bench`) | **Completado (G1/G6)** |
 | `third_party/ingot/**`, `vendor/lz4.{c,h}` | Crates `safetensors`, `memmap2`, `serde_json`, `lz4_flex` | **Reemplazado (G2)** |
 
 ---
@@ -66,7 +66,7 @@ Hoja de ruta ejecutiva para la implementación de `qwen3-tts-rs/` (`0.6B`) y mat
 | `spin-wait` 4096 en pool de hilos (`QWEN_POOL_SPIN`) | `qwen-kernels/src/pool.rs` | **Gate G1 + G3** |
 | Producto escalar entero AVX2 (`maddubs`) + `matmat==B×matvec` | `qwen-kernels/src/simd/avx2.rs` + `quant.rs` | **Gate G1** (`--self-test` error `0.00e0`) |
 | `PREFILL2` único en CP cuantizado + log `[INT8+Q4_0-FFN]` | `qwen-engine/src/code_predictor.rs` | **Gate G3** (`C2_short_en` + `C3_long_it`) |
-| Exigencia `dotprod` ARM64 + `quant_shape_check` (`%32`, `<=8192`) | `qwen-kernels/src/{caps.rs,quant.rs}` + `qwen-core/src/config.rs` | **Gate G1 + G2** |
+| `quant_shape_check` (`%32`, `<=8192`) + detección `CpuCaps` | `qwen-kernels/src/{caps.rs,quant.rs}` + `qwen-core/src/config.rs` | **Gate G1 + G2** |
 | Eliminación de fallbacks float/env switches + `WDELTA` sin `Q4_0` | `qwen-kernels` + `qwen-engine/src/model.rs` | **Gate G1 + G4** |
 | Prefetch `5120B` en `int8` + 1-fila AVX2 en `cols >= 2048` | `qwen-kernels/src/simd/avx2.rs` | **Gate G1 + G3** (`C4_memload`) |
 | Perfil `mixed` del CP (`[INT8+Q4_0-FFN]`) | `qwen-engine/src/code_predictor.rs` | **Gate G3** |

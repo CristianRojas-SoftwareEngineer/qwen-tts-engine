@@ -21,16 +21,16 @@ Define la estructura del workspace Cargo, la separación de responsabilidades y 
 
 | Crate | Módulos principales | Política `unsafe` |
 |---|---|---|
-| **`qwen-kernels`** | `aligned` (`AlignedBuf<64>`), `caps`, `pool` (`ComputePool`), `ftz`, `blas` (`BlasBackend`), `quant` (`int8`/`q4_0`/`q2_0`), `simd/{scalar,avx2,neon,avx512}`, `selftest`. | **Permitido y aislado** (intrínsecos SIMD, `std::alloc`, `MXCSR`/`FPCR`, FFI BLAS). |
-| **`qwen-core`** | `config`, `mmap_store` (`memmap2`), `tokenizer` (`BpeTokenizer`), `sampling` (`Sampler`/`LcgRng`), `qvoice` (`QVCE`/`WOVR`/`WDELTA`), `markup` (`MarkupPlanner`). | **Solo `Mmap::map`** encapsulado en `mmap_store.rs`; resto 100 % seguro. |
-| **`qwen-engine`** | `model` (`Model06B`, `VoiceBindings`, `SessionScratch`), `talker`, `code_predictor`, `speech_decoder`, `speech_encoder`, `voice_clone`, `audio`, `pipeline`. | **`#![forbid(unsafe_code)]`** |
-| **`qwen-app`** | `main` (CLI, `--watch-stdin`, SMT affinity), `server/{http,validation,scheduler}`. | **Solo llamada puntual** `SetProcessAffinityMask` / `GetLogicalProcessorInformationEx` en Windows. |
+| **`qwen-kernels`** | `aligned` (`AlignedBuf<64>`), `caps`, `pool` (`ComputePool`), `ftz`, `blas` (`FfiBlas` default + `PureRustBlas` opcional), `quant` (`int8`/`q4_0`/`q2_0`), `simd/{scalar,avx2}`, `dispatch`, `selftest`, `bench`. | **Permitido y aislado** (intrínsecos SIMD, `std::alloc`, `MXCSR`/`FPCR`, FFI BLAS). |
+| **`qwen-core`** | `config`, `mmap_store` (`memmap2`), `tokenizer` (`BpeTokenizer`), `sampling` (`Sampler`/`LcgRng`), `qvoice` (`QVCE`/`WOVR`/`WDELTA`), `markup` (`MarkupPlanner`). | **Solo `Mmap::map` y cast de slices alineadas** en `mmap_store.rs`; resto 100 % seguro. |
+| **`qwen-engine`** | `model` (`Model06B`, `VoiceBindings`, `SessionScratch`), `talker`, `code_predictor`, `speech_decoder`, `speech_encoder`, `voice_clone`, `emotion`, `compose`, `batch`, `audio`, `pipeline`. | **`#![forbid(unsafe_code)]`** |
+| **`qwen-app`** | `main`, `cli`, `affinity` (SMT Win32), `build.rs` + `qwen_app.exe.manifest`, `server/{mod,http,validation,scheduler}`. | **Solo llamada puntual** `SetProcessAffinityMask` / `GetLogicalProcessorInformationEx` en Windows. |
 
 ---
 
 ## 2. Separación del Estado en 4 Tiempos de Vida
 
-Sustituye al monolito `qwen_tts_ctx_t` del C original eliminando copias superficiales (`qwen_tts_clone_for_worker`) y fugas de estado entre peticiones:
+Separa el estado de inferencia en 4 tiempos de vida para compartir `Model06B` entre workers sin copias superficiales ni fugas de estado entre peticiones:
 
 ```text
 Arc<Model06B>  [Inmutable, Send + Sync — compartido por todo el proceso]
@@ -48,13 +48,13 @@ Arc<VoiceBindings>  [Inmutable por voz — 0 B en preset, ~25 MB con WOVR]
 
 SessionScratch  [Mutable, exclusivo por worker o sesión — cero locks internos]
  ├── talker_kv / cp_kv                    // BF16 KV caches (Talker inicia en 1024 pos)
- ├── talker_bufs / cp_bufs / prefill_bufs // AlignedBuf<64> + down_q2_rough opcional
+ ├── talker_bufs / cp_bufs                // AlignedBuf<64> + down_q2_rough opcional
  ├── sd_stream + sd_ws                    // colas/acarreos streaming + 8 ranuras DecoderWorkspace
- └── emb_lru + rng: LcgRng                // caché texto local + RNG propio (sin __thread)
+ └── emb_lru + sampler + rng: LcgRng      // caché texto local + muestreador + RNG propio
 
 RequestExecution  [Efímero por petición — se destruye al finalizar]
- ├── config: RequestConfig                // temperature, top_k, top_p, rep_penalty, chunk_frames, rate, volume
- └── abort: AbortHandle                   // Arc<AtomicBool> acoplado por RAII (Drop) al socket HTTP
+ ├── config: RequestConfig                // speaker_id, temperature, top_k, top_p, rep_penalty, chunk_frames, rate, volume
+ └── abort: AbortHandle                   // Arc<AtomicBool> + poll de socket opcional acoplado por RAII (Drop) al socket HTTP
 ```
 
 ---
@@ -63,8 +63,8 @@ RequestExecution  [Efímero por petición — se destruye al finalizar]
 
 1. **`ComputeRuntime`**: inyectable (no singleton global), compuesto por `pool: Arc<ComputePool>` y `blas: Arc<dyn BlasBackend>`.
 2. **`ComputePool`** *(ver ADR-003)*: pool persistente instanciable con contador atómico de chunks (`AtomicUsize`), presupuesto de *spin-wait* (`QWEN_POOL_SPIN=4096`) con `std::hint::spin_loop()`, `Condvar` y `ftz_on()` al iniciar cada trabajador.
-3. **`KernelDispatch`**: tabla resuelta una vez en tiempo de ejecución según `CpuCaps` *(ver ADR-004)* para `matvec_{bf16,int8,q4_0,q2_0}`, `matmat_*`, `argmax_int8`, `rms_norm*`, `causal_attention_bf16kv`, `rope_neox_inplace` y `swiglu_inplace`. `qwen-engine` nunca contiene `#ifdef` de arquitectura.
-4. **`BlasBackend`** *(ver ADR-002)*: trait que abstrae `sgemm` y `set_threads(n)` respetando `OMP_NUM_THREADS` / `OPENBLAS_NUM_THREADS`.
+3. **`KernelDispatch`**: tabla resuelta una vez en tiempo de ejecución según `CpuCaps` *(ver ADR-004)* para `matvec_{bf16,int8,q4_0,q2_0}`, `matmat_*`, `argmax_matvec_*`, `rms_norm*`, `causal_attention*`, `rope_neox_inplace`, `swiglu_inplace` y `snake_row`. `qwen-engine` nunca contiene `#[cfg(target_arch)]`.
+4. **`BlasBackend`** *(ver ADR-002)*: trait que abstrae `sgemm` y `set_threads(n)`. Por defecto usa `FfiBlas` (`OpenBLAS` / `Accelerate`), con `PureRustBlas` (`faer`) disponible bajo la feature opcional `faer-blas` (`QWEN_BLAS=faer`). Respeta `OMP_NUM_THREADS` / `OPENBLAS_NUM_THREADS`.
 
 ---
 
@@ -85,5 +85,5 @@ RequestExecution  [Efímero por petición — se destruye al finalizar]
 
 1. **Frontend único**: valida todas las peticiones en `ValidatedTtsRequest::parse(body)` (HTTP `400` ante cualquier error, ver [INTERFACE_CONTRACT.md](INTERFACE_CONTRACT.md)) y asocia un `AbortGuard` (`Drop` → `abort.cancel()`) a la conexión abierta.
 2. **Trait `SynthesisScheduler`** con dos estrategias tras el mismo contrato:
-   - **`ContinuousBatchScheduler` (`--batch-size N`, recomendado)**: un único hilo planificador con `1` `ComputePool` compartido y `BatchScratch` lockstep/ragged; lee los pesos una vez para hasta `N` peticiones simultáneas.
+   - **`ContinuousBatchScheduler` (`--batch-size N`, recomendado)**: un único hilo planificador con `1` `ComputePool` compartido y `BatchWorkspace` ragged; lee los pesos una vez para hasta `N` peticiones simultáneas (WAV y streaming), derivando peticiones con markup multi-span o `rate != 1.0` a un worker dedicado.
    - **`WorkerPoolScheduler` (`--workers N`)**: `N` workers con `SessionScratch` propios; calcula el presupuesto de hilos por worker y ajusta el *spin-wait* para no exceder los núcleos físicos del host.

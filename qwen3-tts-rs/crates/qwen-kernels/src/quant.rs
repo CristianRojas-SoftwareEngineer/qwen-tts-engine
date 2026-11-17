@@ -91,7 +91,7 @@ pub fn f32_to_f16(f: f32) -> u16 {
 }
 
 pub fn quant_shape_check(name: &str, cols: usize) -> Result<(), String> {
-    if cols == 0 || cols > QWEN_QACT_MAX || cols % Q4_0_BLOCK_SIZE != 0 {
+    if cols == 0 || cols > QWEN_QACT_MAX || !cols.is_multiple_of(Q4_0_BLOCK_SIZE) {
         return Err(format!(
             "error: la matriz cuantizada {name} tiene {cols} columnas; el motor exige un múltiplo de 32 y como máximo {QWEN_QACT_MAX}"
         ));
@@ -100,7 +100,7 @@ pub fn quant_shape_check(name: &str, cols: usize) -> Result<(), String> {
 }
 
 /// Scalar activation quantizer (reference & scalar backend).
-/// Uses IEEE round-half-even (`round_ties_even`), matching C `lrintf` / AVX2 `cvtps_epi32` / NEON `vcvtnq`.
+/// Uses IEEE round-half-even (`round_ties_even`), matching AVX2 `cvtps_epi32`.
 #[inline]
 pub fn quantize_act_int8_scalar(qx: &mut [i8], x: &[f32]) -> f32 {
     let n = x.len();
@@ -241,8 +241,8 @@ pub fn quantize_bf16_to_q2_0(src_bf16: &[u16], rows: usize, cols: usize) -> Alig
             block_out.scale = scale;
             let inv = if scale > 0.0 { 1.0f32 / scale } else { 0.0 };
             block_out.qs = [0u8; 8];
-            for i in 0..Q2_0_BLOCK_SIZE {
-                let code = ((vals[i] * inv + 1.5f32).round_ties_even() as i32).clamp(0, 3) as u8;
+            for (i, &val) in vals.iter().enumerate().take(Q2_0_BLOCK_SIZE) {
+                let code = ((val * inv + 1.5f32).round_ties_even() as i32).clamp(0, 3) as u8;
                 block_out.qs[i >> 2] |= code << ((i & 3) * 2);
             }
         }

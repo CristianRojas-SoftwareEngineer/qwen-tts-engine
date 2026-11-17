@@ -6,7 +6,6 @@ use std::thread;
 use std::time::Instant;
 
 use qwen_core::config::SAMPLE_RATE;
-use qwen_core::MarkupPlanner;
 use qwen_engine::{
     encode_wav_bytes, prepare_markup_06b, run_continuous_batch, AbortHandle, BatchReq,
     ContinuousBatchSink, ContinuousSlotJob, EngineError, Model06B, SessionScratch, VoiceBindings,
@@ -540,11 +539,11 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
         jq_single.shutdown();
         let _ = sched_handle.join();
         let _ = single_handle.join();
-        let _ = MarkupPlanner::has_markup("");
         Ok(())
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn serve(
     runtime: Arc<ComputeRuntime>,
     model: Arc<Model06B>,

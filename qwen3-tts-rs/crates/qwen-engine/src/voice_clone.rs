@@ -221,7 +221,7 @@ fn build_mel_filterbank(sr: usize, n_fft: usize, n_mels: usize, fmin: f32, fmax:
     fb
 }
 
-/// Exact port of `qwen_mel_spectrogram` (`n_fft=1024`, `hop=256`, `n_mels=128`, `sr=24000`).
+/// Computes log-mel spectrogram (`n_fft=1024`, `hop=256`, `n_mels=128`, `sr=24000`).
 pub fn mel_spectrogram(audio: &[f32], _sample_rate: usize) -> Result<(Vec<f32>, usize), EngineError> {
     const N_FFT: usize = 1024;
     const N_MELS: usize = 128;
@@ -776,7 +776,7 @@ impl Default for VoiceLoadOptions {
             graft_mode: false,
             icl_frames_cap: 0,
             voice_strength: 1.0,
-            vs_l0: 11,
+            vs_l0: 14,
             vs_l1: 27,
             silent: false,
         }
@@ -1239,7 +1239,6 @@ fn encode_wdelta_override(
     }
 
     Ok(QVoiceWeightsOverride {
-        is_wdelta: true,
         target_hidden: HIDDEN_SIZE as u32,
         tensors,
     })

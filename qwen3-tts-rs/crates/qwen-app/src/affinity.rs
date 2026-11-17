@@ -1,6 +1,6 @@
 //! Win32 SMT thread-pinning: restricts the process to one logical thread per
 //! physical core on single-processor-group systems to avoid Windows scheduler
-//! SMT contention (`INTERFACE_CONTRACT.md` §3, `main.c:966`).
+//! SMT contention (`INTERFACE_CONTRACT.md` §3).
 
 #[cfg(target_os = "windows")]
 mod win32 {

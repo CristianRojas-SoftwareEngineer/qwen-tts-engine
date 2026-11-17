@@ -1,6 +1,6 @@
 # Contrato Numérico, Cuantización y Determinismo (`NUMERIC_CONTRACT.md`)
 
-Fija las leyes aritméticas, de cuantización, de memoria y de streaming que el motor Rust debe cumplir para preservar la calidad de audio y el RTF del motor C (`qwen3-tts/`).
+Fija las leyes aritméticas, de cuantización, de memoria y de streaming que el motor Rust (`qwen3-tts-rs`) cumple para preservar la calidad de audio y el RTF del modelo `0.6B`.
 
 ---
 
@@ -20,38 +20,38 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | **Q4_0** (`18 B / 32 pesos`) | `scale_f16` (IEEE fp16 `u16`) + `qs[16]` | **Mínimos cuadrados ponderados (`q4_0s1`)**: toma el elemento de mayor magnitud `vmax` (con su signo), fija `isc = -8.0 / vmax`, `q[i] = clamp(round(v[i] * isc), -8, 7)` y reescala `s* = sum(v^2 * v * q) / sum(v^2 * q^2)`. Empaque **intercalado**: `qs[i] = (q[2i]+8) \| ((q[2i+1]+8) << 4)`. | `--int4`; Talker + FFN del CP en `--quant-mixed`. |
 | **Q2_0** (`12 B / 32 pesos`) | `float scale` (`f32`) + `qs[8]` | 4 niveles simétricos `{-1.5, -0.5, 0.5, 1.5} * scale`: `scale = absmax / 1.5`, `code = clamp(round(v / scale + 1.5), 0, 3)`; 4 códigos/byte (`(i%4)*2`). | Solo `down_q2_rough` bajo `--roughness > 0`, mezclado en `down_proj` del CP: `proj = (1 - r) * proj + r * proj_q2`. |
 
-- **Prohibido usar fallbacks en coma flotante**: todas las ISA (AVX2 `maddubs`, VNNI `dpbusd`, ARM SDOT `vdotq_s32`, escalar `i32`) acumulan en producto escalar entero.
+- **Prohibido usar fallbacks en coma flotante**: todas las rutas implementadas (AVX2 `maddubs`, escalar `i32`) acumulan en producto escalar entero.
 - **Matriz `gate_up` intercalada**: la fila `2r` corresponde a `gate[r]` y la `2r+1` a `up[r]`. En modos cuantizados se cuantiza directamente desde `gate_bf16` y `up_bf16` sin materializar `gate_up_fused_bf16`.
 
 ### 1.3 Perfil de producción `--quant-mixed` (`[INT8+Q4_0-FFN]`)
 - **Talker (28 capas)**: `wq`, `wk`, `wv`, `wo`, `gate_up`, `down` en `Q4_0`; `text_embedding`, `text_projection`, `codec_embedding`, `codec_head` en `BF16`; norms en `F32`; caché KV en `BF16`.
-- **Code Predictor (5 capas)**: `wq`, `wk`, `wv`, `wo` y 15 `lm_head` en `INT8` *(nota: `lm_head` argmax mantiene la activación/salida vía `qwen_matvec_int8`, nunca degradar a Q4_0)*; `gate_up` y `down` en `Q4_0`; `codec_embedding` en `BF16`; caché KV en `BF16`.
+- **Code Predictor (5 capas)**: `wq`, `wk`, `wv`, `wo` y 15 `lm_head` en `INT8` *(nota: `lm_head` argmax mantiene la activación/salida vía `argmax_matvec_int8`, nunca degradar a Q4_0)*; `gate_up` y `down` en `Q4_0`; `codec_embedding` en `BF16`; caché KV en `BF16`.
 
 ---
 
 ## 2. Requisitos de Hardware, Memoria y Kernels
 
-1. **FTZ / DAZ obligatorio por hilo (`qwen_ftz_on`)**:
+1. **FTZ / DAZ obligatorio por hilo (`ftz_on`)**:
    - Las activaciones tras cuantización INT8 caen frecuentemente en rango subnormal (penalización ~100×).
    - Todo hilo trabajador del pool (y el hilo principal) debe activar **una vez al arrancar**:
      - **x86_64**: `MXCSR |= 0x8040` (bits FTZ=15 y DAZ=6).
      - **ARM64**: `FPCR |= (1 << 24)` (bit FZ).
 2. **Alineación a línea de caché**: Todo buffer de activación, KV cache, pesos cuantizados, `W_k` y workspace del decodificador debe alinearse a **64 bytes** (`AlignedBuf<64>`).
-3. **Patrones de lectura obligatorios en AVX2** (`DIVERGENCIAS.md`):
+3. **Patrones de lectura obligatorios en AVX2**:
    - **Prefetch**: en `int8` y `q4_0`, anticipar `5120` bytes por delante (`QWEN_INT8_PF_DIST = 5120`) por fila procesada.
-   - **Filas largas**: en `qwen_matvec_int8` y `qwen_matvec_q4_0` sobre AVX2, usar núcleo de **1 fila por iteración** cuando `cols >= 2048` (`QWEN_LONG_ROW_COLS`), conservando acumulación idéntica bit a bit frente a 2 filas (`matmat` y `QKV` siguen en 2 filas).
+   - **Filas largas**: en `int8_matvec_slice` y `q4_0_matvec_slice` sobre AVX2, usar núcleo de **1 fila por iteración** cuando `cols >= 2048` (`QWEN_LONG_ROW_COLS`), conservando acumulación idéntica bit a bit frente a 2 filas (`matmat` y `QKV` siguen en 2 filas).
 
 ---
 
 ## 3. Sensibilidades de Punto Flotante (`Talker`, `Decoder`, `Encoder`)
 
-| Componente | Regla crítica verificada en C | Por qué importa |
+| Componente | Regla crítica verificada | Por qué importa |
 |---|---|---|
-| **Global / Kernels** | Usar FMA explícito en kernels SIMD (`_mm256_fmadd_ps` / `vmlaq_f32`) | El `Makefile` documentó que `-ffp-contract=off -fno-fast-math` corrompía frases cortas (`dub`). |
-| **`SpeechEncoder` (RVQ)** | Mantener cálculo de distancia L2 (`||x - e||^2`) en **IEEE-754 estricto** (sin reordenamientos agresivos) | En `Makefile:281`, `-ffast-math` rompió la búsqueda de vecino más cercano. |
-| **`convnext_mlp` (`SpeechDecoder`)** | **LayerNorm de 2 pasadas** (`mean`, luego `var = sum((x - mean)^2) / C`) | Una pasada (`E[x^2] - mean^2`) altera el audio respecto al streaming validado (`qwen3-tts/DIVERGENCIAS.md`). |
-| **Activación Snake (`SpeechDecoder`)** | `y = x + exp(-log_beta) * sin^2(exp(log_alpha) * x)` (en F32) | Los tensores `{alpha, beta}` del modelo están almacenados en escala logarítmica. *(Nota: `QWEN_SD_INT8` es experimental y queda fuera de la ruta de producción).* |
-| **`causal_conv1d` / `conv_transpose1d`** | `conv_transpose1d`: 1 único `cblas_sgemm` + dispersión en orden ascendente de `k`; `causal_conv1d` (`k>1`): `k` `cblas_sgemm` acumulados sobre entrada con relleno izquierdo sobre `W_k` pre-reordenado `[k][out][in]` | Elimina copias `im2col`; mantiene SNR ≥ 96–98 dB vs la implementación original. |
+| **Global / Kernels** | Usar FMA explícito en kernels SIMD (`_mm256_fmadd_ps`) | Evita la divergencia observada sin contracción FMA en frases cortas. |
+| **`SpeechEncoder` (RVQ)** | Mantener cálculo de distancia L2 (`||x - e||^2`) en **IEEE-754 estricto** (sin reordenamientos agresivos) | Reordenamientos tipo `-ffast-math` rompen la búsqueda de vecino más cercano en RVQ. |
+| **`convnext_mlp` (`SpeechDecoder`)** | **LayerNorm de 2 pasadas** (`mean`, luego `var = sum((x - mean)^2) / C`) | Una pasada (`E[x^2] - mean^2`) altera el audio respecto al streaming validado. |
+| **Activación Snake (`SpeechDecoder`)** | `y = x + exp(-log_beta) * sin^2(exp(log_alpha) * x)` (en F32) | Los tensores `{alpha, beta}` del modelo están almacenados en escala logarítmica. |
+| **`causal_conv1d` / `conv_transpose1d`** | `conv_transpose1d`: 1 único `BlasBackend::sgemm` + dispersión en orden ascendente de `k`; `causal_conv1d` (`k>1`): `k` `BlasBackend::sgemm` acumulados sobre entrada con relleno izquierdo sobre `W_k` pre-reordenado `[k][out][in]` | Elimina copias `im2col`; mantiene SNR ≥ 96–98 dB vs referencia. |
 | **`CodePredictor` prefill** | Usar siempre **`PREFILL2`** (`matmat(B=2)`) cuando las 5 capas están en `int8` y/o `q4_0` en cualquier mezcla | Lee cada matriz 1 vez para posiciones 0 y 1 con resultado idéntico al secuencial. |
 
 ---
@@ -61,7 +61,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 1. **Prefill siempre completo**: cada síntesis arranca con `kv_len = 0` desde la posición 0 (sin reutilización parcial entre peticiones).
 2. **Hilos BLAS congelados durante la generación**:
    - Prefill usa `blas_threads = -j`.
-   - Antes de lanzar el hilo del decodificador se fija `gen_blas = (j > 1) ? j - 1 : 1` (o `QWEN_BLAS_GEN_THREADS`) y **no se modifica** hasta terminar el drenaje final (cambiar hilos BLAS a mitad altera el orden de reducción de `sgemm`).
+   - Antes de lanzar el hilo del decodificador se fija `gen_blas = if nt > 1 { nt - 1 } else { 1 }` (o `QWEN_BLAS_GEN_THREADS`) y **no se modifica** hasta terminar el drenaje final (cambiar hilos BLAS a mitad altera el orden de reducción de `sgemm`).
 3. **Calendario fijo de fragmentos crecientes (streaming)**:
    - Primer chunk: `2` fotogramas (`160 ms`).
    - Chunks siguientes `k = 0, 1, 2, ...`: `min(chunk_frames, 4 + 2 * (k / 8))` (por defecto `chunk_frames = 10` → `2`, luego `4×8`, `6×8`, `8×8`, `10...`).
@@ -83,6 +83,5 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | | `matvec_q4_0` vs dequant f32 ref | `rel_L2 < 3e-2` |
 | **Kernels `bf16`** (`--self-test`) | `matvec_bf16` vs f32 ref | `max_rel < 1e-2` |
 | | `matmat_bf16(B=8)` vs `B × matvec_bf16` | `L2_rel < 1e-4` (o `< 1e-2` si hardware trunca activación a bf16) |
-| **Speech Decoder aislado** | `test-decoder-tool` con tiling vs sin tiling / C vs Rust | **`SNR >= 100 dB`** (diferencia máx. ±1 LSB en s16le) |
-| **Pipeline E2E** (misma semilla y params) | Rust vs sí mismo (2 corridas) | **MD5 bit-idéntico** en CLI, `/v1/tts` y `/v1/tts/stream` |
-| **Pipeline E2E** (C vs Rust) | Comparativa A/B (`0.6B`) | `WER` equivalente, audio coherente sin truncamientos y **`mel-corr >= 0.95`** (o ≥ `0.98` en misma ISA/BLAS) |
+| **Speech Decoder aislado** | Streaming vs no-streaming / `decode-dump` | **`SNR >= 100 dB`** streaming vs full (`>= 96 dB` / ±1 LSB en s16le vs referencia) |
+| **Pipeline E2E** (misma semilla y params) | Rust vs sí mismo (2 corridas) | **Bit-idéntico** en CLI, `/v1/tts` y `/v1/tts/stream` |

@@ -516,7 +516,7 @@ pub fn synthesize_to_sink(
                 } else {
                     chunk_frames
                 };
-                let ramped = req.stream && !(!first_chunk_emitted && chunk_frames > 2);
+                let ramped = req.stream && (first_chunk_emitted || chunk_frames <= 2);
 
                 let (avail, is_done) = {
                     let mut g = queue.state.lock().unwrap();

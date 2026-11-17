@@ -39,7 +39,7 @@ pub fn emotion_voice_key(load_voice: Option<&Path>, speaker_name: Option<&str>) 
         .to_string()
 }
 
-/// Resolves `--emotion <name>` on 0.6B (`SPEC_06B.md` §3.2, `main.c:1630-1693`).
+/// Resolves `--emotion <name>` on 0.6B (`SPEC_06B.md` §3.2).
 pub fn resolve_emovoice_06b(
     emotion_spec: &str,
     load_voice: Option<&Path>,

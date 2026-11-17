@@ -1,3 +1,9 @@
+#![allow(
+    clippy::missing_safety_doc,
+    clippy::too_many_arguments,
+    clippy::needless_range_loop
+)]
+
 use core::arch::x86_64::*;
 
 use crate::ftz::ftz_on;
@@ -453,7 +459,7 @@ unsafe fn int8_matvec_1row(
         let mut acc0 = _mm256_setzero_si256();
         let mut k = 0usize;
         while k + 32 <= in_dim {
-            _mm_prefetch::<_MM_HINT_T0>(w0.add(k + QWEN_INT8_PF_DIST) as *const i8);
+            _mm_prefetch::<_MM_HINT_T0>(w0.add(k + QWEN_INT8_PF_DIST));
             let a = _mm256_loadu_si256(qx.add(k) as *const __m256i);
             let v0 = _mm256_loadu_si256(w0.add(k) as *const __m256i);
             let p0 = _mm256_maddubs_epi16(_mm256_sign_epi8(v0, v0), _mm256_sign_epi8(a, v0));
@@ -489,8 +495,8 @@ unsafe fn int8_matvec_2row(
         let mut acc1 = _mm256_setzero_si256();
         let mut k = 0usize;
         while k + 32 <= in_dim {
-            _mm_prefetch::<_MM_HINT_T0>(w0.add(k + QWEN_INT8_PF_DIST) as *const i8);
-            _mm_prefetch::<_MM_HINT_T0>(w1.add(k + QWEN_INT8_PF_DIST) as *const i8);
+            _mm_prefetch::<_MM_HINT_T0>(w0.add(k + QWEN_INT8_PF_DIST));
+            _mm_prefetch::<_MM_HINT_T0>(w1.add(k + QWEN_INT8_PF_DIST));
             let a = _mm256_loadu_si256(qx.add(k) as *const __m256i);
             let v0 = _mm256_loadu_si256(w0.add(k) as *const __m256i);
             let v1 = _mm256_loadu_si256(w1.add(k) as *const __m256i);
@@ -1204,9 +1210,9 @@ unsafe fn vsin2_avx2(y: __m256) -> __m256 {
     const QWEN_SIN_C3: f32 = -1.0 / 5040.0;
     const QWEN_SIN_C4: f32 = 1.0 / 362880.0;
     const QWEN_SIN_C5: f32 = -1.0 / 39916800.0;
-    const QWEN_PI_HI: f32 = 3.14159274101257324;
-    const QWEN_PI_LO: f32 = -8.74227800708368e-8;
-    const QWEN_INV_PI: f32 = 0.31830988618379067;
+    const QWEN_PI_HI: f32 = std::f32::consts::PI;
+    const QWEN_PI_LO: f32 = -8.742_278e-8;
+    const QWEN_INV_PI: f32 = std::f32::consts::FRAC_1_PI;
 
     let inv_pi = _mm256_set1_ps(QWEN_INV_PI);
     let pi_hi = _mm256_set1_ps(QWEN_PI_HI);

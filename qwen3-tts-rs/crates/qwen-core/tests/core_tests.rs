@@ -79,11 +79,11 @@ fn test_mmap_store_06b() {
 }
 
 #[test]
-fn test_bpe_exact_parity_with_c() {
+fn test_bpe_golden_tokens() {
     let root = repo_root();
     let cv_dir = root.join("models/qwen3-tts-0.6b");
     if !cv_dir.exists() {
-        eprintln!("Skipping test_bpe_exact_parity_with_c (models absent)");
+        eprintln!("Skipping test_bpe_golden_tokens (models absent)");
         return;
     }
     let tok = BpeTokenizer::load_from_dir(&cv_dir).unwrap();
@@ -189,9 +189,19 @@ fn test_qvoice_and_bin_roundtrip() {
     // WDELTA LZ4 roundtrip
     let cv: Vec<u16> = (0..1024).map(|i| 0x3F00u16.wrapping_add((i % 7) as u16)).collect();
     let base: Vec<u16> = (0..1024).map(|i| 0x3F00u16.wrapping_add((i % 11) as u16)).collect();
-    let wt = encode_wdelta_bf16("talker.model.layers.12.self_attn.q_proj.weight", &base, &cv).unwrap();
-    let decoded = decode_wdelta_bf16(&cv, &wt, 1.0, 11, 27).unwrap();
+    let wt = encode_wdelta_bf16("talker.model.layers.14.self_attn.q_proj.weight", &base, &cv).unwrap();
+    let decoded = decode_wdelta_bf16(&cv, &wt, 1.0, 14, 27).unwrap();
     assert_eq!(decoded, base);
+
+    // Reject legacy .qvoice v2 header
+    let tmp_v2 = std::env::temp_dir().join("qwen_core_legacy_v2.qvoice");
+    let mut v2_bytes = Vec::new();
+    v2_bytes.extend_from_slice(b"QVCE");
+    v2_bytes.extend_from_slice(&2u32.to_le_bytes());
+    v2_bytes.extend_from_slice(&1024u32.to_le_bytes());
+    std::fs::write(&tmp_v2, v2_bytes).unwrap();
+    assert!(QVoiceFile::read_from_file(&tmp_v2, false).is_err());
+    let _ = std::fs::remove_file(&tmp_v2);
 }
 
 #[test]

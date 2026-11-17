@@ -7,7 +7,7 @@ use std::time::Instant;
 use qwen_core::config::{
     CODEBOOK_DIM, CODEBOOK_SIZE, CODEC_VOCAB_SIZE, CP_HEAD_DIM, CP_HIDDEN_SIZE,
     CP_INTERMEDIATE_SIZE, CP_KV_DIM, CP_NUM_LAYERS, CP_Q_DIM, DEC_HEAD_DIM,
-    DEC_NUM_LAYERS, DEC_RMS_NORM_EPS, DEC_ROPE_THETA, DEC_UPSAMPLE_CHANNELS, HEAD_DIM, HIDDEN_SIZE,
+    DEC_NUM_LAYERS, DEC_ROPE_THETA, DEC_UPSAMPLE_CHANNELS, HEAD_DIM, HIDDEN_SIZE,
     INTERMEDIATE_SIZE, KV_DIM, NUM_CODEBOOKS, NUM_HEADS, NUM_LAYERS, Q_DIM, TEXT_HIDDEN_SIZE,
     TOKEN_TTS_BOS, TOKEN_TTS_EOS, TOKEN_TTS_PAD,
 };
@@ -16,7 +16,7 @@ use qwen_core::{
     QVoiceWeightsOverride, Sampler,
 };
 use qwen_kernels::quant::{
-    bf16_to_f32, interleave_gate_up_bf16, quant_shape_check, quantize_bf16_to_int8,
+    interleave_gate_up_bf16, quant_shape_check, quantize_bf16_to_int8,
     quantize_bf16_to_q4_0, quantize_gate_up_int8, quantize_gate_up_q4_0,
 };
 use qwen_kernels::{AlignedBuf, ComputeRuntime, KernelDispatch, Q2_0Block, Q4_0Block};
@@ -337,6 +337,7 @@ pub enum VoiceIdentity {
     },
 }
 
+#[derive(Clone)]
 pub struct TextProjOverride {
     pub fc1_bf16: Vec<u16>,
     pub fc1_bias: Vec<f32>,
@@ -348,6 +349,7 @@ pub struct TextProjOverride {
     pub tts_eos_embed: AlignedBuf<f32>,
 }
 
+#[derive(Clone)]
 pub struct VoiceBindings {
     pub identity: VoiceIdentity,
     pub wovr: Option<TextProjOverride>,
@@ -1320,7 +1322,7 @@ impl Model06B {
         let mut total_bytes = 0usize;
 
         let parse_f32_payload = |t: &qwen_core::QVoiceWeightTensor| -> Result<F32Weight, EngineError> {
-            if t.payload.len() % 4 != 0 {
+            if !t.payload.len().is_multiple_of(4) {
                 return Err(EngineError::Model(format!(
                     "Invalid F32 payload length in .qvoice tensor '{}'",
                     t.name
@@ -2127,8 +2129,6 @@ impl Model06B {
         if !silent {
             eprintln!("  Codebooks: 16/16 (dequantized from EMA)");
         }
-
-        let _ = (DEC_RMS_NORM_EPS, bf16_to_f32);
 
         Ok(SpeechDecoderWeights {
             codebooks: Arc::new(codebooks),

@@ -190,7 +190,7 @@ pub fn print_usage(prog: &str) {
     eprintln!("  --xvector-only             Use speaker embedding only (no ICL)");
     eprintln!("  --save-voice <path>        Save voice (.qvoice or .bin)");
     eprintln!("  --load-voice <path>        Load voice (.qvoice or .bin)");
-    eprintln!("  --icl-only                 Skip WDELTA/WFULL when loading .qvoice");
+    eprintln!("  --icl-only                 Skip WDELTA when loading .qvoice");
     eprintln!("  --graft                    Ignore ref_codes, clone via x-vector (implies --icl-only)");
     eprintln!("  --icl-frames <n>           Cap ICL ref frames (0=all)");
     eprintln!("  --voice-name <name>        Voice metadata name for .qvoice");

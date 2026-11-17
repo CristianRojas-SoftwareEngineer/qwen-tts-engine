@@ -18,7 +18,7 @@ fn main() {
         println!("cargo:rustc-link-search=native={lib_dir}");
 
         if target.contains("gnu") {
-            // Static OpenBLAS + OpenMP + gfortran runtime (matches C Makefile on UCRT64)
+            // Static OpenBLAS + OpenMP + gfortran runtime (MSYS2 UCRT64)
             println!("cargo:rustc-link-lib=static=openblas");
             println!("cargo:rustc-link-lib=static=gomp");
             println!("cargo:rustc-link-lib=static=gfortran");

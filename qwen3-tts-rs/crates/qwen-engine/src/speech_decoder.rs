@@ -1,7 +1,7 @@
 use qwen_core::config::{
     CODEBOOK_DIM, CODEBOOK_SIZE, DEC_HEAD_DIM, DEC_HIDDEN_SIZE, DEC_INTERMEDIATE_SIZE,
     DEC_LATENT_DIM, DEC_NUM_HEADS, DEC_NUM_LAYERS, DEC_RMS_NORM_EPS, DEC_SLIDING_WINDOW,
-    DEC_UPSAMPLE_CHANNELS, DEC_UPSAMPLE_RATES, HOP_SAMPLES, NUM_CODEBOOKS,
+    DEC_UPSAMPLE_CHANNELS, DEC_UPSAMPLE_RATES, NUM_CODEBOOKS,
 };
 use qwen_kernels::quant::erff;
 use qwen_kernels::{AlignedBuf, ComputeRuntime, Transpose};
@@ -203,7 +203,7 @@ fn convnext_mlp(
     if let Some(b) = cn.pwconv1_bias.as_deref() {
         conv_add_bias(pw1_out, Some(b), pw_dim, cur_len);
     }
-    const INV_SQRT2: f32 = 0.7071067811865476f32;
+    const INV_SQRT2: f32 = std::f32::consts::FRAC_1_SQRT_2;
     for v in pw1_out.iter_mut() {
         *v = 0.5f32 * *v * (1.0f32 + erff(*v * INV_SQRT2));
     }
@@ -234,19 +234,6 @@ fn convnext_mlp(
         for t in 0..cur_len {
             s_row[t] = r_row[t] + s_row[t] * g;
         }
-    }
-}
-
-#[inline]
-fn split_ab<'a>(
-    a: &'a mut AlignedBuf<f32>,
-    b: &'a mut AlignedBuf<f32>,
-    cur_slot: usize,
-) -> (&'a [f32], &'a mut AlignedBuf<f32>) {
-    if cur_slot == 0 {
-        (a.as_slice(), b)
-    } else {
-        (b.as_slice(), a)
     }
 }
 
@@ -1509,7 +1496,6 @@ fn conv_decoder_forward_streaming(
     }
 
     st.cs_warm = true;
-    let _ = split_ab;
     audio
 }
 
@@ -1527,7 +1513,7 @@ pub fn speech_decoder_decode_streaming(
     let blas = &runtime.blas;
     let d = runtime.dispatch;
 
-    // Step 1: exact per-frame VQ dequant matching qwen_tts_speech_decoder.c:1640-1668
+    // Step 1: per-frame VQ dequantization
     if st.tmp_vq_out.len() < new_frames * VQ_HIDDEN {
         st.tmp_vq_out.resize(new_frames * VQ_HIDDEN, 0.0);
     }
@@ -1989,6 +1975,5 @@ pub fn speech_decoder_decode_streaming(
     let audio = conv_decoder_forward_streaming(runtime, sd, st, ws, new_frames);
     st.frames_decoded += new_frames;
     st.samples_produced += audio.len();
-    let _ = HOP_SAMPLES;
     Ok(audio)
 }

@@ -587,7 +587,7 @@ pub fn speech_encoder_encode(
             &mut fc1_out,
             ENC_INTER,
         );
-        const INV_SQRT2: f32 = 0.7071067811865476f32;
+        const INV_SQRT2: f32 = std::f32::consts::FRAC_1_SQRT_2;
         for v in fc1_out.iter_mut() {
             *v = 0.5f32 * *v * (1.0f32 + erff(*v * INV_SQRT2));
         }

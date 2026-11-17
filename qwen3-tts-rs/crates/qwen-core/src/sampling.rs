@@ -8,7 +8,7 @@ impl LcgRng {
         Self { seed }
     }
 
-    /// Exact match to C `rand_uniform()` in `qwen_tts_sampling.c`.
+    /// Deterministic LCG uniform sample in `[0.0, 1.0)`.
     #[inline]
     pub fn next_uniform(&mut self) -> f32 {
         self.seed = self.seed.wrapping_mul(1103515245).wrapping_add(12345);
@@ -136,6 +136,7 @@ impl Sampler {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn sample(
         &mut self,
         logits: &mut [f32],

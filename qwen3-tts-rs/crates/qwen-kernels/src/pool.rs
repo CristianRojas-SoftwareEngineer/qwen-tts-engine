@@ -58,8 +58,8 @@ struct PoolInner {
 
 unsafe impl Sync for PoolInner {}
 
-/// Instanciable persistent thread pool (no global singleton state), matching C's
-/// spin-wait (`QWEN_POOL_SPIN=4096` + `spin_loop()`) + `Condvar` + per-worker `ftz_on()`.
+/// Instantiable persistent thread pool (no global singleton state) with
+/// spin-wait (`QWEN_POOL_SPIN=4096` + `spin_loop()`), `Condvar` and per-worker `ftz_on()`.
 #[derive(Clone)]
 pub struct ComputePool {
     inner: Arc<PoolInner>,

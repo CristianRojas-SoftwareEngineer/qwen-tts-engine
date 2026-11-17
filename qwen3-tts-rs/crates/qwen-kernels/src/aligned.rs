@@ -16,13 +16,11 @@ unsafe impl<T: Send, const ALIGN: usize> Send for AlignedBuf<T, ALIGN> {}
 unsafe impl<T: Sync, const ALIGN: usize> Sync for AlignedBuf<T, ALIGN> {}
 
 impl<T: Copy + Default, const ALIGN: usize> AlignedBuf<T, ALIGN> {
-    const _ALIGN_OK: () = {
-        assert!(ALIGN >= std::mem::align_of::<T>());
-        assert!(ALIGN.is_power_of_two());
-    };
-
     pub fn new_zeroed(len: usize) -> Self {
-        let _ = Self::_ALIGN_OK;
+        const {
+            assert!(ALIGN >= std::mem::align_of::<T>());
+            assert!(ALIGN.is_power_of_two());
+        }
         if len == 0 {
             return Self {
                 ptr: NonNull::dangling(),
@@ -53,7 +51,10 @@ impl<T: Copy + Default, const ALIGN: usize> AlignedBuf<T, ALIGN> {
     /// Ensures capacity is at least `new_len` and sets length to `new_len`,
     /// zero-initializing any newly grown elements (monotonic workspace slot).
     pub fn resize_zeroed(&mut self, new_len: usize) {
-        let _ = Self::_ALIGN_OK;
+        const {
+            assert!(ALIGN >= std::mem::align_of::<T>());
+            assert!(ALIGN.is_power_of_two());
+        }
         if new_len <= self.cap {
             if new_len > self.len {
                 unsafe {

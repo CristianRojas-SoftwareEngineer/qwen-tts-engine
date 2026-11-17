@@ -294,40 +294,16 @@ impl AudioSink for HttpAudioChunkSink<'_> {
     }
 }
 
-pub fn resolve_request_voice(base_voice: &VoiceBindings, speaker_id: i32) -> (VoiceBindings, bool) {
-    if base_voice.wovr.is_none() && matches!(base_voice.identity, VoiceIdentity::Preset(_)) {
+pub fn resolve_request_voice(base_voice: &VoiceBindings, speaker_id: i32) -> (Option<VoiceBindings>, &VoiceBindings) {
+    if matches!(base_voice.identity, VoiceIdentity::Preset(_)) {
+        // Preset voices carry no WOVR weights; only clone identity needs switching.
         let v = VoiceBindings {
             identity: VoiceIdentity::Preset(speaker_id),
-            wovr: None,
-            emo_ref_text: base_voice.emo_ref_text.clone(),
-            emo_ref_codes: base_voice.emo_ref_codes.clone(),
-            icl_frames_cap: base_voice.icl_frames_cap,
-            graft_mode: base_voice.graft_mode,
+            ..base_voice.clone()
         };
-        (v, true)
+        (Some(v), base_voice)
     } else {
-        // Clone base_voice fields when overriding or keep borrowed
-        let v = VoiceBindings {
-            identity: match &base_voice.identity {
-                VoiceIdentity::Preset(_) => VoiceIdentity::Preset(speaker_id),
-                VoiceIdentity::XVector(e) => VoiceIdentity::XVector(e.clone()),
-                VoiceIdentity::IclGraft {
-                    speaker_embedding,
-                    ref_text,
-                    ref_codes,
-                } => VoiceIdentity::IclGraft {
-                    speaker_embedding: speaker_embedding.clone(),
-                    ref_text: ref_text.clone(),
-                    ref_codes: ref_codes.clone(),
-                },
-            },
-            wovr: None,
-            emo_ref_text: base_voice.emo_ref_text.clone(),
-            emo_ref_codes: base_voice.emo_ref_codes.clone(),
-            icl_frames_cap: base_voice.icl_frames_cap,
-            graft_mode: base_voice.graft_mode,
-        };
-        (v, base_voice.wovr.is_none())
+        (None, base_voice)
     }
 }
 
@@ -340,12 +316,8 @@ pub fn handle_tts_full(
     vreq: &ValidatedTtsRequest,
 ) {
     let seed = vreq.resolve_seed_or_time();
-    let (owned_voice, can_use_owned) = resolve_request_voice(base_voice, vreq.speaker_id);
-    let voice_ref = if can_use_owned {
-        &owned_voice
-    } else {
-        base_voice
-    };
+    let (owned_voice, fallback_voice) = resolve_request_voice(base_voice, vreq.speaker_id);
+    let voice_ref = owned_voice.as_ref().unwrap_or(fallback_voice);
 
     let prep = prepare_markup_06b(
         &vreq.text,
@@ -484,12 +456,8 @@ pub fn handle_tts_stream(
     vreq: &ValidatedTtsRequest,
 ) {
     let seed = vreq.resolve_seed_or_time();
-    let (owned_voice, can_use_owned) = resolve_request_voice(base_voice, vreq.speaker_id);
-    let voice_ref = if can_use_owned {
-        &owned_voice
-    } else {
-        base_voice
-    };
+    let (owned_voice, fallback_voice) = resolve_request_voice(base_voice, vreq.speaker_id);
+    let voice_ref = owned_voice.as_ref().unwrap_or(fallback_voice);
 
     let prep = prepare_markup_06b(
         &vreq.text,

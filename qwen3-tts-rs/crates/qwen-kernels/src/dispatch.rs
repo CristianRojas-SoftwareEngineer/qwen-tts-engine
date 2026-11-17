@@ -1,3 +1,9 @@
+#![allow(
+    clippy::too_many_arguments,
+    clippy::needless_range_loop,
+    clippy::missing_const_for_thread_local
+)]
+
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -11,9 +17,6 @@ use crate::simd::scalar;
 
 #[cfg(target_arch = "x86_64")]
 use crate::simd::avx2;
-
-#[cfg(target_arch = "aarch64")]
-use crate::simd::neon;
 
 pub type QuantizeActFn = fn(&mut [i8], &[f32]) -> f32;
 pub type RmsNormFn = fn(&mut [f32], &[f32], &[f32], usize, usize, f32);
@@ -291,39 +294,11 @@ static AVX2_DISPATCH: KernelDispatch = KernelDispatch {
     snake_row_fn: avx2_wrappers::snake_row,
 };
 
-#[cfg(target_arch = "aarch64")]
-static NEON_DISPATCH: KernelDispatch = KernelDispatch {
-    quantize_act_int8_fn: neon::quantize_act_int8,
-    rms_norm_fn: neon::rms_norm,
-    rms_norm_residual_fn: neon::rms_norm_residual,
-    rms_norm_per_head_fn: neon::rms_norm_per_head,
-    bf16_matvec_slice_fn: neon::bf16_matvec_slice,
-    bf16_matmat_slice_fn: neon::bf16_matmat_slice,
-    int8_matvec_slice_fn: neon::int8_matvec_slice,
-    int8_matmat_slice_fn: neon::int8_matmat_slice,
-    q4_0_matvec_slice_fn: neon::q4_0_matvec_slice,
-    q4_0_matvec_qkv_slice_fn: neon::q4_0_matvec_slice,
-    q4_0_matmat_slice_fn: neon::q4_0_matmat_slice,
-    argmax_bf16_fn: neon::argmax_matvec_bf16,
-    attn_f32_fn: neon::causal_attention_f32_heads,
-    attn_bf16kv_fn: neon::causal_attention_bf16kv_heads,
-    rope_neox_fn: neon::apply_rope_neox_inplace,
-    bf16_accum_f32_fn: neon::bf16_accum_f32,
-    bf16_to_f32_vec_fn: neon::bf16_to_f32_vec,
-    f32_to_bf16_vec_fn: neon::f32_to_bf16_vec,
-    f32_matvec_accum_fn: neon::f32_matvec_accum,
-    snake_row_fn: neon::snake_row,
-};
-
 impl KernelDispatch {
     pub fn for_caps(caps: &CpuCaps) -> &'static Self {
         #[cfg(target_arch = "x86_64")]
         if caps.has_avx2_fma() {
             return &AVX2_DISPATCH;
-        }
-        #[cfg(target_arch = "aarch64")]
-        if caps.neon {
-            return &NEON_DISPATCH;
         }
         let _ = caps;
         &SCALAR_DISPATCH
@@ -545,7 +520,7 @@ impl KernelDispatch {
         rows: usize,
         cols: usize,
     ) {
-        debug_assert!(cols > 0 && cols <= QWEN_QACT_MAX && cols % Q4_0_BLOCK_SIZE == 0);
+        debug_assert!(cols > 0 && cols <= QWEN_QACT_MAX && cols.is_multiple_of(Q4_0_BLOCK_SIZE));
         let mut qx_uninit = std::mem::MaybeUninit::<[i8; QWEN_QACT_MAX]>::uninit();
         let qx_slice = unsafe {
             std::slice::from_raw_parts_mut(qx_uninit.as_mut_ptr() as *mut i8, cols)
@@ -770,7 +745,7 @@ impl KernelDispatch {
         rows: usize,
         cols: usize,
     ) {
-        debug_assert!(cols > 0 && cols <= QWEN_QACT_MAX && cols % Q4_0_BLOCK_SIZE == 0);
+        debug_assert!(cols > 0 && cols <= QWEN_QACT_MAX && cols.is_multiple_of(Q4_0_BLOCK_SIZE));
         let mut qx_uninit = std::mem::MaybeUninit::<[i8; QWEN_QACT_MAX]>::uninit();
         let qx_slice = unsafe {
             std::slice::from_raw_parts_mut(qx_uninit.as_mut_ptr() as *mut i8, cols)

@@ -68,18 +68,6 @@ impl CpuCaps {
             );
             let _ = writeln!(s, "  bf16 dot:         bf16->f32 conversion + FMA");
             let _ = writeln!(s, "  rms/bf16-conv:    AVX2");
-        } else if self.neon {
-            let _ = writeln!(s, "  matvec + attn:    NEON (2-row fused)");
-            let _ = writeln!(
-                s,
-                "  int8 dot:         {}",
-                if self.dotprod {
-                    "SDOT vdotq_s32 (native)"
-                } else {
-                    "scalar (integer loop, int32 accumulation)"
-                }
-            );
-            let _ = writeln!(s, "  rms/bf16-conv:    NEON");
         } else {
             let _ = writeln!(s, "  matvec + attn:    scalar");
             let _ = writeln!(

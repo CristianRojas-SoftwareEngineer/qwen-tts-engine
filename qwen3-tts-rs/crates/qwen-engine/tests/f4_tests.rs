@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use qwen_core::config::{ENC_DIM, NUM_CODEBOOKS, SAMPLE_RATE};
 use qwen_core::{write_bin_embedding, MarkupPlanner, QVoiceFile};
@@ -256,7 +256,7 @@ fn test_clone_wdelta_q4_error_and_e2e_f4() {
     assert!(matches!(base_voice.identity, VoiceIdentity::IclGraft { .. }));
 
     let parsed_qv = QVoiceFile::read_from_file(&wdelta_qv, false).unwrap();
-    assert!(parsed_qv.weights.as_ref().unwrap().is_wdelta);
+    assert!(parsed_qv.weights.is_some());
     assert!(parsed_qv.ref_codes.len() >= NUM_CODEBOOKS);
 
     // 3. Loading WDELTA .qvoice without --icl-only on Q4_0 (--quant-mixed) MUST FAIL explicitly
@@ -341,5 +341,4 @@ fn test_clone_wdelta_q4_error_and_e2e_f4() {
     .unwrap();
     assert!(n_spoken >= 2 && composed.len() > SAMPLE_RATE);
     let _ = encode_wav_bytes(&composed, SAMPLE_RATE as u32);
-    let _ = Path::new("unused");
 }

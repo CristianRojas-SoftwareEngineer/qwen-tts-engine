@@ -7,17 +7,9 @@ use qwen_core::config::SAMPLE_RATE;
 use crate::error::EngineError;
 
 #[inline]
-pub fn f32_to_s16le_clamped(mut s: f32) -> i16 {
-    if s.is_nan() {
-        s = 0.0;
-    }
-    if s < -1.0 {
-        s = -1.0;
-    }
-    if s > 1.0 {
-        s = 1.0;
-    }
-    (s * 32767.0f32) as i16
+pub fn f32_to_s16le_clamped(s: f32) -> i16 {
+    let clamped = if s.is_nan() { 0.0 } else { s.clamp(-1.0, 1.0) };
+    (clamped * 32767.0f32) as i16
 }
 
 pub fn apply_gain(samples: &mut [f32], gain: f32) {
@@ -25,18 +17,11 @@ pub fn apply_gain(samples: &mut [f32], gain: f32) {
         return;
     }
     for s in samples.iter_mut() {
-        let mut v = *s * gain;
-        if v < -1.0 {
-            v = -1.0;
-        }
-        if v > 1.0 {
-            v = 1.0;
-        }
-        *s = v;
+        *s = (*s * gain).clamp(-1.0, 1.0);
     }
 }
 
-/// Pitch-preserving time-stretch via WSOLA (`--rate`), matching `qwen_tts_audio.c`.
+/// Pitch-preserving time-stretch via WSOLA (`--rate`).
 pub fn time_stretch(input: &[f32], rate: f32) -> Vec<f32> {
     let rate = if rate <= 0.0 { 1.0 } else { rate };
     let n_in = input.len();
@@ -212,7 +197,6 @@ impl AudioSink for MemorySink {
 
 pub struct WavStreamSink {
     file: BufWriter<File>,
-    sample_rate: u32,
     volume: f32,
     data_bytes: u32,
 }
@@ -225,7 +209,6 @@ impl WavStreamSink {
         bw.flush()?;
         Ok(Self {
             file: bw,
-            sample_rate,
             volume,
             data_bytes: 0,
         })
@@ -254,7 +237,6 @@ impl AudioSink for WavStreamSink {
         inner.seek(SeekFrom::Start(40))?;
         inner.write_all(&self.data_bytes.to_le_bytes())?;
         inner.flush()?;
-        let _ = self.sample_rate;
         Ok(())
     }
 }

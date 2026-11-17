@@ -187,7 +187,7 @@ impl MmapStore {
             )));
         }
         let data = view.data();
-        if data.len() % 2 != 0 || (data.as_ptr() as usize) % 2 != 0 {
+        if !data.len().is_multiple_of(2) || !(data.as_ptr() as usize).is_multiple_of(2) {
             return Err(CoreError::Safetensors(format!(
                 "Tensor '{name}' BF16 data is not 2-byte aligned"
             )));
@@ -216,7 +216,7 @@ impl MmapStore {
             )));
         }
         let data = view.data();
-        if data.len() % 2 != 0 || (data.as_ptr() as usize) % 2 != 0 {
+        if !data.len().is_multiple_of(2) || !(data.as_ptr() as usize).is_multiple_of(2) {
             return Err(CoreError::Safetensors(format!(
                 "Tensor '{name}' BF16 data is not 2-byte aligned"
             )));
@@ -243,12 +243,12 @@ impl MmapStore {
         let data = view.data();
         match view.dtype() {
             Dtype::F32 => {
-                if data.len() % 4 != 0 {
+                if !data.len().is_multiple_of(4) {
                     return Err(CoreError::Safetensors(format!(
                         "Tensor '{name}' F32 byte length invalid"
                     )));
                 }
-                if (data.as_ptr() as usize) % 4 == 0 {
+                if (data.as_ptr() as usize).is_multiple_of(4) {
                     let byte_offset = (data.as_ptr() as usize) - (shard.as_ptr() as usize);
                     Ok(F32Ref::Mmap {
                         shard: Arc::clone(shard),
@@ -294,12 +294,12 @@ impl MmapStore {
         let data = view.data();
         match view.dtype() {
             Dtype::F32 => {
-                if data.len() % 4 != 0 {
+                if !data.len().is_multiple_of(4) {
                     return Err(CoreError::Safetensors(format!(
                         "Tensor '{name}' F32 byte length invalid"
                     )));
                 }
-                if (data.as_ptr() as usize) % 4 == 0 {
+                if (data.as_ptr() as usize).is_multiple_of(4) {
                     let slice = unsafe {
                         std::slice::from_raw_parts(data.as_ptr() as *const f32, data.len() / 4)
                     };

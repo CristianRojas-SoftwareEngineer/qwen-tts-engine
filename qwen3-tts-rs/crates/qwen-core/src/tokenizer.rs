@@ -36,8 +36,8 @@ fn byte_tables() -> &'static ByteTables {
                 extra += 1;
             }
         }
-        for b in 0..256usize {
-            let cp = byte_to_cp[b] as usize;
+        for (b, &cp_u32) in byte_to_cp.iter().enumerate() {
+            let cp = cp_u32 as usize;
             if cp < cp_to_byte.len() {
                 cp_to_byte[cp] = b as u8;
             }
@@ -78,7 +78,7 @@ fn utf8_char_len(c: u8) -> usize {
     }
 }
 
-/// Byte-level pre-tokenizer matching `qwen_tts_tokenizer.c` byte-for-byte,
+/// Byte-level pre-tokenizer matching Qwen2/Qwen3 BPE,
 /// including UTF-8 continuation validation and progress guard.
 fn pre_tokenize(bytes: &[u8]) -> Vec<&[u8]> {
     let mut chunks = Vec::new();
@@ -156,10 +156,7 @@ fn pre_tokenize(bytes: &[u8]) -> Vec<&[u8]> {
             } else if i + 2 < len {
                 let p0 = next.to_ascii_lowercase();
                 let p1 = bytes[i + 2].to_ascii_lowercase();
-                if (p0 == b'r' && p1 == b'e')
-                    || (p0 == b'v' && p1 == b'e')
-                    || (p0 == b'l' && p1 == b'l')
-                {
+                if ((p0 == b'r' || p0 == b'v') && p1 == b'e') || (p0 == b'l' && p1 == b'l') {
                     3
                 } else {
                     0
@@ -177,13 +174,16 @@ fn pre_tokenize(bytes: &[u8]) -> Vec<&[u8]> {
         // 3. Qwen2 pattern: [^\r\n\p{L}\p{N}]?\p{L}+
         let mut next_is_letter = false;
         let mut lookahead = i;
-        if !is_letter(c) && !c.is_ascii_digit() && c != b'\n' && c != b'\r' {
-            if i + 1 < len {
-                let nc = bytes[i + 1];
-                if is_letter(nc) || is_utf8_start(nc) {
-                    next_is_letter = true;
-                    lookahead = i;
-                }
+        if !is_letter(c)
+            && !c.is_ascii_digit()
+            && c != b'\n'
+            && c != b'\r'
+            && i + 1 < len
+        {
+            let nc = bytes[i + 1];
+            if is_letter(nc) || is_utf8_start(nc) {
+                next_is_letter = true;
+                lookahead = i;
             }
         }
         if is_letter(c) || is_utf8_start(c) {
@@ -277,7 +277,6 @@ impl BpeTokenizer {
     }
 
     pub fn load_files(vocab_path: &Path, merges_path: &Path) -> Result<Self, CoreError> {
-        let _ = byte_tables();
         let vocab_str = std::fs::read_to_string(vocab_path).map_err(|e| {
             CoreError::Tokenizer(format!("Cannot read {}: {e}", vocab_path.display()))
         })?;
@@ -318,14 +317,6 @@ impl BpeTokenizer {
             id_to_token,
             max_id,
         })
-    }
-
-    pub fn vocab_size(&self) -> usize {
-        (self.max_id + 1) as usize
-    }
-
-    pub fn get_special_token(&self, name: &str) -> Option<i32> {
-        self.vocab.get(name).copied()
     }
 
     pub fn encode(&self, text: &str) -> Vec<i32> {

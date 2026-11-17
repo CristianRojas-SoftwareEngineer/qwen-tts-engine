@@ -1,45 +1,33 @@
-# Plan de Verificación, Oráculo C y Gates (`VERIFICATION_PLAN.md`)
+# Plan de Verificación y Gates (`VERIFICATION_PLAN.md`)
 
-Define cómo validar de forma objetiva cada fase de la migración de `qwen3-tts` (`0.6B`) de C a Rust frente al oráculo congelado en `qwen3-tts/`.
-
----
-
-## 1. Corpus Dorado y Entorno de Medición (Fase 0)
-
-### 1.1 Regla de comparación A/B (`qwen3-tts/AGENTS.md`)
-Toda comparación entre C y Rust debe fijar parámetros explícitos idénticos: `--seed <N>`, `-s <speaker>`, `-l <language>`, mismo `--text`, mismo `-j <threads>`, mismo `-d <model_dir>` y (en Windows con OpenBLAS OpenMP) `OMP_NUM_THREADS = -j` sin `OPENBLAS_NUM_THREADS`.
-
-### 1.2 Casos del corpus (`parity/corpus.json`)
-| ID | Caso | Modelo / Perfil | Qué valida |
-|---|---|---|---|
-| `C1_short_es` | Frase corta español (`"Hola, ¿cómo estás?"`, `ryan`) | `0.6B` (`bf16`, `--int8`, `--quant-mixed`) | EOS boosting corto, coherencia y ausencia de bucle/ruido. |
-| `C2_short_en` | Frase golden inglés (`GOLDEN_EN` del `Makefile`, `ryan`) | `0.6B` (`bf16`, `--int8`, `--int4`, `--quant-mixed`) | Paridad de modos (`test-modes`) y etiqueta `[INT8+Q4_0-FFN]`. |
-| `C3_long_it` | Texto largo (~15–25 s, `ryan`/`vivian`, italiano) | `0.6B` (`--quant-mixed`, normal y `--stream`) | `RTF`, `TTFA`, tiling `up2`/`up3`, atención paralela por cabezas y caché KV > 1024 si aplica. |
-| `C4_memload` | Igual a `C3_long_it` con 1 hilo lector/copiador de 256 MB en paralelo | `0.6B` (`--quant-mixed --stream`) | Eficacia real de prefetch `5120B`, 1-fila `>= 2048` cols y tiling de 256 KB. |
-| `C5_clone` | Clonación `0.6B-Base` (`--ref-audio`, `--save-voice .qvoice`/`.bin`) → `0.6B` (`--icl-only`, `--graft`) | `0.6B-Base` + `0.6B` | `ECAPA-TDNN`, `SpeechEncoder` RVQ, `WOVR`/`TPAD` y timbre. |
-| `C6_para` | Texto con `[laugh]`, `[sigh]`, `[pause:400ms]` (`small_model=1`) | `0.6B` (`--quant-mixed`) | Sustitución inline `small_model=1` y composición sin fugas. |
-| `C7_server` | Suite equivalente a `test-serve-stream` + `--workers` + `--batch-size` | `0.6B` (`--quant-mixed`) | Reproducibilidad, HTTP `400`, chunk `0`, cancelación por socket y concurrencia. |
+Define los criterios objetivos de validación del motor `qwen3-tts-rs` (`0.6B`) en Rust estable. Todos los Gates de migración (**G0–G6**) fueron superados y el código C histórico (`qwen3-tts/` y `parity/`) fue retirado al cerrar el Gate **G6**.
 
 ---
 
-## 2. Protocolo de Captura del Baseline C (`parity/`)
+## 1. Suites Automatizadas Vigentes (`cargo test`)
 
-1. Compilar el motor C de referencia (en MSYS2 UCRT64: `make blas` + `make test-decoder-tool`).
-2. Ejecutar `parity/run_baseline_c.ps1` para guardar en `parity/golden/`:
-   - Salida completa de `--caps`, `--self-test` y `--matmat-bench`.
-   - Dump fijo de códigos (`QWEN_DUMP_CODES`) para probar el `SpeechDecoder` aislado.
-   - Métricas base por caso (`C1..C7`): `RTF`, `TTFA`, desglose `[HTTP] Desglose:`, memoria RSS pico y transcripción/WER (si hay ASR local disponible) o verificación de `mel-corr`.
+| Suite / Comando | Qué valida |
+|---|---|
+| `qwen-kernels/tests/kernels_tests.rs` | `AlignedBuf<64>`, `--self-test` (`0` fallos numéricos en `int8`/`q4_0`/`bf16`), estrés concurrente de `ComputePool` sin estado global, `BlasBackend::sgemm` y `quantize_bf16_to_q2_0`. |
+| `qwen-core/tests/core_tests.rs` | Carga `0.6B` (`CustomVoice`/`Base`), rechazo negativo de `1.7B` y `VoiceDesign`, `MmapStore`, tokenización BPE golden, roundtrip `.bin` y `.qvoice` v3 (`META`/`TPAD`/`WOVR` + `WDLT` LZ4) y rechazo de `.qvoice` legacy (`v1`/`v2`), `MarkupPlanner` y determinismo `Sampler`/`LcgRng`. |
+| `qwen-engine/tests/engine_tests.rs` | Paridad `SpeechDecoder` streaming (`2, 4×8, 6×8, 8×8, 10` con tiling 256 KB) vs decodificación completa (`SNR >= 100 dB`), determinismo E2E bit-idéntico y cancelación vía `AbortHandle`. |
+| `qwen-engine/tests/f4_tests.rs` | Validación temprana de WAV 24 kHz y guías `ffmpeg`, `trim_trailing_silence`, `mel_spectrogram`, resolución `emovoice` + norma L2 `dir_*.bin`, flujo E2E `0.6B-Base` → `.qvoice` (`WDLT`) + error explícito sobre `Q4_0` + `--icl-only`, `--emo-ref`, `--roughness` (`Q2_0`) y composición multi-span. |
+| `qwen-app` unit tests (`cli`, `validation`) | Rechazo de flags no soportadas (`--voice-design`, `--instruct`), `--host` inválido, `--graft` / `--stdout` y validación completa HTTP `400` en `ValidatedTtsRequest`. |
+| `qwen_tts --caps`, `--self-test`, `--matmat-bench` | Capacidades SIMD/BLAS/hilos en runtime, batería numérica de kernels (`0` fallos) y microbenchmark `matmat` vs `B × matvec`. |
+| `qwen_tts decode-dump <codes.txt> <model_dir> <out.wav>` | Decodificación aislada de tramas de 16 codebooks a WAV 24 kHz s16le. |
+
+En `.github/workflows/ci.yml` se ejecutan en cada push/PR las pruebas del workspace, compilación release, `--caps`, `--self-test` y verificación del manifiesto UTF-8 Win32 sobre **Windows (`x86_64-pc-windows-gnu`)**, **Linux (`x86_64` y `aarch64`)** y **macOS (`arm64`)**, además de `cargo check -p qwen-app --features faer-blas`.
 
 ---
 
-## 3. Gates de Aceptación por Fase de Implementación
+## 2. Histórico de Gates Superados (G0–G6)
 
-| Gate | Fase | Pruebas obligatorias | Criterio de paso |
-|---|---|---|---|
-| **G0** | Baseline C | `test-selftest`, `test-errors`, `test-caps` + captura `C1..C7` | Artefactos dorados guardados en `parity/golden/`. |
-| **G1** | `qwen-kernels` | `--caps`, `--self-test`, `--matmat-bench`, test estrés `ComputePool` | **0 fallos** en `--self-test` (`matmat_int8` error `0.0`, `q4_0 <= 1e-6`, `rel_L2 < 3e-2`) y `matmat-bench >= 95 %` del C. |
-| **G2** | `qwen-core` | Carga real `0.6B` (`CustomVoice`/`Base`), BPE corpus, `.qvoice`/`.bin` | Tokenización **100 % idéntica** a C; validación negativa de `1.7B` y shapes inválidos; roundtrip `.qvoice` exacto. |
-| **G3** | `qwen-engine` (1) | `decode-dump` sobre `QWEN_DUMP_CODES` + `C1..C4` | Decoder **`SNR >= 100 dB`** vs C; reproducibilidad **bit-idéntica** entre corridas Rust; `WER` equivalente, `mel-corr >= 0.95` y **`RTF <= baseline C`**, **`TTFA <= baseline C`**. |
-| **G4** | `qwen-engine` (2) | `C5_clone`, `C6_para`, `emovoice`, `--emo-ref`, `--roughness` | Error explícito ante WAV != 24 kHz o `WDELTA` sobre `Q4_0`; paridad auditiva/WER en clonación y paralingüística `0.6B`. |
-| **G5** | `qwen-app` | `C7_server` (`test-errors` + `test-serve*` + `--watch-stdin` + Win32 affinity) | Todos los `400` exactos; `/v1/tts == /v1/tts/stream` en bytes; cancelación inmediata sin bloqueo; cierre limpio al cerrar `stdin`; cero fugas/carreras. |
-| **G6** | Cierre / `faer` | Comparativa `FfiBlas` vs `PureRustBlas` (`C1..C7`) + CI Win/Linux/Mac | Se adopta `faer` solo si `RTF <= FfiBlas` y `mel-corr/WER` sin regresión; si no, `FfiBlas` queda como default. |
+| Gate | Fase | Criterio superado |
+|---|---|---|
+| **G0** | Baseline | Captura de línea base A/B en `C1..C7` y dumps dorados de paridad (`aeb466f`). |
+| **G1** | `qwen-kernels` | `0` fallos en `--self-test` (`matmat_int8` error `0.0`, `q4_0 <= 1e-6`, `rel_L2 < 3e-2`) y rendimiento `>= 95 %` (`d7b3efd`). |
+| **G2** | `qwen-core` | Tokenización BPE idéntica, validación negativa `1.7B`/`VoiceDesign` y roundtrip `.qvoice`/`.bin` (`675460c`). |
+| **G3** | `qwen-engine` (1) | Decoder `SNR = 96.2 dB` (`<= 1 LSB`, `mel_corr = 1.0`), determinismo bit-idéntico y `RTF/TTFA <= C` (`44631c0`). |
+| **G4** | `qwen-engine` (2) | `ECAPA-TDNN`, `SpeechEncoder` RVQ, `.qvoice` (`WOVR`/`WDLT`), error `WDLT` sobre `Q4_0`, `emovoice`, `--emo-ref`, `--roughness` y composición (`a391aaf`). |
+| **G5** | `qwen-app` | CLI completa, `--watch-stdin`, afinidad SMT Win32, HTTP `400`, `/v1/tts == /v1/tts/stream`, cancelación RAII sin chunk `0`, `--workers` y `--batch-size` (`ec50b49`). |
+| **G6** | Cierre / `faer` | Comparativa `FfiBlas` (`RTF 0.70–0.71`) vs `PureRustBlas` (`0.72–0.75`); `FfiBlas` mantenido como default (`faer-blas` opt-in), CI multiplataforma y retiro de `qwen3-tts/` y `parity/` (`fecc6e5`). |

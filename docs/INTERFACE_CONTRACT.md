@@ -1,6 +1,6 @@
 # Contrato de Interfaz Externa (`0.6B`)
 
-Define la superficie pública que el binario Rust (`qwen-app`) debe respetar para ser un reemplazo compatible del motor C (`qwen3-tts/`) en CLI, servidor HTTP y ciclo de vida del proceso.
+Define la superficie pública que el binario Rust (`qwen-app`, ejecutable `qwen_tts`) expone en CLI, servidor HTTP y ciclo de vida del proceso.
 
 > **Alcance**: Exclusivo para **Qwen3-TTS 0.6B** (`CustomVoice` y `Base`). Las opciones exclusivas del `1.7B` (`--voice-design`, `-I`/`--instruct`, `--expr`, `--expr-weight`, `--ml-steer`) no forman parte de este motor.
 
@@ -17,6 +17,7 @@ Define la superficie pública que el binario Rust (`qwen-app`) debe respetar par
 | `--matmat-bench` | Mide `matmat` vs `B × matvec` hacia `stdout` con `-j` actual. | `0` |
 | `--list-voices <dir>` | Lista perfiles `.qvoice` válidos en `<dir>`. | `0` / `1` |
 | `--delete-voice <path>` | Valida cabecera `QVCE` y elimina el archivo `.qvoice`. | `0` / `1` |
+| `decode-dump <codes.txt> <model_dir> <out.wav>` | Decodifica un volcado de códigos (16 codebooks/trama) a WAV 24 kHz. | `0` / `1` |
 
 ### 1.2 Flags soportadas en `0.6B`
 
@@ -46,18 +47,18 @@ Define la superficie pública que el binario Rust (`qwen-app`) debe respetar par
 | | `--ref-text <string>` | `NULL` | Transcripción de referencia para modo ICL. |
 | | `--xvector-only` | off | Solo speaker embedding (sin ICL). |
 | | `--save-voice <path>` | `NULL` | `.qvoice` (graft `QVCE+META+TPAD+WOVR`, o `WDLT` con `--target-cv`) o `.bin` (embedding raw). Sin `--text` crea y sale (`0`). |
-| | `--load-voice <path>` | `NULL` | Carga `.qvoice` o `.bin`. Con `--icl-only` omite `WDELTA`/`WFULL`. |
-| | `--icl-only`, `--graft`, `--icl-frames <n>`, `--voice-name <s>`, `--max-ref-duration <s>`, `--target-cv <dir>`, `--voice-strength <a>`, `--vs-layers <a-b>` | `max_ref=30`, `strength=1.0` | Ver formato en `SPEC_06B.md`. Si `WDELTA` intenta sobrescribir pesos `Q4_0`, falla (`exit 1`). |
+| | `--load-voice <path>` | `NULL` | Carga `.qvoice` (v3) o `.bin`. Con `--icl-only` omite `WDLT`. |
+| | `--icl-only`, `--graft`, `--icl-frames <n>`, `--voice-name <s>`, `--max-ref-duration <s>`, `--target-cv <dir>`, `--voice-strength <a>`, `--vs-layers <a-b>` | `max_ref=30`, `strength=1.0`, `vs=14-27` | Ver formato en `SPEC_06B.md`. Si `WDLT` intenta sobrescribir pesos `Q4_0`, falla (`exit 1`). |
 | **Expresividad 0.6B** | `--emotion <name>` | `NULL` | Busca `presets/emovoice/<key>_<tok>.{qvoice,bin}` o `dir_<tok>.bin` sobre clon. Falla explícitamente si no existe activo/clon. |
 | | `--emotion-strength <f>` | `0.25` | Dosis de `dir_<tok>.bin` preservando norma L2. |
 | | `--emo-ref <path>`, `--emo-ref-text <str>` | `NULL` | Emoción por ejemplo (ancla códec ICL). Exige `--emo-ref-text`. |
 | | `--roughness <0..1>` | `0.0` | Mezcla `Q2_0` en `down_proj` del Code Predictor. |
 | | `--compose <spec>`, `--compose-pause <s>`, `--no-compose` | `pause=0.12` | Marcado inline auto-detectado en `--text` salvo `--no-compose`. |
 | **Servidor / Proceso** | `--serve <port>` | `0` (off) | Inicia servidor HTTP. |
-| | `--host <ipv4>` | `127.0.0.1` | Validado con `inet_pton` (o parser IPv4 estricto) antes de cargar el modelo. Inválido → `exit 1`. |
+| | `--host <ipv4>` | `127.0.0.1` | Validado como `Ipv4Addr` estricto antes de cargar el modelo. Inválido → `exit 1`. |
 | | `--workers <n>` | `1` | Número de workers concurrentes en servidor. |
 | | `--batch-size <n>` | `1` | Continuous batching tipo vLLM en servidor (`n >= 2`). |
-| | `--watch-stdin` | off | Vigila `stdin`; al detectar EOF (muerte del lanzador) termina inmediatamente (`_exit(0)`). Un fallo al iniciar el vigía aborta (`exit 1`). |
+| | `--watch-stdin` | off | Vigila `stdin`; al detectar EOF (muerte del lanzador) termina inmediatamente (`process::exit(0)`). Un fallo al iniciar el vigía aborta (`exit 1`). |
 | **Sistema / Diagnóstico** | `-j, --threads <n>` | `0` (auto: `min(ncpus, 4)`) | Hilos de cómputo del pool. |
 | | `-S, --silent`, `-D, --debug` | off | `--silent` suprime logs en `stderr`, **nunca** el WAV de salida. |
 | | `--batch`, `--batch-words <n>`, `--batch-dry` | `words=16` (`min 4`) | Síntesis long-form por lotes de texto concatenados (`--batch-dry` imprime partición y sale). |
@@ -109,7 +110,7 @@ Toda petición en modo normal, worker o batch se valida antes de sintetizar. **N
 ## 3. Ciclo de Vida del Proceso y Logs Operativos
 
 - **Windows (afinidades y OpenBLAS)**:
-  - Al arranque (`_WIN32`), si hay 1 grupo de procesadores, fijar máscara de afinidad a **1 hilo lógico por núcleo físico** (`SetProcessAffinityMask`) para evitar contención SMT.
+  - Al arranque en Windows, si hay 1 grupo de procesadores, fijar máscara de afinidad a **1 hilo lógico por núcleo físico** (`SetProcessAffinityMask`) para evitar contención SMT.
   - Cuando se enlace con OpenBLAS compilado con OpenMP, el lanzador/usuario debe fijar `OMP_NUM_THREADS` igual a `-j` y **nunca** `OPENBLAS_NUM_THREADS` (porque impediría a `openblas_set_num_threads` ajustar los hilos entre prefill y generación).
 - **Líneas de log contractuales (observadas por scripts/tests y diagnóstico)**:
   - Carga de Code Predictor: `Code Predictor: 5 layers loaded ... [BF16|INT8|Q4_0|INT8+Q4_0-FFN]`.
