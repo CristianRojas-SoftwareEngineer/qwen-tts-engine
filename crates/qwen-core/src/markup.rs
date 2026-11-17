@@ -103,9 +103,9 @@ pub struct ParaSubResult {
 pub struct MarkupPlanner;
 
 impl MarkupPlanner {
-    /// Inline paralinguistic substitution (`small_model = true`, 0.6B).
-    /// Replaces `[laugh]`, `[sigh]`, etc. with comma-delimited onomatopoeia
-    /// in a single generation, pinning the first tag's seed and temperature.
+    /// Sustitución paralingüística inline para `0.6B`.
+    /// Reemplaza `[laugh]`, `[sigh]`, etc. por onomatopeyas delimitadas por comas
+    /// en una única generación, fijando la semilla y temperatura de la primera etiqueta.
     pub fn para_substitute(text: &str, voice_class: VoiceClass) -> ParaSubResult {
         let mut out = String::with_capacity(text.len() + 48);
         let mut did = false;
@@ -220,8 +220,8 @@ impl MarkupPlanner {
         }
     }
 
-    /// Parses inline markup / `--compose` into `Vec<SpanSpec>`.
-    /// On 0.6B (`small_model = true`), `[emotion]` tags split spans cleanly without steering.
+    /// Parsea marcado inline / `--compose` en `Vec<SpanSpec>`.
+    /// En `0.6B`, las etiquetas `[emotion]` dividen los spans limpiamente sin aplicar steering.
     pub fn parse_spans(input: &str) -> Vec<SpanSpec> {
         let mut spans = Vec::new();
         let mut cur_mood: Option<String> = None;

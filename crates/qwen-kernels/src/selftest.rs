@@ -56,7 +56,7 @@ pub fn run_kernel_selftest(rt: &ComputeRuntime) -> (usize, String) {
         let mut ref_y = vec![0.0f64; rows];
         let mut y = AlignedBuf::<f32>::new_zeroed(rows);
 
-        // 1. bf16 matvec
+        // 1. matvec bf16
         for r in 0..rows {
             let row = &wb[r * cols..(r + 1) * cols];
             let mut s = 0.0f32;
@@ -75,7 +75,7 @@ pub fn run_kernel_selftest(rt: &ComputeRuntime) -> (usize, String) {
             }
         }
 
-        // 2. bf16 batched matmat
+        // 2. matmat bf16 por lotes
         {
             const B: usize = 8;
             let mut xb_mat = AlignedBuf::<f32>::new_zeroed(cols * B);
@@ -117,7 +117,7 @@ pub fn run_kernel_selftest(rt: &ComputeRuntime) -> (usize, String) {
             }
         }
 
-        // 3. int8 matvec + argmax
+        // 3. matvec int8 + argmax
         let (wi, sc) = quantize_bf16_to_int8(&wb, rows, cols);
         for r in 0..rows {
             let row = &wi[r * cols..(r + 1) * cols];
@@ -168,7 +168,7 @@ pub fn run_kernel_selftest(rt: &ComputeRuntime) -> (usize, String) {
             amax_got
         );
 
-        // 4. int8 batched matmat == B*matvec (0.0 exact)
+        // 4. matmat int8 por lotes == B*matvec (0.0 exacto)
         {
             const B: usize = 8;
             let mut xb_mat = AlignedBuf::<f32>::new_zeroed(cols * B);
@@ -210,7 +210,7 @@ pub fn run_kernel_selftest(rt: &ComputeRuntime) -> (usize, String) {
             }
         }
 
-        // 5. q4_0 matvec, matmat, qkv, 1-row vs block
+        // 5. q4_0 matvec, matmat, qkv y 1 fila vs bloque
         if cols % Q4_0_BLOCK_SIZE == 0 {
             const B: usize = 8;
             let nb = cols / Q4_0_BLOCK_SIZE;

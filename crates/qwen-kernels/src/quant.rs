@@ -104,8 +104,8 @@ pub fn quant_shape_check(name: &str, cols: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Scalar activation quantizer (reference & scalar backend).
-/// Uses IEEE round-half-even (`round_ties_even`), matching AVX2 `cvtps_epi32`.
+/// Cuantizador escalar de activaciones (referencia y backend escalar).
+/// Usa redondeo IEEE round-half-even (`round_ties_even`), equivalente a `cvtps_epi32` en AVX2.
 #[inline]
 pub fn quantize_act_int8_scalar(qx: &mut [i8], x: &[f32]) -> f32 {
     let n = x.len();
@@ -129,7 +129,7 @@ pub fn quantize_act_int8_scalar(qx: &mut [i8], x: &[f32]) -> f32 {
     amax / 127.0f32
 }
 
-/// Quantizes `src_bf16[rows, cols]` to per-row absmax INT8.
+/// Cuantiza `src_bf16[rows, cols]` a INT8 simétrico por fila (absmax).
 pub fn quantize_bf16_to_int8(
     src_bf16: &[u16],
     rows: usize,
@@ -169,7 +169,7 @@ pub fn quantize_bf16_to_int8_into(
     }
 }
 
-/// Weighted-LSQ Q4_0 (`q4_0s1`) quantization with interleaved nibbles (`2*i` low, `2*i+1` high).
+/// Cuantización Q4_0 por mínimos cuadrados ponderados (`q4_0s1`) con nibbles intercalados (`2*i` bajo, `2*i+1` alto).
 pub fn quantize_bf16_to_q4_0(src_bf16: &[u16], rows: usize, cols: usize) -> AlignedBuf<Q4_0Block> {
     assert_eq!(cols % Q4_0_BLOCK_SIZE, 0);
     let bpr = cols / Q4_0_BLOCK_SIZE;
@@ -223,7 +223,7 @@ pub fn quantize_bf16_to_q4_0_into(
     }
 }
 
-/// Q2_0 quantization (12 bytes / 32 weights) for `--roughness > 0` on Code Predictor `down_proj`.
+/// Cuantización Q2_0 (12 bytes / 32 pesos) usada con `--roughness > 0` en `down_proj` del Code Predictor.
 pub fn quantize_bf16_to_q2_0(src_bf16: &[u16], rows: usize, cols: usize) -> AlignedBuf<Q2_0Block> {
     assert_eq!(cols % Q2_0_BLOCK_SIZE, 0);
     let bpr = cols / Q2_0_BLOCK_SIZE;

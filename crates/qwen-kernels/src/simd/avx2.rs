@@ -730,7 +730,7 @@ pub unsafe fn q4_0_matvec_qkv_slice(
     cols: usize,
     out_dim: usize,
 ) {
-    // QKV fused always uses 2-row kernel, matching C `q4_0_int_rows`.
+    // QKV fusionado usa siempre el kernel de 2 filas.
     q4_0_matvec_2row(y.as_mut_ptr(), qx.as_ptr(), sx, w.as_ptr(), cols, out_dim);
 }
 

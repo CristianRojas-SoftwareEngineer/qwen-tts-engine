@@ -72,6 +72,7 @@ fn dispatch_proj(
     }
 }
 
+/// Ejecuta el *prefill* completo del Talker (`kv_len = 0`) sobre `input_embeds[seq_len, HIDDEN_SIZE]`.
 pub fn talker_prefill(
     runtime: &ComputeRuntime,
     model: &Model06B,
@@ -338,6 +339,7 @@ pub fn talker_prefill(
     Ok(())
 }
 
+/// Ejecuta un paso autorregresivo del Talker para la posición `scratch.talker_kv.len`.
 pub fn talker_step(
     runtime: &ComputeRuntime,
     model: &Model06B,

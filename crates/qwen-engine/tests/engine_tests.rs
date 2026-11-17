@@ -68,11 +68,11 @@ fn test_decoder_streaming_equivalence() {
     )
     .unwrap();
 
-    // 1. Full decode
+    // 1. Decodificación completa
     let full_samples = speech_decoder_decode(&runtime, &model.decoder, &codes, n_frames).unwrap();
     assert_eq!(full_samples.len(), n_frames * 1920);
 
-    // 2. Streaming decode (ramp 2, 4x8, 6x8, ..., tiled) vs full decode inside Rust
+    // 2. Decodificación streaming (rampa 2, 4x8, 6x8, ..., tiling) frente a completa en Rust
     let mut st = SdStreamState::new();
     st.cs_tile = true;
     let mut ws = DecoderWorkspace::new();
@@ -171,7 +171,7 @@ fn test_e2e_determinism_and_abort() {
         "Two identical Rust runs must produce bit-identical WAV bytes"
     );
 
-    // Abort handle check
+    // Comprobación de cancelación mediante AbortHandle
     let exec_abort = RequestExecution::new(req);
     exec_abort.abort.cancel();
     let mut sink = MemorySink::new(0);

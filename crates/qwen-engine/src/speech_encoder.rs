@@ -267,7 +267,7 @@ fn enc_causal_conv1d(
     out
 }
 
-/// Pure IEEE-754 Speech Tokenizer Encoder: 24 kHz mono audio -> `[n_frames, 16]` codec tokens.
+/// Codificador Speech Tokenizer en IEEE-754 estricto: audio mono a 24 kHz -> `[n_frames, 16]` códigos.
 pub fn speech_encoder_encode(
     runtime: &ComputeRuntime,
     enc: &SpeechEncoderWeights,
@@ -385,7 +385,7 @@ pub fn speech_encoder_encode(
         );
     }
 
-    // Stage 2: Encoder Transformer [n_seq, 512]
+    // Etapa 2: Encoder Transformer [n_seq, 512]
     let n_seq = cur_len;
     if n_seq > ENC_ROPE_MAX_POS {
         return Err(EngineError::InvalidArg(format!(
@@ -633,7 +633,7 @@ pub fn speech_encoder_encode(
         }
     }
 
-    // Transpose back to [512, n_seq]
+    // Transpone de vuelta a [512, n_seq]
     let mut tr_cf = vec![0.0f32; ENC_HIDDEN * n_seq];
     for f in 0..n_seq {
         for dd in 0..ENC_HIDDEN {
@@ -641,7 +641,7 @@ pub fn speech_encoder_encode(
         }
     }
 
-    // Stage 3: Downsample conv (stride=2, k=4, no bias)
+    // Etapa 3: convolución de submuestreo (stride=2, k=4, sin bias)
     let n_frames = enc_conv1d_out_len(n_seq, 4, 2);
     if n_frames == 0 {
         return Err(EngineError::InvalidArg(
@@ -666,7 +666,7 @@ pub fn speech_encoder_encode(
         );
     }
 
-    // Stage 4: RVQ Quantization (IEEE-754)
+    // Etapa 4: cuantización RVQ (IEEE-754 estricto)
     let mut enc_hidden = vec![0.0f32; n_frames * ENC_HIDDEN];
     for f in 0..n_frames {
         for dd in 0..ENC_HIDDEN {
@@ -677,7 +677,7 @@ pub fn speech_encoder_encode(
     let mut codes = vec![0i32; n_frames * NUM_CODEBOOKS];
     let mut cb_norm2 = vec![0.0f32; CODEBOOK_SIZE];
 
-    // Codebook 0 (semantic)
+    // Codebook 0 (semántico)
     let mut projected = vec![0.0f32; n_frames * CODEBOOK_DIM];
     blas.sgemm(
         Transpose::NoTrans,
@@ -727,7 +727,7 @@ pub fn speech_encoder_encode(
         codes[f * NUM_CODEBOOKS] = best_idx as i32;
     }
 
-    // Codebooks 1..15 (acoustic)
+    // Codebooks 1..15 (acústicos)
     let mut residual = vec![0.0f32; n_frames * CODEBOOK_DIM];
     blas.sgemm(
         Transpose::NoTrans,

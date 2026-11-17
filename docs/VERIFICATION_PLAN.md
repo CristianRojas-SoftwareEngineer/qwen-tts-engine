@@ -1,19 +1,42 @@
 # Plan de Verificación (`VERIFICATION_PLAN.md`)
 
-Define los criterios objetivos de validación de **Qwen TTS Engine** (`qwen-tts-engine`, actualmente `0.6B`) en Rust estable.
+> Define las suites automatizadas, comprobaciones numéricas y matriz de CI que validan **Qwen TTS Engine** (`qwen-tts-engine`) en Rust estable. Pensado para QA, colaboradores y mantenimiento de CI.
 
 ---
 
-## 1. Suites Automatizadas Vigentes (`cargo test`)
+## 1. Suites automatizadas (`cargo test`)
 
-| Suite / Comando | Qué valida |
+Ejecuta todas las pruebas unitarias y de integración del workspace con `cargo test --workspace --release` (en Windows GNU añade `--target x86_64-pc-windows-gnu`, `OMP_NUM_THREADS=4` y sin `OPENBLAS_NUM_THREADS`).
+
+| Suite | Qué valida |
 |---|---|
-| `qwen-kernels/tests/kernels_tests.rs` | `AlignedBuf<64>`, `--self-test` (`0` fallos numéricos en `int8`/`q4_0`/`bf16`), estrés concurrente de `ComputePool` sin estado global, `BlasBackend::sgemm` y `quantize_bf16_to_q2_0`. |
-| `qwen-core/tests/core_tests.rs` | Carga `0.6B` (`CustomVoice`/`Base`), rechazo negativo de `1.7B` y `VoiceDesign`, `MmapStore`, tokenización BPE golden, roundtrip `.bin` y `.qvoice` v3 (`META`/`TPAD`/`WOVR` + `WDLT` LZ4) y rechazo de `.qvoice` v1/v2, `MarkupPlanner` y determinismo `Sampler`/`LcgRng`. |
-| `qwen-engine/tests/engine_tests.rs` | Equivalencia de `SpeechDecoder` streaming (`2, 4×8, 6×8, 8×8, 10` con tiling 256 KB) frente a decodificación completa (`SNR >= 100 dB`), determinismo E2E bit-idéntico y cancelación vía `AbortHandle`. |
-| `qwen-engine/tests/voice_clone_emotion_tests.rs` | Validación temprana de WAV 24 kHz y guías `ffmpeg`, `trim_trailing_silence`, `mel_spectrogram`, resolución `emovoice` + norma L2 `dir_*.bin`, flujo E2E `0.6B-Base` → `.qvoice` (`WDLT`) + error explícito sobre `Q4_0` + `--icl-only`, `--emo-ref`, `--roughness` (`Q2_0`) y composición multi-span. |
-| `qwen-app` unit tests (`cli`, `validation`) | Rechazo de flags no soportadas (`--voice-design`, `--instruct`), `--host` inválido, `--graft` / `--stdout` y validación completa HTTP `400` en `ValidatedTtsRequest`. |
-| `qwen_tts --caps`, `--self-test`, `--matmat-bench` | Capacidades SIMD/BLAS/hilos en runtime, batería numérica de kernels (`0` fallos) y microbenchmark `matmat` vs `B × matvec`. |
-| `qwen_tts decode-dump <codes.txt> <model_dir> <out.wav>` | Decodificación aislada de tramas de 16 codebooks a WAV 24 kHz s16le. |
+| `qwen-kernels/tests/kernels_tests.rs` | `AlignedBuf<64>`, batería `--self-test` (`0` fallos en `int8`/`q4_0`/`bf16`), estrés concurrente de múltiples `ComputePool` independientes, `BlasBackend::sgemm`, `quantize_bf16_to_q2_0` y conversión `f16`. |
+| `qwen-core/tests/core_tests.rs` | Carga `0.6B` (`CustomVoice`/`Base`), rechazo de `1.7B` y `VoiceDesign`, `MmapStore`, tokenización BPE, roundtrip `.bin` y `.qvoice` v3 (`META`/`TPAD`/`WOVR` + `WDLT` LZ4), rechazo de `.qvoice` v2, `MarkupPlanner` y determinismo `Sampler`/`LcgRng`. |
+| `qwen-engine/tests/engine_tests.rs` | Equivalencia de `SpeechDecoder` en *streaming* (`2, 4×8, 6×8, 8×8, 10` con tiling de 256 KB) frente a decodificación completa (`SNR >= 100 dB`), determinismo E2E bit-idéntico y cancelación cooperativa vía `AbortHandle`. |
+| `qwen-engine/tests/voice_clone_emotion_tests.rs` | Validación temprana de WAV 24 kHz y guías `ffmpeg`, `trim_trailing_silence`, `mel_spectrogram`, resolución `emovoice` + norma L2 `dir_*.bin`, flujo `0.6B-Base` → `.qvoice` (`WDLT`), rechazo de `WDLT` sobre `Q4_0` sin `--icl-only`, `--emo-ref`, `--roughness` (`Q2_0`) y composición multi-span. |
+| `qwen-app` (`cli.rs`, `server/validation.rs`) | Rechazo de flags no soportadas (`--voice-design`, `--instruct`), `--host` inválido, implicaciones `--graft`/`--stdout`, mínimo de `--batch-words` y validación HTTP `400` en `ValidatedTtsRequest`. |
 
-En `.github/workflows/ci.yml` se ejecutan en cada push/PR sobre `main` las pruebas del workspace, compilación release, `--caps`, `--self-test` y verificación del manifiesto UTF-8 Win32 en **Windows (`x86_64-pc-windows-gnu`)**, **Linux (`x86_64` y `aarch64`)** y **macOS (`arm64`)**, además de `cargo check -p qwen-app --features faer-blas`.
+> Los tests de integración con pesos reales (`engine_tests.rs`, `voice_clone_emotion_tests.rs`) se ejecutan cuando los modelos `0.6B` están presentes en `models/`.
+
+---
+
+## 2. Verificación binaria y numérica
+
+Tras compilar `qwen_tts`, verifica el runtime y las rutas *batched* según [`INTERFACE_CONTRACT.md`](INTERFACE_CONTRACT.md) y [`NUMERIC_CONTRACT.md`](NUMERIC_CONTRACT.md):
+
+- **Capacidades y kernels**: `qwen_tts --caps`, `qwen_tts --self-test` (`0` fallos) y `qwen_tts --matmat-bench`.
+- **Equivalencia *batching***: `qwen_tts -d models/qwen3-tts-0.6b --quant-mixed --batch-test` y `--batch-bench`.
+- **Decodificación aislada**: `qwen_tts decode-dump <codes.txt> <model_dir> <out.wav>`.
+
+---
+
+## 3. Matriz de integración continua (`.github/workflows/ci.yml`)
+
+En cada `push` y `pull_request` sobre `main` (y tags `v*`), CI ejecuta pruebas del workspace, compilación `release`, `--caps` y `--self-test` en:
+
+| Runner / Target | Toolchain BLAS | Verificaciones extra |
+|---|---|---|
+| `linux-x86_64` | `libopenblas-dev` | `cargo check -p qwen-app --features faer-blas` |
+| `linux-aarch64` | `libopenblas-dev` | Verificación en arquitectura ARM64 (*fallback* escalar) |
+| `macos-arm64` | `Accelerate` | Verificación en Apple Silicon |
+| `windows-x86_64-gnu` | MSYS2 UCRT64 (`libopenblas.a` estático) | Comprobación de manifiesto UTF-8 (`activeCodePage`) embebido en `qwen_tts.exe` |

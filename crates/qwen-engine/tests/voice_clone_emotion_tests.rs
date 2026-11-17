@@ -40,7 +40,7 @@ fn temp_dir(name: &str) -> PathBuf {
 fn test_wav_validation_and_ffmpeg_hints() {
     let dir = temp_dir("wav_validation");
 
-    // 1. Extension rejection (.mp3, .mp4, .flac, .ogg)
+    // 1. Rechazo por extensión (.mp3, .mp4, .flac, .ogg)
     for ext in ["mp3", "mp4", "ogg", "flac"] {
         let p = dir.join(format!("fake.{ext}"));
         fs::write(&p, b"dummy").unwrap();
@@ -49,7 +49,7 @@ fn test_wav_validation_and_ffmpeg_hints() {
         assert!(err.contains("24000"), "Expected 24000 Hz hint for .{ext}: {err}");
     }
 
-    // 2. Magic-byte rejection even with .wav extension
+    // 2. Rechazo por magic bytes incluso con extensión .wav
     let bad_mp3 = dir.join("disguised_mp3.wav");
     fs::write(&bad_mp3, b"ID3\x03\x00\x00\x00\x00\x00\x00\x00\x00").unwrap();
     let err = read_wav_24khz(&bad_mp3).unwrap_err().to_string();
@@ -60,7 +60,7 @@ fn test_wav_validation_and_ffmpeg_hints() {
     let err = read_wav_24khz(&bad_ogg).unwrap_err().to_string();
     assert!(err.contains("OGG") && err.contains("ffmpeg -i"), "got: {err}");
 
-    // 3. Valid WAV at wrong sample rate (16000 Hz) must fail explicitly
+    // 3. Un WAV válido con frecuencia distinta (16000 Hz) debe fallar explícitamente
     let wav_16k = dir.join("ref_16k.wav");
     let samples = vec![0.1f32; 16000];
     write_wav(&wav_16k, &samples, 16000).unwrap();
@@ -70,7 +70,7 @@ fn test_wav_validation_and_ffmpeg_hints() {
         "Expected explicit 24kHz error, got: {err}"
     );
 
-    // 4. Valid 24 kHz WAV succeeds
+    // 4. Un WAV válido a 24 kHz tiene éxito
     let wav_24k = dir.join("ref_24k.wav");
     let samples24: Vec<f32> = (0..24000).map(|i| ((i as f32) * 0.05).sin() * 0.2).collect();
     write_wav(&wav_24k, &samples24, 24000).unwrap();
@@ -99,19 +99,19 @@ fn test_emovoice_resolution_and_l2_norm_direction() {
     let preset_dir = dir.join("presets");
     fs::create_dir_all(&preset_dir).unwrap();
 
-    // Unknown emotion -> error
+    // Emoción desconocida -> error
     let err = resolve_emovoice_06b("nonexistent_mood", None, false, Some("ryan"), &[&preset_dir])
         .unwrap_err()
         .to_string();
     assert!(err.contains("not a known emotion"), "got: {err}");
 
-    // Missing asset -> error
+    // Activo inexistente -> error
     let err = resolve_emovoice_06b("joy", None, false, Some("ryan"), &[&preset_dir])
         .unwrap_err()
         .to_string();
     assert!(err.contains("no 'joy' voice asset"), "got: {err}");
 
-    // Direction fallback on clone preserves L2 norm
+    // El fallback de dirección sobre clon preserva la norma L2
     let dir_bin = preset_dir.join("dir_sad.bin");
     let mut unit_dir = vec![0.0f32; ENC_DIM];
     unit_dir[0] = 1.0;
@@ -138,7 +138,7 @@ fn test_emovoice_resolution_and_l2_norm_direction() {
     let n1 = emb.iter().map(|&v| v * v).sum::<f32>().sqrt();
     assert!((n0 - n1).abs() < 1e-4, "L2 norm drifted: {n0} -> {n1}");
 
-    // Dedicated .qvoice wins over .bin and dir_*.bin
+    // Un .qvoice dedicado prevalece sobre .bin y dir_*.bin
     let dedicated_qv = preset_dir.join("alice_sad.qvoice");
     fs::write(&dedicated_qv, b"dummy").unwrap();
     let act2 = resolve_emovoice_06b(
@@ -165,7 +165,7 @@ fn test_clone_wdelta_q4_error_and_e2e() {
     let dir = temp_dir("e2e_clone_emotion");
     let runtime = ComputeRuntime::new(Some(4));
 
-    // 1. Generate a 24 kHz reference WAV using 0.6B-CustomVoice
+    // 1. Generar un WAV de referencia a 24 kHz usando 0.6B-CustomVoice
     let ref_wav = dir.join("ref.wav");
     let ref_text = "The weather is beautiful today, perfect for a walk in the park.";
     let mut cv_model = Model06B::load(
@@ -198,7 +198,7 @@ fn test_clone_wdelta_q4_error_and_e2e() {
     .unwrap();
     write_wav(&ref_wav, &ref_samples, SAMPLE_RATE as u32).unwrap();
 
-    // --ref-audio on CustomVoice must fail explicitly
+    // --ref-audio sobre CustomVoice debe fallar explícitamente
     let err = build_voice_from_ref_audio(
         &runtime,
         &cv_model,
@@ -212,12 +212,12 @@ fn test_clone_wdelta_q4_error_and_e2e() {
     );
     assert!(err.is_err());
 
-    // --emo-ref without --emo-ref-text must fail explicitly
+    // --emo-ref sin --emo-ref-text debe fallar explícitamente
     let mut emo_voice = VoiceBindings::preset(3061);
     let err = attach_emo_ref(&runtime, &cv_model, &mut emo_voice, &ref_wav, "   ", true, false);
     assert!(err.is_err());
 
-    // --emo-ref with text succeeds on CustomVoice
+    // --emo-ref con texto funciona sobre CustomVoice
     attach_emo_ref(
         &runtime,
         &cv_model,
@@ -230,7 +230,7 @@ fn test_clone_wdelta_q4_error_and_e2e() {
     .unwrap();
     assert!(emo_voice.emo_ref_codes.as_ref().unwrap().len() >= NUM_CODEBOOKS);
 
-    // 2. Build .qvoice with WDELTA from 0.6B-Base -> CustomVoice
+    // 2. Construir .qvoice con WDELTA desde 0.6B-Base -> CustomVoice
     let base_model = Model06B::load(
         &base_dir,
         &runtime,
@@ -264,7 +264,7 @@ fn test_clone_wdelta_q4_error_and_e2e() {
     assert!(parsed_qv.weights.is_some());
     assert!(parsed_qv.ref_codes.len() >= NUM_CODEBOOKS);
 
-    // 3. Loading WDELTA .qvoice without --icl-only on Q4_0 (--quant-mixed) MUST FAIL explicitly
+    // 3. Cargar .qvoice con WDELTA sin --icl-only sobre Q4_0 (--quant-mixed) debe fallar explícitamente
     let err = load_voice_from_file(
         &runtime,
         &mut cv_model,
@@ -283,7 +283,7 @@ fn test_clone_wdelta_q4_error_and_e2e() {
     let err_msg = err.err().unwrap().to_string();
     assert!(err_msg.contains("q4_0") || err_msg.contains("Q4_0"), "got: {err_msg}");
 
-    // 4. Loading same WDELTA .qvoice WITH --icl-only on Q4_0 succeeds and synthesizes!
+    // 4. Cargar el mismo .qvoice con WDELTA usando --icl-only sobre Q4_0 funciona y sintetiza
     let (icl_voice, _) = load_voice_from_file(
         &runtime,
         &mut cv_model,
@@ -313,7 +313,7 @@ fn test_clone_wdelta_q4_error_and_e2e() {
     .unwrap();
     assert!(t_clone.frames >= 10 && !clone_samples.is_empty());
 
-    // 5. Roughness (Q2_0 down_proj blend) + C6_para MarkupPlanner multi-span synthesis
+    // 5. Roughness (mezcla Q2_0 en down_proj) + marcado paralingüístico multi-span con MarkupPlanner
     let prep = prepare_markup_06b(
         "Che bella notizia! [pause:400ms] [sad] Devo andare... [sigh] [neutral] Ciao.",
         &preset_voice,

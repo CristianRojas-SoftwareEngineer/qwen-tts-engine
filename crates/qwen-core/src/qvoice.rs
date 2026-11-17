@@ -59,6 +59,7 @@ pub struct QVoiceWeightsOverride {
     pub tensors: Vec<QVoiceWeightTensor>,
 }
 
+/// Representación en memoria de un perfil de voz `.qvoice` versión 3 (`QVCE`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct QVoiceFile {
     pub version: u32,

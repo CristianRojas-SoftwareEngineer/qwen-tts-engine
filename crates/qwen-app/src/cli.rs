@@ -5,6 +5,7 @@
 
 use std::net::Ipv4Addr;
 
+/// Argumentos CLI parseados para el binario `qwen_tts`.
 #[derive(Debug, Clone)]
 pub struct CliArgs {
     pub model_dir: Option<String>,
@@ -160,11 +161,13 @@ impl Default for CliArgs {
     }
 }
 
+/// Resultado del parseo de argumentos CLI.
 pub enum ParseOutcome {
     Run(Box<CliArgs>),
     Help,
 }
 
+/// Imprime la ayuda de uso de `qwen_tts` por `stderr`.
 pub fn print_usage(prog: &str) {
     eprintln!("Usage: {prog} -d <model_dir> -t <text> [options]");
     eprintln!("Options (Qwen3-TTS 0.6B):");
@@ -252,6 +255,7 @@ fn take_val(
     Ok(args[*idx].clone())
 }
 
+/// Parsea y valida los argumentos de línea de comandos en [`ParseOutcome`].
 pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
     let mut out = CliArgs::default();
     let mut i = 1usize;

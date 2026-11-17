@@ -13,7 +13,7 @@ impl LcgRng {
         Self { seed }
     }
 
-    /// Deterministic LCG uniform sample in `[0.0, 1.0)`.
+    /// Muestra uniforme determinista mediante LCG en `[0.0, 1.0)`.
     #[inline]
     pub fn next_uniform(&mut self) -> f32 {
         self.seed = self.seed.wrapping_mul(1103515245).wrapping_add(12345);

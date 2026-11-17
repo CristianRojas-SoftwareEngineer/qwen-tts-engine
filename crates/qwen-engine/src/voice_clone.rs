@@ -226,7 +226,7 @@ fn build_mel_filterbank(sr: usize, n_fft: usize, n_mels: usize, fmin: f32, fmax:
     fb
 }
 
-/// Computes log-mel spectrogram (`n_fft=1024`, `hop=256`, `n_mels=128`, `sr=24000`).
+/// Calcula el espectrograma log-mel (`n_fft=1024`, `hop=256`, `n_mels=128`, `sr=24000`).
 pub fn mel_spectrogram(audio: &[f32], _sample_rate: usize) -> Result<(Vec<f32>, usize), EngineError> {
     const N_FFT: usize = 1024;
     const N_MELS: usize = 128;
@@ -761,6 +761,7 @@ pub fn extract_speaker_embedding(
     Ok(speaker_encoder_forward(runtime, enc, &mel, n_frames))
 }
 
+/// Opciones de carga de perfiles `.qvoice` / `.bin` mediante [`load_voice_from_file`].
 #[derive(Debug, Clone)]
 pub struct VoiceLoadOptions {
     pub icl_only: bool,
@@ -854,6 +855,7 @@ pub fn build_wovr_override(
     }
 }
 
+/// Carga un perfil `.qvoice` v3 o `.bin` (y aplica `WOVR`/`WDLT` sobre `model` si corresponde).
 pub fn load_voice_from_file(
     runtime: &ComputeRuntime,
     model: &mut Model06B,
@@ -963,6 +965,7 @@ pub fn load_voice_from_file(
     ))
 }
 
+/// Opciones para construir y guardar un perfil de voz desde `--ref-audio` con [`build_voice_from_ref_audio`].
 #[derive(Debug, Clone, Default)]
 pub struct SaveVoiceOptions<'a> {
     pub ref_text: Option<&'a str>,
@@ -977,6 +980,7 @@ pub struct SaveVoiceOptions<'a> {
     pub debug: bool,
 }
 
+/// Extrae el embedding de hablante (y códigos ICL si aplica) desde `ref_audio_path` y opcionalmente lo guarda en disco.
 pub fn build_voice_from_ref_audio(
     runtime: &ComputeRuntime,
     model: &Model06B,
@@ -1174,7 +1178,7 @@ fn encode_wdelta_override(
         });
     };
 
-    // Global 8 tensors
+    // 8 tensores globales
     push_bf16(
         &mut tensors,
         "talker.model.text_embedding.weight",
@@ -1208,7 +1212,7 @@ fn encode_wdelta_override(
     )?;
     push_f32(&mut tensors, "talker.model.norm.weight", &model.talker.norm);
 
-    // 28 Talker layers
+    // 28 capas del Talker
     for (li, l) in model.talker.layers.iter().enumerate() {
         push_bf16(&mut tensors, &format!("talker.model.layers.{li}.self_attn.q_proj.weight"), &l.wq_bf16[..Q_DIM * HIDDEN_SIZE])?;
         push_bf16(&mut tensors, &format!("talker.model.layers.{li}.self_attn.k_proj.weight"), &l.wk_bf16[..KV_DIM * HIDDEN_SIZE])?;
@@ -1223,7 +1227,7 @@ fn encode_wdelta_override(
         push_bf16(&mut tensors, &format!("talker.model.layers.{li}.mlp.down_proj.weight"), &l.down_bf16[..HIDDEN_SIZE * INTERMEDIATE_SIZE])?;
     }
 
-    // CP tensors
+    // Tensores del Code Predictor
     push_f32(&mut tensors, "talker.code_predictor.model.norm.weight", &model.cp.norm[..CP_HIDDEN_SIZE]);
     for ci in 0..15 {
         push_bf16(&mut tensors, &format!("talker.code_predictor.model.codec_embedding.{ci}.weight"), &model.cp.codec_emb_bf16[ci][..CODEBOOK_SIZE * CP_HIDDEN_SIZE])?;

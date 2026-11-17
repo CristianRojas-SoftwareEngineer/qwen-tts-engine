@@ -233,7 +233,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         return Err("error: --rate no se puede aplicar con --stream".to_string());
     }
 
-    // Early WAV validation BEFORE loading the model
+    // Validación temprana de WAV ANTES de cargar el modelo
     if let Some(ref ref_audio) = cfg.ref_audio {
         validate_wav_path_or_header(Path::new(ref_audio)).map_err(|e| e.to_string())?;
     }
@@ -278,7 +278,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         return Err("Error: --ref-audio is required to create a voice profile".to_string());
     }
 
-    // Resolve emotion (0.6B emovoice) when not in compose mode
+    // Resolver emoción (`0.6B emovoice`) fuera del modo compose
     let mut emo06b_dir_path: Option<std::path::PathBuf> = None;
     let mut effective_load_voice = cfg.load_voice.clone();
     let mut effective_xvector_only = cfg.xvector_only;
@@ -320,7 +320,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         }
     }
 
-    // Build / load VoiceBindings
+    // Construir / cargar VoiceBindings
     let mut voice_lang_override: Option<i32> = None;
     let mut voice = if let Some(ref ref_audio_path) = cfg.ref_audio {
         let save_opts = SaveVoiceOptions {
@@ -428,7 +428,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
     let model = Arc::new(model);
     let voice = Arc::new(voice);
 
-    // Diagnostic batch commands
+    // Comandos de diagnóstico por lotes
     if cfg.batch_test {
         let ok = batch_self_test(&runtime, &model).map_err(|e| e.to_string())?;
         return Ok(if ok { 0 } else { 1 });
@@ -491,7 +491,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         return Ok(0);
     }
 
-    // Server mode
+    // Modo servidor HTTP
     if let Some(port) = cfg.serve_port {
         server::serve(
             Arc::clone(&runtime),
@@ -506,7 +506,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         return Ok(0);
     }
 
-    // Long-form batch mode (--batch / --batch-dry)
+    // Modo long-form por lotes (--batch / --batch-dry)
     if cfg.batch_mode {
         let text = cfg
             .text
@@ -618,7 +618,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         return Ok(0);
     }
 
-    // Inline paralinguistic + compose detection
+    // Detección de paralingüística inline + compose
     let mut active_text = cfg.text.clone().unwrap_or_default();
     let mut compose_spec = cfg.compose_spec.clone();
     let mut resolved_seed = cfg.seed;
@@ -687,7 +687,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
 
     let mut scratch = SessionScratch::new();
 
-    // Compose mode (non-streaming)
+    // Modo compose (sin streaming)
     if let Some(ref spec) = compose_spec {
         if !cfg.silent {
             eprintln!("Compose mode: rendering spans...");
@@ -735,7 +735,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         return Ok(0);
     }
 
-    // Streaming CLI mode (--stream / --stdout)
+    // Modo CLI en streaming (--stream / --stdout)
     if cfg.stream {
         if !cfg.silent {
             eprintln!(
@@ -783,7 +783,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         return Ok(0);
     }
 
-    // Non-streaming synthesis (single take or --seed-audition N)
+    // Síntesis sin streaming (toma única o --seed-audition N)
     if cfg.audition_keep && cfg.seed_audition <= 1 && !cfg.silent {
         eprintln!("Warning: --audition-keep has no effect without --seed-audition N (N>1, non-stream)");
     }

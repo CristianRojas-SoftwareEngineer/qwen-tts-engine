@@ -151,7 +151,7 @@ pub fn read_http_request(stream: &mut TcpStream) -> Option<ParsedHttpRequest> {
     };
     let body = String::from_utf8_lossy(&buf[hend..body_end]).to_string();
 
-    // Switch to non-blocking so AbortGuard can peek without blocking; send_all handles WouldBlock.
+    // Cambiar a modo no bloqueante para que AbortGuard sondee sin bloquear; send_all gestiona WouldBlock.
     let _ = stream.set_nonblocking(true);
 
     Some(ParsedHttpRequest { method, path, body })
@@ -301,7 +301,7 @@ impl AudioSink for HttpAudioChunkSink<'_> {
 
 pub fn resolve_request_voice(base_voice: &VoiceBindings, speaker_id: i32) -> (Option<VoiceBindings>, &VoiceBindings) {
     if matches!(base_voice.identity, VoiceIdentity::Preset(_)) {
-        // Preset voices carry no WOVR weights; only clone identity needs switching.
+        // Las voces preset no tienen pesos WOVR; solo cambia la identidad del preset.
         let v = VoiceBindings {
             identity: VoiceIdentity::Preset(speaker_id),
             ..base_voice.clone()
@@ -579,7 +579,7 @@ pub fn handle_tts_stream(
         } else {
             eprintln!("[HTTP] TTS stream: la generación falló; la respuesta queda sin cierre");
         }
-        // Intentionally omit `0\r\n\r\n` so the client detects truncated transfer.
+        // Omitir `0\r\n\r\n` intencionadamente para que el cliente detecte transferencia truncada.
         return;
     }
 

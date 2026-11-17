@@ -83,8 +83,8 @@ fn utf8_char_len(c: u8) -> usize {
     }
 }
 
-/// Byte-level pre-tokenizer matching Qwen2/Qwen3 BPE,
-/// including UTF-8 continuation validation and progress guard.
+/// Pre-tokenizador a nivel de bytes compatible con BPE de Qwen2/Qwen3,
+/// incluyendo validación de continuaciones UTF-8 y guardia de avance.
 fn pre_tokenize(bytes: &[u8]) -> Vec<&[u8]> {
     let mut chunks = Vec::new();
     let len = bytes.len();
@@ -93,7 +93,7 @@ fn pre_tokenize(bytes: &[u8]) -> Vec<&[u8]> {
     while i < len {
         let c = bytes[i];
 
-        // 1. Whitespace: attach single space to following chunk if non-space follows
+        // 1. Espacios en blanco: une un espacio simple al bloque siguiente si no hay más espacios
         if matches!(c, b' ' | b'\t' | b'\n' | b'\r') {
             if c == b' ' && i + 1 < len {
                 let next = bytes[i + 1];
@@ -153,7 +153,7 @@ fn pre_tokenize(bytes: &[u8]) -> Vec<&[u8]> {
             continue;
         }
 
-        // 2. English contractions: 's, 't, 'm, 'd, 're, 've, 'll
+        // 2. Contracciones en inglés: 's, 't, 'm, 'd, 're, 've, 'll
         if c == b'\'' && i + 1 < len {
             let next = bytes[i + 1];
             let clen = if matches!(next, b's' | b't' | b'm' | b'd' | b'S' | b'T' | b'M' | b'D') {
@@ -176,7 +176,7 @@ fn pre_tokenize(bytes: &[u8]) -> Vec<&[u8]> {
             }
         }
 
-        // 3. Qwen2 pattern: [^\r\n\p{L}\p{N}]?\p{L}+
+        // 3. Patrón Qwen2: [^\r\n\p{L}\p{N}]?\p{L}+
         let mut next_is_letter = false;
         let mut lookahead = i;
         if !is_letter(c)
@@ -232,7 +232,7 @@ fn pre_tokenize(bytes: &[u8]) -> Vec<&[u8]> {
             continue;
         }
 
-        // 4. Digits: 1..3
+        // 4. Dígitos: agrupados de 1 a 3
         if c.is_ascii_digit() {
             let start = i;
             let mut dcount = 0;
@@ -244,7 +244,7 @@ fn pre_tokenize(bytes: &[u8]) -> Vec<&[u8]> {
             continue;
         }
 
-        // 5. Punctuation / symbols + trailing \r\n
+        // 5. Puntuación / símbolos + \r\n finales
         let start = i;
         while i < len {
             let cc = bytes[i];

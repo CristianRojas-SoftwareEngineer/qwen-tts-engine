@@ -137,7 +137,7 @@ impl SynthesisScheduler for WorkerPoolScheduler {
     }
 }
 
-// ── Continuous Batch Scheduler (--batch-size N) ─────────────────────────────
+// ── Planificador Continuous Batch (--batch-size N) ──────────────────────────
 
 struct JobQueue<T> {
     items: Mutex<VecDeque<T>>,
@@ -447,7 +447,7 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
             reader_handles.push(h);
         }
 
-        // Single-job fallback thread (inline compose / non-1.0 rate)
+        // Hilo fallback para trabajos individuales (compose inline / rate != 1.0)
         let single_rt = Arc::clone(&self.runtime);
         let single_model = Arc::clone(&self.model);
         let single_voice = Arc::clone(&self.voice);
@@ -480,7 +480,7 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
             })
             .map_err(|e| format!("failed to spawn single-job worker: {e}"))?;
 
-        // Continuous-batching scheduler thread
+        // Hilo planificador de continuous batching
         let sched_rt = Arc::clone(&self.runtime);
         let sched_model = Arc::clone(&self.model);
         let sched_voice = Arc::clone(&self.voice);

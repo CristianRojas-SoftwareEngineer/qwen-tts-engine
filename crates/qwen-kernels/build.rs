@@ -23,7 +23,7 @@ fn main() {
         println!("cargo:rustc-link-search=native={lib_dir}");
 
         if target.contains("gnu") {
-            // Static OpenBLAS + OpenMP + gfortran runtime (MSYS2 UCRT64)
+            // OpenBLAS estático + OpenMP + runtime de gfortran (MSYS2 UCRT64)
             println!("cargo:rustc-link-lib=static=openblas");
             println!("cargo:rustc-link-lib=static=gomp");
             println!("cargo:rustc-link-lib=static=gfortran");
@@ -36,7 +36,7 @@ fn main() {
         return;
     }
 
-    // Linux / Unix: prefer static libopenblas.a if present, else dynamic openblas
+    // Linux / Unix: preferir libopenblas.a estática si existe, si no enlace dinámico
     if let Ok(lib_dir) = env::var("OPENBLAS_LIB_DIR") {
         println!("cargo:rustc-link-search=native={lib_dir}");
         if PathBuf::from(&lib_dir).join("libopenblas.a").exists() {

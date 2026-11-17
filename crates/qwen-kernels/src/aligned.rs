@@ -8,8 +8,8 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
-/// Cache-line aligned contiguous buffer (default 64-byte alignment) for SIMD,
-/// BLAS, KV-cache, and decoder workspaces.
+/// Buffer contiguo alineado a línea de caché (alineación por defecto de 64 bytes)
+/// para SIMD, BLAS, KV cache y workspaces del decodificador.
 pub struct AlignedBuf<T, const ALIGN: usize = 64> {
     ptr: NonNull<T>,
     len: usize,
@@ -53,8 +53,8 @@ impl<T: Copy + Default, const ALIGN: usize> AlignedBuf<T, ALIGN> {
         buf
     }
 
-    /// Ensures capacity is at least `new_len` and sets length to `new_len`,
-    /// zero-initializing any newly grown elements (monotonic workspace slot).
+    /// Garantiza que la capacidad sea al menos `new_len` y ajusta la longitud a `new_len`,
+    /// inicializando a cero los nuevos elementos (ranura monótona de workspace).
     pub fn resize_zeroed(&mut self, new_len: usize) {
         const {
             assert!(ALIGN >= std::mem::align_of::<T>());
@@ -86,7 +86,7 @@ impl<T: Copy + Default, const ALIGN: usize> AlignedBuf<T, ALIGN> {
         self.len = new_len;
     }
 
-    /// Zero-fills all active elements `0..len`.
+    /// Rellena con ceros todos los elementos activos `0..len`.
     pub fn fill_zero(&mut self) {
         if self.len > 0 {
             unsafe {

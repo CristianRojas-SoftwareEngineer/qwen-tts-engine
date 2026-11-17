@@ -51,6 +51,7 @@ pub enum CpPrecision {
     Mixed,
 }
 
+/// Opciones de carga y cuantización para [`Model06B::load`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ModelLoadOptions {
     pub silent: bool,
@@ -128,7 +129,7 @@ pub struct TalkerLayerWeights {
     pub gate_bf16: Bf16Weight,
     pub up_bf16: Bf16Weight,
     pub down_bf16: Bf16Weight,
-    /// Interleaved `[2*inter, hidden]` only present when Talker runs in BF16.
+    /// Matriz intercalada `[2*inter, hidden]`; solo presente cuando el Talker corre en BF16.
     pub gate_up_fused_bf16: Option<AlignedBuf<u16>>,
     pub wq_q: Option<QuantWeight>,
     pub wk_q: Option<QuantWeight>,
@@ -165,7 +166,7 @@ pub struct CpLayerWeights {
     pub gate_bf16: Bf16Weight,
     pub up_bf16: Bf16Weight,
     pub down_bf16: Bf16Weight,
-    /// Interleaved `[2*cp_inter, cp_hidden]` only present when CP runs in BF16.
+    /// Matriz intercalada `[2*cp_inter, cp_hidden]`; solo presente cuando el Code Predictor corre en BF16.
     pub gate_up_fused_bf16: Option<AlignedBuf<u16>>,
     pub wq_q: Option<QuantWeight>,
     pub wk_q: Option<QuantWeight>,
@@ -317,6 +318,7 @@ pub struct SpeechDecoderWeights {
     pub final_conv_bias: Option<F32Ref>,
 }
 
+/// Modelo Qwen3-TTS `0.6B` (`CustomVoice` o `Base`) inmutable y compartible entre hilos (`Send + Sync`).
 pub struct Model06B {
     pub config: ModelConfig06B,
     pub tokenizer: BpeTokenizer,
@@ -354,6 +356,7 @@ pub struct TextProjOverride {
     pub tts_eos_embed: AlignedBuf<f32>,
 }
 
+/// Vínculos de voz inmutables por locutor (preset, x-vector o injerto ICL + `WOVR`/`emo_ref`).
 #[derive(Clone)]
 pub struct VoiceBindings {
     pub identity: VoiceIdentity,
@@ -553,7 +556,7 @@ pub struct CpBuffers {
     pub dec_ffn_out: AlignedBuf<f32>,
     pub x1in: AlignedBuf<f32>,
     pub emb_buf: AlignedBuf<f32>,
-    // Pre-allocated B=2 prefill scratch
+    // Scratch preasignado para prefill B=2
     pub p2_x2: AlignedBuf<f32>,
     pub p2_q2: AlignedBuf<f32>,
     pub p2_k2: AlignedBuf<f32>,
@@ -606,7 +609,7 @@ impl Default for CpBuffers {
     }
 }
 
-/// 8 monotonic reusable slots for the acoustic convolutional decoder.
+/// 8 ranuras monótonas reutilizables para el decodificador convolucional acústico.
 pub struct DecoderWorkspace {
     pub a: AlignedBuf<f32>,
     pub b: AlignedBuf<f32>,
@@ -661,7 +664,7 @@ pub struct SdStreamState {
     pub cs_tile: bool,
     pub frames_decoded: usize,
     pub samples_produced: usize,
-    // Reusable per-chunk scratch buffers (zero heap allocations during streaming)
+    // Buffers scratch reutilizables por fragmento (cero asignaciones de heap durante streaming)
     pub tmp_vq_out: Vec<f32>,
     pub tmp_vq_cf: Vec<f32>,
     pub tmp_pre_conv_out: Vec<f32>,
@@ -851,6 +854,7 @@ impl Default for EmbLruCache {
     }
 }
 
+/// Estado mutable exclusivo de una sesión o worker (KV caches, buffers de trabajo, muestreador y RNG).
 pub struct SessionScratch {
     pub talker_kv: TalkerKvCache,
     pub cp_kv: CpKvCache,
@@ -889,6 +893,7 @@ impl Default for SessionScratch {
     }
 }
 
+/// Parámetros de muestreo, audio y diagnóstico para una petición de síntesis.
 #[derive(Debug, Clone)]
 pub struct RequestConfig {
     pub speaker_id: i32,
@@ -934,6 +939,7 @@ impl Default for RequestConfig {
 
 type AbortPollFn = Arc<dyn Fn() -> bool + Send + Sync>;
 
+/// Señal cooperativa de cancelación por bandera atómica y función opcional de sondeo.
 #[derive(Clone, Default)]
 pub struct AbortHandle {
     cancelled: Arc<AtomicBool>,
@@ -975,6 +981,7 @@ impl AbortHandle {
     }
 }
 
+/// Contexto efímero de ejecución de una petición (configuración + [`AbortHandle`]).
 pub struct RequestExecution {
     pub config: RequestConfig,
     pub abort: AbortHandle,
@@ -989,6 +996,7 @@ impl RequestExecution {
     }
 }
 
+/// Métricas de latencia y conteo de fotogramas producidas por una síntesis.
 #[derive(Debug, Clone, Default)]
 pub struct SynthesisTiming {
     pub prefill_ms: f64,

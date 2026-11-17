@@ -44,7 +44,7 @@ pub fn emotion_voice_key(load_voice: Option<&Path>, speaker_name: Option<&str>) 
         .to_string()
 }
 
-/// Resolves `--emotion <name>` on 0.6B (`SPEC_06B.md` §3.2).
+/// Resuelve `--emotion <name>` en `0.6B` (`SPEC_06B.md` §3.2).
 pub fn resolve_emovoice_06b(
     emotion_spec: &str,
     load_voice: Option<&Path>,
@@ -104,7 +104,7 @@ pub fn resolve_emovoice_06b(
     )))
 }
 
-/// Applies `dir_<tok>.bin` shift to an ECAPA x-vector preserving its original L2 norm `n0`.
+/// Aplica el desplazamiento `dir_<tok>.bin` sobre un x-vector ECAPA preservando su norma L2 original `n0`.
 pub fn apply_emotion_direction(
     speaker_embedding: &mut [f32],
     dir_path: &Path,
@@ -139,8 +139,8 @@ pub fn apply_emotion_direction(
     Ok(())
 }
 
-/// Encodes `--emo-ref <wav>` with `--emo-ref-text <str>` and attaches it as ICL prosody anchor
-/// without altering speaker identity (`VoiceBindings.identity`).
+/// Codifica `--emo-ref <wav>` con `--emo-ref-text <str>` y lo adjunta como ancla de prosodia ICL
+/// sin alterar la identidad del hablante (`VoiceBindings.identity`).
 pub fn attach_emo_ref(
     runtime: &ComputeRuntime,
     model: &Model06B,

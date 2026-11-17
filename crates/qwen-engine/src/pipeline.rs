@@ -247,7 +247,7 @@ pub fn build_prefill_embeds(
     let mut tmp_embed = [0.0f32; HIDDEN_SIZE];
     let mut pos = 0usize;
 
-    // Section 1: Role prefix (text-only)
+    // Sección 1: prefijo de rol (solo texto)
     for &tid in &role_prefix {
         embed_text_cached(
             runtime,
@@ -260,7 +260,7 @@ pub fn build_prefill_embeds(
         pos += 1;
     }
 
-    // Section 2: tts_pad*(sec2_len-1) + tts_bos paired with codec[0..sec2_len]
+    // Sección 2: tts_pad*(sec2_len-1) + tts_bos emparejado con codec[0..sec2_len]
     for (i, &ctok) in codec_tokens[..sec2_len].iter().enumerate() {
         let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
         if i + 1 < sec2_len {
@@ -363,6 +363,7 @@ pub fn build_prefill_embeds(
     Ok((input_embeds, prefill_len, text_content_len, icl_mode))
 }
 
+/// Ejecuta la síntesis completa y entrega progresivamente los fragmentos de audio PCM a `sink`.
 pub fn synthesize_to_sink(
     runtime: &ComputeRuntime,
     model: &Model06B,
@@ -682,7 +683,7 @@ pub fn synthesize_to_sink(
             codes[0] = code0;
             let mut cp_out = [0i32; 15];
             let t_cp = Instant::now();
-            // Copy last_hidden into small stack buffer to avoid aliasing `&mut scratch`
+            // Copia `last_hidden` a un buffer local en pila para evitar aliasing sobre `&mut scratch`
             let mut lh_copy = [0.0f32; HIDDEN_SIZE];
             lh_copy.copy_from_slice(&scratch.talker_bufs.last_hidden);
             cp_predict(
@@ -849,6 +850,7 @@ pub fn synthesize_to_sink(
     })
 }
 
+/// Ejecuta la síntesis completa y devuelve el buffer mono `f32` a 24 kHz junto con las métricas.
 pub fn synthesize_to_samples(
     runtime: &ComputeRuntime,
     model: &Model06B,

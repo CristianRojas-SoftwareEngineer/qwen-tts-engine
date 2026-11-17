@@ -30,8 +30,8 @@ pub fn voice_class_for(voice: &VoiceBindings) -> VoiceClass {
     }
 }
 
-/// Applies inline `[laugh]`/`[sigh]`/`[yawn]`/`[wow]`/`[giggle]`/`[scoff]` substitution
-/// (`small_model = true` for 0.6B) and detects whether remaining markup needs multi-span compose.
+/// Aplica sustitución inline de `[laugh]`/`[sigh]`/`[yawn]`/`[wow]`/`[giggle]`/`[scoff]`
+/// para `0.6B` y detecta si el marcado restante requiere composición multi-span.
 pub fn prepare_markup_06b(
     text: &str,
     voice: &VoiceBindings,
@@ -95,7 +95,7 @@ fn synth_one_span_06b(
     if volume_override > 0.0 {
         span_cfg.volume = volume_override;
     }
-    // Each compose span runs non-streaming cold prefill into MemorySink, then DSP post-process.
+    // Cada span compuesto ejecuta prefill frío sin streaming hacia MemorySink y luego DSP.
     span_cfg.stream = false;
     let span_exec = RequestExecution {
         config: span_cfg,
@@ -111,8 +111,8 @@ fn synth_one_span_06b(
     Ok(samples)
 }
 
-/// Multi-span synthesis into a single mono 24 kHz `f32` buffer.
-/// Applies inter-span pauses, WSOLA rate/volume DSP, and 45 ms filler overlap-add crossfade.
+/// Síntesis multi-span hacia un único buffer `f32` mono a 24 kHz.
+/// Aplica pausas entre spans, DSP WSOLA de velocidad/volumen y fundido cruzado de 45 ms en muletillas.
 pub fn render_spans_buffer(
     runtime: &ComputeRuntime,
     model: &Model06B,
@@ -204,7 +204,7 @@ pub fn render_spans_buffer(
     Ok((out, spoken))
 }
 
-/// Streaming multi-span synthesis.
+/// Síntesis multi-span en streaming entregando las muestras PCM progresivamente a `sink`.
 pub fn render_spans_stream(
     runtime: &ComputeRuntime,
     model: &Model06B,

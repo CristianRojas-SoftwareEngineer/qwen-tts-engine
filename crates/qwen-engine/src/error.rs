@@ -7,6 +7,7 @@ use std::fmt;
 
 use qwen_core::CoreError;
 
+/// Errores del motor de inferencia (`qwen-engine`).
 #[derive(Debug)]
 pub enum EngineError {
     Core(CoreError),

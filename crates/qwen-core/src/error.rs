@@ -5,6 +5,7 @@
 
 use std::fmt;
 
+/// Errores del crate núcleo (`qwen-core`) durante lectura de configuración, `safetensors`, tokenizador o `.qvoice`.
 #[derive(Debug)]
 pub enum CoreError {
     Io(std::io::Error),

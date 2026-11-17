@@ -689,7 +689,7 @@ pub fn batch_cp_predict(
     let d = runtime.dispatch;
     let mut normed = [0.0f32; CP_HIDDEN_SIZE];
 
-    // Step 0: talker_hidden -> CP (0.6B: identity projection, CP_HIDDEN_SIZE == HIDDEN_SIZE)
+    // Paso 0: talker_hidden -> CP (en 0.6B es proyección identidad, CP_HIDDEN_SIZE == HIDDEN_SIZE)
     for b in 0..b_dim {
         let dst = &mut bw.cp_x[b * CP_HIDDEN_SIZE..(b + 1) * CP_HIDDEN_SIZE];
         if active.is_some_and(|a| !a[b]) {
@@ -700,7 +700,7 @@ pub fn batch_cp_predict(
     }
     batch_cp_transformer_step(runtime, model, bw, 0, active);
 
-    // Step 1: embed code0 via Talker codec embedding
+    // Paso 1: incrustar code0 mediante codec_embedding del Talker
     for b in 0..b_dim {
         if active.is_some_and(|a| !a[b]) {
             continue;
@@ -765,7 +765,7 @@ pub fn batch_cp_predict(
     }
 }
 
-/// Verifies batched Talker step + CP wiring vs single-stream (`--batch-test`).
+/// Verifica el paso Talker por lotes y el cableado de CP frente a ejecución secuencial (`--batch-test`).
 pub fn batch_self_test(runtime: &ComputeRuntime, model: &Model06B) -> Result<bool, EngineError> {
     let b_dim = std::env::var("QWEN_BATCH_B")
         .ok()
@@ -797,7 +797,7 @@ pub fn batch_self_test(runtime: &ComputeRuntime, model: &Model06B) -> Result<boo
         )?;
     }
 
-    // 1. Force matvec wiring check (bit-exact vs single-stream)
+    // 1. Comprobación de cableado con matvec forzado (exacto bit a bit frente a single-stream)
     bw.force_matvec = true;
     bw.kv_len = 0;
     let mut embeds_b = vec![0.0f32; b_dim * HIDDEN_SIZE];
@@ -819,7 +819,7 @@ pub fn batch_self_test(runtime: &ComputeRuntime, model: &Model06B) -> Result<boo
         }
     }
 
-    // 2. Matmat path check
+    // 2. Comprobación de ruta matmat
     bw.force_matvec = false;
     bw.kv_len = 0;
     let mut max_mm_diff = 0.0f32;
@@ -839,7 +839,7 @@ pub fn batch_self_test(runtime: &ComputeRuntime, model: &Model06B) -> Result<boo
         }
     }
 
-    // 3. CP batch probe (single-stream reference vs batched wiring + matmat)
+    // 3. Sonda de lote en CP (referencia single-stream vs cableado por lotes + matmat)
     let mut th = vec![0.0f32; b_dim * HIDDEN_SIZE];
     for v in th.iter_mut() {
         seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -895,7 +895,7 @@ pub fn batch_self_test(runtime: &ComputeRuntime, model: &Model06B) -> Result<boo
     Ok(ok)
 }
 
-/// Measures batched-compute throughput vs sequential single-stream (`--batch-bench`).
+/// Mide el rendimiento de cómputo por lotes frente a ejecución secuencial (`--batch-bench`).
 pub fn batch_bench(runtime: &ComputeRuntime, model: &Model06B) -> Result<(), EngineError> {
     let b_dim = std::env::var("QWEN_BATCH_B")
         .ok()
@@ -952,7 +952,7 @@ pub fn batch_bench(runtime: &ComputeRuntime, model: &Model06B) -> Result<(), Eng
     Ok(())
 }
 
-// ── Sentence-aware text splitter (--batch) ─────────────────────────────────
+// ── Divisor de texto por frases (--batch) ────────────────────────────────────
 
 fn word_count(s: &str) -> usize {
     s.split_whitespace().count()
@@ -1364,7 +1364,7 @@ pub fn generate_batch_longform(
     Ok(out)
 }
 
-// ── Continuous Batching Driver (vLLM-style, --batch-size N) ──────────────────
+// ── Planificador de continuous batching (estilo vLLM, --batch-size N) ────────
 
 pub struct ContinuousSlotJob<T> {
     pub tag: T,
@@ -1375,7 +1375,7 @@ pub struct ContinuousSlotJob<T> {
 pub trait ContinuousBatchSink<T> {
     fn is_running(&self) -> bool;
     fn next_job(&mut self, block: bool) -> Option<ContinuousSlotJob<T>>;
-    /// Return false if client disconnected / stream write failed -> slot aborts.
+    /// Devuelve `false` si el cliente se desconectó o falló la escritura de streaming -> aborta la ranura.
     fn on_chunk(&mut self, tag: &mut T, samples: &[f32]) -> bool;
     fn on_done(&mut self, tag: T, samples: Option<Vec<f32>>, err: Option<EngineError>);
 }
@@ -1458,7 +1458,7 @@ pub fn run_continuous_batch<T>(
     let mut n_active = 0usize;
 
     while sink.is_running() || n_active > 0 {
-        // 1. Admit queued jobs into free slots
+        // 1. Admitir trabajos en cola dentro de ranuras libres
         for b in 0..b_dim {
             if slots[b].active {
                 continue;
@@ -1573,7 +1573,7 @@ pub fn run_continuous_batch<T>(
             continue;
         }
 
-        // Check client disconnection per active slot before stepping
+        // Comprobar desconexión del cliente en cada ranura activa antes de avanzar
         for b in 0..b_dim {
             if slots[b].active && slots[b].abort.is_cancelled() {
                 let tag = slots[b].tag.take().unwrap();
@@ -1769,7 +1769,7 @@ pub fn run_continuous_batch<T>(
                 se[j] += tts_pad[j];
             }
 
-            // Streaming chunk emission following 2, 4, 6, 8, ... ramp up to chunk_frames
+            // Emisión de fragmentos streaming siguiendo rampa 2, 4, 6, 8, ... hasta chunk_frames
             let (want_stream, chunk_frames, vol) = {
                 let r = slots[b].req.as_ref().unwrap();
                 (r.want_stream, r.chunk_frames.clamp(2, 250), r.volume)

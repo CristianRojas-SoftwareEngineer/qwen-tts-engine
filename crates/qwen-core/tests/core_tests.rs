@@ -42,7 +42,7 @@ fn test_config_load_06b_and_reject_17b_voicedesign() {
         r#"{"model_type":"qwen3_tts","tts_model_size":"0.6b","tts_model_type":"custom_voice","talker_config":{"hidden_size":1024,"intermediate_size":3072,"num_hidden_layers":28,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"text_hidden_size":2048,"text_vocab_size":151936,"vocab_size":3072,"rms_norm_eps":1e-6,"rope_theta":1000000.0,"code_predictor_config":{"hidden_size":1024,"intermediate_size":3072,"num_hidden_layers":5,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"vocab_size":2048,"num_code_groups":16,"rms_norm_eps":1e-6}}}"#.to_string()
     };
 
-    // Negative validation: 1.7B & VoiceDesign
+    // Validación negativa: rechaza 1.7B y VoiceDesign
     let tmp = std::env::temp_dir().join("qwen_core_cfg_neg_test");
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
@@ -149,7 +149,7 @@ fn test_qvoice_and_bin_roundtrip() {
     assert_eq!(emb, emb2);
     let _ = std::fs::remove_file(&tmp_bin);
 
-    // .qvoice v3 (META + TPAD + WOVR) roundtrip
+    // Roundtrip .qvoice v3 (META + TPAD + WOVR)
     let qv = QVoiceFile {
         version: 3,
         enc_dim: 1024,
@@ -189,14 +189,14 @@ fn test_qvoice_and_bin_roundtrip() {
     assert_eq!(qv, qv2);
     let _ = std::fs::remove_file(&tmp_qv);
 
-    // WDELTA LZ4 roundtrip
+    // Roundtrip WDELTA con compresión LZ4
     let cv: Vec<u16> = (0..1024).map(|i| 0x3F00u16.wrapping_add((i % 7) as u16)).collect();
     let base: Vec<u16> = (0..1024).map(|i| 0x3F00u16.wrapping_add((i % 11) as u16)).collect();
     let wt = encode_wdelta_bf16("talker.model.layers.14.self_attn.q_proj.weight", &base, &cv).unwrap();
     let decoded = decode_wdelta_bf16(&cv, &wt, 1.0, 14, 27).unwrap();
     assert_eq!(decoded, base);
 
-    // Reject legacy .qvoice v2 header
+    // Rechaza cabecera .qvoice v2 (versión no soportada)
     let tmp_v2 = std::env::temp_dir().join("qwen_core_legacy_v2.qvoice");
     let mut v2_bytes = Vec::new();
     v2_bytes.extend_from_slice(b"QVCE");

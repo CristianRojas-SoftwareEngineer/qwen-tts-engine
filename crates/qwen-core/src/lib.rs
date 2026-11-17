@@ -3,6 +3,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+//! Núcleo de configuración `0.6B`, almacenamiento `mmap` de `safetensors`,
+//! tokenizador BPE, muestreador determinista, perfiles `.qvoice`/`.bin` y planificador de marcado.
+
 pub mod config;
 pub mod error;
 pub mod markup;

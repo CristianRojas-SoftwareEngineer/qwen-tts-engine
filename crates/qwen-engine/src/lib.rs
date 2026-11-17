@@ -6,6 +6,9 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
+//! Motor de inferencia en CPU para **Qwen3-TTS 0.6B** (`CustomVoice` y `Base`)
+//! con soporte de streaming progresivo, clonación de voz, expresividad `0.6B` y *continuous batching*.
+
 pub mod audio;
 pub mod batch;
 pub mod code_predictor;

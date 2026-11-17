@@ -159,7 +159,7 @@ fn causal_conv_transpose1d(
     conv_add_bias(out, bias, out_ch, out_len);
 }
 
-/// ConvNeXt tail: 2-pass LayerNorm -> pw1(+exact GELU) -> pw2 -> gamma*x + residual.
+/// Cola ConvNeXt: LayerNorm de 2 pasadas -> pw1(+GELU exacto) -> pw2 -> gamma*x + residual.
 fn convnext_mlp(
     runtime: &ComputeRuntime,
     pw1: &mut AlignedBuf<f32>,
@@ -261,7 +261,7 @@ fn conv_decoder_forward(
     ws: &mut DecoderWorkspace,
     n_frames: usize,
 ) -> Vec<f32> {
-    // Entry signal is already stored in `ws.a` with shape [1024, n_frames].
+    // La señal de entrada ya está almacenada en `ws.a` con forma [1024, n_frames].
     let mut cur_ch = DEC_LATENT_DIM;
     let mut cur_len = n_frames;
 
@@ -1518,7 +1518,7 @@ pub fn speech_decoder_decode_streaming(
     let blas = &runtime.blas;
     let d = runtime.dispatch;
 
-    // Step 1: per-frame VQ dequantization
+    // Paso 1: descuantización VQ por fotograma
     if st.tmp_vq_out.len() < new_frames * VQ_HIDDEN {
         st.tmp_vq_out.resize(new_frames * VQ_HIDDEN, 0.0);
     }
@@ -1547,7 +1547,7 @@ pub fn speech_decoder_decode_streaming(
         d.f32_matvec_accum(vq_row, rvq_rest, &cb_sum, VQ_HIDDEN, CODEBOOK_DIM);
     }
 
-    // Step 2: Pre-conv with 2-frame left padding from previous chunk
+    // Paso 2: pre-conv con relleno izquierdo de 2 fotogramas del fragmento previo
     let pad_frames = if st.vq_pad_valid { 2 } else { 0 };
     let conv_in_len = pad_frames + new_frames;
     if st.tmp_vq_cf.len() < VQ_HIDDEN * conv_in_len {
@@ -1601,7 +1601,7 @@ pub fn speech_decoder_decode_streaming(
         1,
     );
 
-    // Step 3: Input proj on new frames
+    // Paso 3: proyección de entrada sobre los nuevos fotogramas
     if st.tmp_pre_conv_rm.len() < new_frames * DEC_LATENT_DIM {
         st.tmp_pre_conv_rm.resize(new_frames * DEC_LATENT_DIM, 0.0);
     }
@@ -1638,7 +1638,7 @@ pub fn speech_decoder_decode_streaming(
         }
     }
 
-    // Step 4: Pre-transformer with compacting KV cache
+    // Paso 4: pre-transformer con KV cache compactable
     let qkv_dim = DEC_NUM_HEADS * DEC_HEAD_DIM;
     let window = DEC_SLIDING_WINDOW;
     let mut need = (st.kv_len + new_frames) - st.kv_base;

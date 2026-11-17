@@ -5,6 +5,7 @@
 
 use std::fmt::Write;
 
+/// Capacidades SIMD y de arquitectura detectadas en tiempo de ejecución.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CpuCaps {
     pub arch: &'static str,

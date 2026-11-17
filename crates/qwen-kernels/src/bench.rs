@@ -10,6 +10,7 @@ use crate::aligned::AlignedBuf;
 use crate::dispatch::ComputeRuntime;
 use crate::quant::{f32_to_bf16_round, quantize_bf16_to_int8, quantize_bf16_to_q4_0};
 
+/// Ejecuta el microbenchmark `matmat` vs `B * matvec` (`--matmat-bench`) con `QWEN_BATCH_B` (default `8`).
 pub fn run_matmat_bench(rt: &ComputeRuntime) -> String {
     let mut out = String::new();
     let b_dim = std::env::var("QWEN_BATCH_B")

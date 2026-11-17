@@ -3,6 +3,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+//! Primitivas numéricas en CPU, buffers alineados a caché, pool de hilos,
+//! cuantización y despacho SIMD/BLAS en runtime para `qwen-tts-engine`.
+
 pub mod aligned;
 pub mod bench;
 pub mod blas;

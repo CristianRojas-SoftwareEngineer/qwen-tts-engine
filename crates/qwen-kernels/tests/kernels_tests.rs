@@ -45,7 +45,7 @@ fn test_compute_pool_stress() {
         assert_eq!(sum.load(Ordering::SeqCst), expected);
     }
 
-    // Multiple independent pools simultaneously (verifies no global singleton)
+    // Múltiples pools independientes simultáneos (verifica ausencia de singleton global)
     let p1 = Arc::new(ComputePool::new(2));
     let p2 = Arc::new(ComputePool::new(2));
     std::thread::scope(|s| {
@@ -97,7 +97,7 @@ fn test_blas_sgemm_and_q2_0() {
     assert!((c[2] - 139.0).abs() < 1e-4);
     assert!((c[3] - 154.0).abs() < 1e-4);
 
-    // Q2_0 smoke
+    // Prueba básica de Q2_0
     let wb: Vec<u16> = (0..64).map(|i| f32_to_bf16_round((i as f32 - 32.0) * 0.1)).collect();
     let wq2 = quantize_bf16_to_q2_0(&wb, 2, 32);
     let x = vec![1.0f32; 32];
@@ -105,7 +105,7 @@ fn test_blas_sgemm_and_q2_0() {
     rt.dispatch.matvec_q2_0(&mut y, &wq2, &x, 2, 32);
     assert!(y[0] < 0.0 && y[1] > 0.0);
 
-    // Shape check & f16 roundtrip
+    // Verificación de dimensiones y roundtrip f16
     assert!(quant_shape_check("ok", 1024).is_ok());
     assert!(quant_shape_check("bad_mod", 33).is_err());
     assert!(quant_shape_check("bad_max", 8224).is_err());

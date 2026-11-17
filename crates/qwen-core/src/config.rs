@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use crate::error::CoreError;
 
-// Fixed Qwen3-TTS 0.6B geometry (SPEC_06B.md, ADR-001)
+// Geometría fija de Qwen3-TTS 0.6B (`SPEC_06B.md`, `ADR-001`)
 pub const SAMPLE_RATE: usize = 24000;
 pub const FRAME_RATE: f32 = 12.5;
 pub const HOP_SAMPLES: usize = 1920;
@@ -34,7 +34,7 @@ pub const INTERMEDIATE_SIZE: usize = 3072;
 pub const RMS_NORM_EPS: f32 = 1e-6;
 pub const ROPE_THETA: f32 = 1_000_000.0;
 
-// Code Predictor 0.6B (no small_to_mtp_projection)
+// Code Predictor 0.6B (sin `small_to_mtp_projection`)
 pub const CP_HIDDEN_SIZE: usize = 1024;
 pub const CP_NUM_LAYERS: usize = 5;
 pub const CP_NUM_HEADS: usize = 16;
@@ -64,7 +64,7 @@ pub const DEC_CONVNEXT_RATIOS: [usize; 2] = [2, 2];
 pub const ENC_DIM: usize = 1024;
 pub const MEL_DIM: usize = 128;
 
-// Text & Codec special token IDs
+// IDs de tokens especiales de texto y códec
 pub const TOKEN_ENDOFTEXT: i32 = 151_643;
 pub const TOKEN_IM_START: i32 = 151_644;
 pub const TOKEN_IM_END: i32 = 151_645;

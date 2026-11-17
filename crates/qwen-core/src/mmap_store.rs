@@ -20,7 +20,7 @@ struct SafetensorsIndex {
     weight_map: HashMap<String, String>,
 }
 
-/// Zero-copy `Send + Sync + 'static` view of an immutable BF16 tensor in a memory-mapped file.
+/// Vista `Send + Sync + 'static` sin copias sobre un tensor BF16 inmutable mapeado en memoria.
 #[derive(Clone)]
 pub struct Bf16Ref {
     shard: Arc<Mmap>,
@@ -44,7 +44,7 @@ impl Deref for Bf16Ref {
     }
 }
 
-/// `Send + Sync + 'static` view of an immutable F32 tensor (zero-copy over mmap when 4B-aligned).
+/// Vista `Send + Sync + 'static` sobre un tensor F32 inmutable (sin copias sobre `mmap` si está alineado a 4 bytes).
 #[derive(Clone)]
 pub enum F32Ref {
     Mmap {
@@ -85,11 +85,11 @@ struct ShardEntry {
     tensor_names: Vec<String>,
 }
 
-/// Read-only memory-mapped safetensors store supporting both single-file
-/// `model.safetensors` and sharded `model.safetensors.index.json`.
+/// Almacén `safetensors` de solo lectura mapeado en memoria, compatible con
+/// archivo único `model.safetensors` y sharded `model.safetensors.index.json`.
 ///
-/// Safety: the only `unsafe` in `qwen-core` lives in this module (`Mmap::map`
-/// and verified-aligned zero-copy views over immutable mapped bytes).
+/// Seguridad: el único código `unsafe` de `qwen-core` reside en este módulo (`Mmap::map`
+/// y vistas alineadas verificadas sobre bytes inmutables mapeados).
 pub struct MmapStore {
     shards: Vec<ShardEntry>,
     index: HashMap<String, usize>,
@@ -172,8 +172,8 @@ impl MmapStore {
         Ok(view.shape().to_vec())
     }
 
-    /// Zero-copy view of a BF16 tensor as `&[u16]` (little-endian host).
-    /// Requires 2-byte aligned offset inside the safetensors file (always true for standard HF exports).
+    /// Vista sin copias de un tensor BF16 como `&[u16]` (host little-endian).
+    /// Exige offset alineado a 2 bytes dentro del archivo safetensors (garantizado en exports estándar de HF).
     pub fn tensor_bf16(&self, name: &str) -> Result<&[u16], CoreError> {
         let shard_id = *self
             .index
@@ -284,7 +284,7 @@ impl MmapStore {
         }
     }
 
-    /// Reads an F32 (or BF16->F32) tensor as `std::borrow::Cow<[f32]>`. Borrows zero-copy when F32 and 4-byte aligned.
+    /// Lee un tensor F32 (o BF16 convertido a F32) como `std::borrow::Cow<[f32]>`. Toma referencia sin copias cuando es F32 alineado a 4 bytes.
     pub fn tensor_f32(&self, name: &str) -> Result<std::borrow::Cow<'_, [f32]>, CoreError> {
         let shard_id = *self
             .index

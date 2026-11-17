@@ -58,6 +58,7 @@ pub type F32ToBf16VecFn = fn(&mut [u16], &[f32]);
 pub type F32MatvecAccumFn = fn(&mut [f32], &[f32], &[f32], usize, usize);
 pub type SnakeRowFn = fn(&mut [f32], f32, f32);
 
+/// Tabla de punteros a kernels SIMD resuelta en tiempo de ejecución según `CpuCaps`.
 pub struct KernelDispatch {
     pub quantize_act_int8_fn: QuantizeActFn,
     pub rms_norm_fn: RmsNormFn,
@@ -1266,6 +1267,7 @@ impl KernelDispatch {
     }
 }
 
+/// Contexto de cómputo inyectable con despacho SIMD, pools de hilos y backend BLAS.
 pub struct ComputeRuntime {
     pub caps: CpuCaps,
     pub dispatch: &'static KernelDispatch,

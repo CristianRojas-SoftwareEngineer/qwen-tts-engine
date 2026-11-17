@@ -5,12 +5,14 @@
 
 use std::os::raw::c_int;
 
+/// Modo de transposición de matrices para `BlasBackend::sgemm`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Transpose {
     NoTrans,
     Trans,
 }
 
+/// Abstracción del backend BLAS denso en `f32` (`FfiBlas` por defecto o `PureRustBlas`).
 pub trait BlasBackend: Send + Sync {
     fn name(&self) -> &'static str;
     fn set_threads(&self, n: usize);
@@ -68,6 +70,7 @@ extern "C" {
     fn openblas_set_num_threads(num_threads: c_int);
 }
 
+/// Backend BLAS por defecto enlazado vía FFI a OpenBLAS (Linux/Windows) o Accelerate (macOS).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FfiBlas;
 

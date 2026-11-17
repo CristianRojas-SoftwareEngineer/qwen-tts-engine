@@ -107,7 +107,7 @@ impl ValidatedTtsRequest {
             .as_object()
             .ok_or_else(|| "JSON body must be an object".to_string())?;
 
-        // voice_design is 1.7B-only -> reject with 400
+        // voice_design es exclusivo de 1.7B -> rechazar con 400
         if let Some(vd) = obj.get("voice_design") {
             let enabled = match vd {
                 Value::Bool(b) => *b,
@@ -120,7 +120,7 @@ impl ValidatedTtsRequest {
             }
         }
 
-        // text or input (mandatory, non-empty, non-whitespace, <= 8192 bytes)
+        // text o input (obligatorio, no vacío, no solo espacios, <= 8192 bytes)
         let text_raw = match extract_opt_str(obj, "text")? {
             Some(t) => Some(t),
             None => extract_opt_str(obj, "input")?,
@@ -138,7 +138,7 @@ impl ValidatedTtsRequest {
             return Err(format!("'text' exceeds {MAX_TTS_TEXT} bytes"));
         }
 
-        // language
+        // idioma
         let language_name = extract_opt_str(obj, "language")?;
         let language_id = if let Some(lang) = language_name {
             let id = lookup_language(lang)
@@ -150,7 +150,7 @@ impl ValidatedTtsRequest {
             Some(2050) // English
         };
 
-        // speaker or voice
+        // speaker o voice
         let spk_raw = match extract_opt_str(obj, "speaker")? {
             Some(s) => Some(s),
             None => extract_opt_str(obj, "voice")?,
@@ -165,7 +165,7 @@ impl ValidatedTtsRequest {
             3061
         };
 
-        // temperature in [0.0, 2.0], server default = 0.5
+        // temperature en [0.0, 2.0], default del servidor = 0.5
         let temp_opt = extract_opt_f64(obj, "temperature")?;
         let (temperature, temp_set) = match temp_opt {
             Some(v) => {
@@ -177,7 +177,7 @@ impl ValidatedTtsRequest {
             None => (0.5, false),
         };
 
-        // top_k in [0, codec_vocab_size (3072)], default = 50
+        // top_k en [0, codec_vocab_size (3072)], default = 50
         let top_k = match extract_opt_i64(obj, "top_k")? {
             Some(v) => {
                 if v < 0 || v > CODEC_VOCAB_SIZE as i64 {
@@ -188,7 +188,7 @@ impl ValidatedTtsRequest {
             None => 50,
         };
 
-        // top_p in [0.0, 1.0], default = 1.0
+        // top_p en [0.0, 1.0], default = 1.0
         let top_p = match extract_opt_f64(obj, "top_p")? {
             Some(v) => {
                 if !(0.0..=1.0).contains(&v) {
@@ -199,7 +199,7 @@ impl ValidatedTtsRequest {
             None => 1.0,
         };
 
-        // rep_penalty in [0.5, 2.0], default = 1.05
+        // rep_penalty en [0.5, 2.0], default = 1.05
         let rep_penalty = match extract_opt_f64(obj, "rep_penalty")? {
             Some(v) => {
                 if !(0.5..=2.0).contains(&v) {
@@ -210,23 +210,23 @@ impl ValidatedTtsRequest {
             None => 1.05,
         };
 
-        // seed
+        // semilla
         let seed = match extract_opt_i64(obj, "seed")? {
             Some(v) if v >= 0 => Some(v as u32),
             _ => None,
         };
 
-        // emotion (optional, validated as string if present)
+        // emotion (opcional, validado como string si está presente)
         let _emotion = extract_opt_str(obj, "emotion")?;
 
-        // volume / rate
+        // volumen / velocidad
         let volume = extract_opt_f64(obj, "volume")?.unwrap_or(1.0) as f32;
         let rate = extract_opt_f64(obj, "rate")?.unwrap_or(1.0) as f32;
         if is_stream && (rate - 1.0).abs() > 1e-6 {
             return Err("'rate' is not supported on /v1/tts/stream".to_string());
         }
 
-        // chunk_frames (2..=250, default 10)
+        // chunk_frames (acotado a 2..=250, default 10)
         let chunk_frames = if is_stream {
             let cf = extract_opt_i64(obj, "chunk_frames")?.unwrap_or(DEFAULT_CHUNK_FRAMES as i64);
             cf.clamp(2, 250) as usize
@@ -278,5 +278,12 @@ mod tests {
         assert_eq!(ok.speaker_id, 3061);
         assert_eq!(ok.temperature, 0.5);
         assert!((ok.rate - 1.2).abs() < 1e-6);
+
+        // Con voz clonada, si se omite `language` se mantiene `None` (no fuerza `English` ni `META`).
+        let clone_ok = ValidatedTtsRequest::parse(r#"{"text":"Cloned.","chunk_frames":999}"#, true, true, 3061, None).unwrap();
+        assert_eq!(clone_ok.language_id, None);
+        assert_eq!(clone_ok.chunk_frames, 250);
+        let clone_min = ValidatedTtsRequest::parse(r#"{"text":"Cloned.","chunk_frames":0}"#, true, true, 3061, None).unwrap();
+        assert_eq!(clone_min.chunk_frames, 2);
     }
 }

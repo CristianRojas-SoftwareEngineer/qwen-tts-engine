@@ -30,7 +30,7 @@ fn main() {
         return;
     }
 
-    // GNU / MinGW: compile .rc to COFF .o using windres
+    // GNU / MinGW: compila .rc a objeto COFF .o usando windres
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let res_obj = out_dir.join("qwen_app_manifest.o");
 

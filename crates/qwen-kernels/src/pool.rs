@@ -55,16 +55,16 @@ struct PoolInner {
     generation: AtomicU64,
     completed: AtomicUsize,
     stop: AtomicBool,
-    // Protected by `submit_mtx` during `parallel()`; workers only read between
-    // `generation` increment (Release/SeqCst) and `completed` increment (AcqRel).
+    // Protegido por `submit_mtx` durante `parallel()`; los workers solo leen entre
+    // el incremento de `generation` (Release/SeqCst) y el de `completed` (AcqRel).
     job_slot: UnsafeCell<JobSlot>,
     workers: Mutex<Vec<JoinHandle<()>>>,
 }
 
 unsafe impl Sync for PoolInner {}
 
-/// Instantiable persistent thread pool (no global singleton state) with
-/// spin-wait (`QWEN_POOL_SPIN=4096` + `spin_loop()`), `Condvar` and per-worker `ftz_on()`.
+/// Pool de hilos persistente e instanciable (sin estado global) con espera activa
+/// (`QWEN_POOL_SPIN=4096` + `spin_loop()`), `Condvar` y `ftz_on()` por trabajador.
 #[derive(Clone)]
 pub struct ComputePool {
     inner: Arc<PoolInner>,
@@ -127,8 +127,8 @@ impl ComputePool {
         self.inner.spin_budget
     }
 
-    /// Runs `f(tid, nt)` for `tid` in `0..nt` across the pool (caller participates),
-    /// blocking until all chunks finish.
+    /// Ejecuta `f(tid, nt)` para `tid` en `0..nt` sobre el pool (el hilo llamador participa)
+    /// y bloquea hasta completar todos los fragmentos.
     pub fn parallel<F>(&self, nt: usize, f: F)
     where
         F: Fn(usize, usize) + Sync,

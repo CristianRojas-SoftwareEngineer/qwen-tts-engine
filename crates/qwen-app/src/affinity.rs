@@ -3,9 +3,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Win32 SMT thread-pinning: restricts the process to one logical thread per
-//! physical core on single-processor-group systems to avoid Windows scheduler
-//! SMT contention (`INTERFACE_CONTRACT.md` §3).
+//! Afinidad de hilos SMT en Win32: restringe el proceso a un hilo lógico por
+//! núcleo físico en sistemas con un solo grupo de procesadores para evitar
+//! contención SMT del planificador de Windows (`INTERFACE_CONTRACT.md` §4.2).
 
 #[cfg(target_os = "windows")]
 mod win32 {

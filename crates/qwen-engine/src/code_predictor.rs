@@ -480,6 +480,8 @@ fn cp_transformer_step(
     scratch.cp_kv.len = pos + 1;
 }
 
+/// Predice los 15 codebooks acústicos (`out_codes[0..15]`) en el Code Predictor de 5 capas
+/// a partir de `talker_hidden` y `code0` (usando `cp_prefill2` cuando las capas están cuantizadas).
 pub fn cp_predict(
     runtime: &ComputeRuntime,
     model: &Model06B,

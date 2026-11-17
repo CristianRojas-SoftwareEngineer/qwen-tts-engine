@@ -3,6 +3,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+//! Implementación escalar de referencia (usada como fallback universal en ARM64 y x86 sin AVX2).
+
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
 use crate::quant::{

@@ -26,7 +26,7 @@ pub fn apply_gain(samples: &mut [f32], gain: f32) {
     }
 }
 
-/// Pitch-preserving time-stretch via WSOLA (`--rate`).
+/// Estiramiento temporal preservando el pitch mediante WSOLA (`--rate`).
 pub fn time_stretch(input: &[f32], rate: f32) -> Vec<f32> {
     let rate = if rate <= 0.0 { 1.0 } else { rate };
     let n_in = input.len();
@@ -398,7 +398,7 @@ fn ffmpeg_convert_hint(path: &Path) -> String {
     )
 }
 
-/// Fast pre-load validation of reference audio path & RIFF/WAVE header (with ffmpeg hints).
+/// Validación rápida previa a la carga sobre la ruta de audio de referencia y cabecera `RIFF`/`WAVE` (con guía `ffmpeg`).
 pub fn validate_wav_path_or_header(path: &Path) -> Result<(), EngineError> {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         let lower = ext.to_ascii_lowercase();
@@ -474,7 +474,7 @@ pub fn validate_wav_path_or_header(path: &Path) -> Result<(), EngineError> {
     Ok(())
 }
 
-/// Reads a PCM (16-bit or 32-bit integer) WAV file into normalized `[-1.0, 1.0]` mono `f32` samples.
+/// Lee un archivo WAV PCM (entero de 16 o 32 bits) y lo normaliza a muestras mono `f32` en `[-1.0, 1.0]`.
 pub fn read_wav_pcm(path: &Path) -> Result<(Vec<f32>, u32), EngineError> {
     validate_wav_path_or_header(path)?;
     let f = File::open(path)?;
@@ -603,7 +603,7 @@ pub fn read_wav_pcm(path: &Path) -> Result<(Vec<f32>, u32), EngineError> {
     Ok((samples, sample_rate))
 }
 
-/// Strict 24 kHz WAV reader: rejects any sample rate != 24000 Hz with an `ffmpeg` conversion hint.
+/// Lector estricto de WAV a 24 kHz: rechaza cualquier frecuencia distinta de 24000 Hz con sugerencia de conversión `ffmpeg`.
 pub fn read_wav_24khz(path: &Path) -> Result<Vec<f32>, EngineError> {
     let (samples, sr) = read_wav_pcm(path)?;
     if sr as usize != SAMPLE_RATE {
@@ -615,8 +615,8 @@ pub fn read_wav_24khz(path: &Path) -> Result<Vec<f32>, EngineError> {
     Ok(samples)
 }
 
-/// Conservative trailing near-silence / fade-out trimmer (`qwen_trim_trailing_silence`).
-/// Opt out via `QWEN_NO_REF_TRIM`.
+/// Recorte conservador de silencio o *fade-out* final en el audio de referencia.
+/// Se desactiva definiendo `QWEN_NO_REF_TRIM`.
 pub fn trim_trailing_silence(audio: &mut Vec<f32>, sample_rate: usize, silent: bool) {
     if std::env::var_os("QWEN_NO_REF_TRIM").is_some() {
         return;

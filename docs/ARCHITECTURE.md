@@ -1,13 +1,13 @@
-# Arquitectura de Qwen TTS Engine (`qwen-tts-engine`, actualmente `0.6B`)
+# Arquitectura de Qwen TTS Engine (`ARCHITECTURE.md`)
 
-Define la estructura del workspace Cargo, la separación de responsabilidades y el modelo de concurrencia del motor en Rust, diseñado para cumplir [INTERFACE_CONTRACT.md](INTERFACE_CONTRACT.md), [SPEC_06B.md](SPEC_06B.md) y [NUMERIC_CONTRACT.md](NUMERIC_CONTRACT.md).
+> Describe la topología del workspace Cargo, la política `unsafe`, la separación de estado en cuatro tiempos de vida y el modelo de concurrencia en CPU de **Qwen TTS Engine** (`qwen-tts-engine`), diseñado para cumplir [`INTERFACE_CONTRACT.md`](INTERFACE_CONTRACT.md), [`SPEC_06B.md`](SPEC_06B.md) y [`NUMERIC_CONTRACT.md`](NUMERIC_CONTRACT.md).
 
 ---
 
-## 1. Grafo de Crates (DAG estricto) y Política `unsafe`
+## 1. Grafo de crates (DAG estricto) y política `unsafe`
 
 ```text
-   qwen-app          (Binario CLI + Servidor HTTP + Schedulers; puntual Win32 affinity)
+   qwen-app          (Binario CLI + Servidor HTTP + Schedulers; afinidad SMT Win32)
       │
       ▼
   qwen-engine        (#![forbid(unsafe_code)] Modelo 0.6B, Talker, CP, Decoder, Encoder, Audio)
@@ -16,25 +16,25 @@ Define la estructura del workspace Cargo, la separación de responsabilidades y 
    qwen-core         (Constantes 0.6B, MmapStore, BPE, Sampler, .qvoice/.bin, MarkupPlanner)
       │
       ▼
-  qwen-kernels       (AlignedBuf<64>, CpuCaps, ComputePool, FTZ, SIMD, Quant, FFI BLAS)
+  qwen-kernels       (AlignedBuf<64>, CpuCaps, ComputePool, FTZ, SIMD, Quant, FFI/Rust BLAS)
 ```
 
 | Crate | Módulos principales | Política `unsafe` |
 |---|---|---|
-| **`qwen-kernels`** | `aligned` (`AlignedBuf<64>`), `caps`, `pool` (`ComputePool`), `ftz`, `blas` (`FfiBlas` default + `PureRustBlas` opcional), `quant` (`int8`/`q4_0`/`q2_0`), `simd/{scalar,avx2}`, `dispatch`, `selftest`, `bench`. | **Permitido y aislado** (intrínsecos SIMD, `std::alloc`, `MXCSR`/`FPCR`, FFI BLAS). |
-| **`qwen-core`** | `config`, `mmap_store` (`memmap2`), `tokenizer` (`BpeTokenizer`), `sampling` (`Sampler`/`LcgRng`), `qvoice` (`QVCE`/`WOVR`/`WDELTA`), `markup` (`MarkupPlanner`). | **Solo `Mmap::map` y cast de slices alineadas** en `mmap_store.rs`; resto 100 % seguro. |
-| **`qwen-engine`** | `model` (`Model06B`, `VoiceBindings`, `SessionScratch`), `talker`, `code_predictor`, `speech_decoder`, `speech_encoder`, `voice_clone`, `emotion`, `compose`, `batch`, `audio`, `pipeline`. | **`#![forbid(unsafe_code)]`** |
-| **`qwen-app`** | `main`, `cli`, `affinity` (SMT Win32), `build.rs` + `qwen_app.exe.manifest`, `server/{mod,http,validation,scheduler}`. | **Solo llamada puntual** `SetProcessAffinityMask` / `GetLogicalProcessorInformationEx` en Windows. |
+| **`qwen-kernels`** | `aligned`, `caps`, `pool`, `ftz`, `blas`, `quant`, `simd/{scalar,avx2}`, `dispatch`, `selftest`, `bench`. | **Permitido y aislado** (intrínsecos `AVX2+FMA`, `std::alloc`, `MXCSR`/`FPCR`, FFI BLAS / `faer`). |
+| **`qwen-core`** | `config`, `error`, `mmap_store`, `tokenizer`, `sampling`, `qvoice`, `markup`. | **Solo `Mmap::map` y cast de slices alineadas** en `mmap_store.rs`; resto 100 % seguro. |
+| **`qwen-engine`** | `model`, `talker`, `code_predictor`, `speech_decoder`, `speech_encoder`, `voice_clone`, `emotion`, `compose`, `batch`, `audio`, `pipeline`, `error`. | **`#![forbid(unsafe_code)]`** |
+| **`qwen-app`** | `main`, `cli`, `affinity`, `build.rs` + manifiesto UTF-8, `server/{mod,http,validation,scheduler}`. | **Solo llamada puntual** a Win32 (`SetProcessAffinityMask` / `GetLogicalProcessorInformationEx`). |
 
 ---
 
-## 2. Separación del Estado en 4 Tiempos de Vida
+## 2. Separación del estado en cuatro tiempos de vida
 
-Separa el estado de inferencia en 4 tiempos de vida para compartir `Model06B` entre workers sin copias superficiales ni fugas de estado entre peticiones:
+El diseño separa los datos en cuatro niveles de vida para compartir pesos inmutables entre hilos sin copias superficiales ni fugas de estado entre peticiones:
 
 ```text
 Arc<Model06B>  [Inmutable, Send + Sync — compartido por todo el proceso]
- ├── _mmaps: Vec<Mmap>                    // mantiene vivos safetensors BF16/F32
+ ├── _mmaps (en Bf16Weight/F32Ref)        // mantiene vivos los safetensors BF16/F32
  ├── tokenizer: BpeTokenizer
  ├── talker: TalkerWeights                // 28 capas (BF16 mmap o INT8/Q4_0) + embeddings
  ├── cp: CodePredictorWeights             // 5 capas + 15 lm_head + 15 codec_emb
@@ -42,48 +42,52 @@ Arc<Model06B>  [Inmutable, Send + Sync — compartido por todo el proceso]
  └── encoder: Option<SpeechEncoderWeights>// ECAPA-TDNN + RVQ encoder (comparte Arc<Codebooks>)
 
 Arc<VoiceBindings>  [Inmutable por voz — 0 B en preset, ~25 MB con WOVR]
- ├── identity: VoiceIdentity              // Preset(SpeakerId) | XVector([f32; 1024]) | IclGraft
- └── bindings: TextAndCodecView           // Borrowed(&Model06B) | Overridden(text_proj, codec_emb[0..2048], special_embeds)
-     (Si se carga WDELTA pesado, se construye un Model06B derivado al arranque sin mutar el base.)
+ ├── identity: VoiceIdentity              // Preset(i32) | XVector(Vec<f32>) | IclGraft
+ └── wovr / emo_ref_*                     // TextProjOverride y ancla prosódica opcionales
+     (Al cargar WDLT en QVoice, load_voice_from_file muta Model06B antes de envolver en Arc.)
 
 SessionScratch  [Mutable, exclusivo por worker o sesión — cero locks internos]
- ├── talker_kv / cp_kv                    // BF16 KV caches (Talker inicia en 1024 pos)
+ ├── talker_kv / cp_kv                    // KV caches BF16 (Talker inicia en 1024 posiciones)
  ├── talker_bufs / cp_bufs                // AlignedBuf<64> + down_q2_rough opcional
  ├── sd_stream + sd_ws                    // colas/acarreos streaming + 8 ranuras DecoderWorkspace
  └── emb_lru + sampler + rng: LcgRng      // caché texto local + muestreador + RNG propio
 
 RequestExecution  [Efímero por petición — se destruye al finalizar]
- ├── config: RequestConfig                // speaker_id, temperature, top_k, top_p, rep_penalty, chunk_frames, rate, volume
- └── abort: AbortHandle                   // Arc<AtomicBool> + poll de socket opcional acoplado por RAII (Drop) al socket HTTP
+ ├── config: RequestConfig                // speaker_id, temperature, top_k, top_p, rep_penalty, ...
+ └── abort: AbortHandle                   // Arc<AtomicBool> + poll opcional acoplado por RAII (Drop)
 ```
 
 ---
 
-## 3. Abstracciones de Cómputo (`qwen-kernels`)
+## 3. Runtime de cómputo (`qwen-kernels`)
 
-1. **`ComputeRuntime`**: inyectable (no singleton global), compuesto por `pool: Arc<ComputePool>` y `blas: Arc<dyn BlasBackend>`.
-2. **`ComputePool`** *(ver ADR-003)*: pool persistente instanciable con contador atómico de chunks (`AtomicUsize`), presupuesto de *spin-wait* (`QWEN_POOL_SPIN=4096`) con `std::hint::spin_loop()`, `Condvar` y `ftz_on()` al iniciar cada trabajador.
-3. **`KernelDispatch`**: tabla resuelta una vez en tiempo de ejecución según `CpuCaps` *(ver ADR-004)* para `matvec_{bf16,int8,q4_0,q2_0}`, `matmat_*`, `argmax_matvec_*`, `rms_norm*`, `causal_attention*`, `rope_neox_inplace`, `swiglu_inplace` y `snake_row`. `qwen-engine` nunca contiene `#[cfg(target_arch)]`.
-4. **`BlasBackend`** *(ver ADR-002)*: trait que abstrae `sgemm` y `set_threads(n)`. Por defecto usa `FfiBlas` (`OpenBLAS` / `Accelerate`), con `PureRustBlas` (`faer`) disponible bajo la feature opcional `faer-blas` (`QWEN_BLAS=faer`). Respeta `OMP_NUM_THREADS` / `OPENBLAS_NUM_THREADS`.
+1. **`ComputeRuntime`**: instancia inyectable (sin estado global) con cinco componentes:
+   - `caps: CpuCaps` — capacidades SIMD detectadas en runtime.
+   - `dispatch: &'static KernelDispatch` — tabla de punteros resuelta según `CpuCaps` *(ver [ADR-004](adr/004-simd-baseline.md))*. `qwen-engine` nunca contiene `#[cfg(target_arch)]`.
+   - `pool: Arc<ComputePool>` — pool persistente para `Talker` y `CodePredictor` *(ver [ADR-003](adr/003-concurrency-pool.md))*.
+   - `sd_pool: Arc<ComputePool>` — pool dedicado para `SpeechDecoder` (configurable con `QWEN_SD_THREADS`).
+   - `blas: Arc<dyn BlasBackend>` — abstracción de `sgemm` y `set_threads` *(ver [ADR-002](adr/002-blas-strategy.md))*.
+2. **`ComputePool`**: sincronización con contador atómico de chunks (`AtomicUsize`), presupuesto de *spin-wait* (`QWEN_POOL_SPIN=4096`) usando `std::hint::spin_loop()`, `Condvar` de respaldo y llamada única a `ftz_on()` al iniciar cada hilo trabajador.
+3. **`BlasBackend`**: `FfiBlas` (`OpenBLAS` en Linux/Windows, `Accelerate` en macOS) por defecto; `PureRustBlas` (`faer`) disponible con `--features faer-blas` y seleccionable con `QWEN_BLAS=faer`.
 
 ---
 
-## 4. Pipeline Productor-Consumidor y Streaming (`qwen-engine`)
+## 4. Pipeline productor-consumidor y *streaming* (`qwen-engine`)
 
-1. **Planificación pura (`MarkupPlanner`)**: transforma el texto y parámetros de paralingüística `0.6B` en `Vec<SpanSpec>` (`Utterance` o `Pause`) sin mutar ningún contexto global.
+1. **Planificación pura (`MarkupPlanner`)**: `prepare_markup_06b` sustituye `[tags]` paralingüísticos y `MarkupPlanner::parse_spans` divide el texto en `Vec<SpanSpec>` (`Utterance` o `Pause`) sin estado global.
 2. **Ejecución por `SpanSpec`**:
-   - **Prefill**: siempre completo (`kv_len = 0`) vía `BlasBackend` usando `threads = -j`.
-   - **Paso de generación**: fija `blas.set_threads(gen_blas)` antes de iniciar el hilo decodificador y lo mantiene constante hasta drenar.
-   - **Paralelismo de pipeline (`std::thread::scope`)**:
-     - Hilo productor (`Talker + CodePredictor`) genera `[i32; 16]` por fotograma, comprueba `abort.is_cancelled()` antes de cada paso y envía al canal acotado.
-     - Hilo consumidor (`SpeechDecoder`) agrupa tramos según el calendario creciente (`2, 4, 6, 8, 10` hasta `chunk_frames`), ejecuta `conv_decoder_forward` con `DecoderWorkspace` + tiling `up2`/`up3` (256 KB) y entrega PCM a `AudioSink` (`WavFileSink`, `StdoutRawSink`, `HttpChunkSink`, `MemorySink`).
-     - Un error de escritura en `AudioSink` activa `abort` inmediatamente y `thread::scope` garantiza *join* limpio sin hilos huérfanos.
+   - **Prefill**: siempre completo (`kv_len = 0`) vía `BlasBackend` usando `nt` hilos.
+   - **Paso de generación**: fija `blas.set_threads(gen_blas)` antes de iniciar el hilo decodificador y lo mantiene constante hasta terminar el drenaje final.
+   - **Paralelismo productor-consumidor (`std::thread::scope`)**:
+     - **Hilo productor (`Talker + CodePredictor`)**: genera `[i32; 16]` por fotograma, comprueba `exec.abort.is_cancelled()` antes de cada paso y empuja los códigos a `DecoderQueue`.
+     - **Hilo consumidor (`SpeechDecoder`)**: agrupa tramos según el calendario creciente (`2`, luego `4×8, 6×8, 8×8, 10...` hasta `chunk_frames`), ejecuta `speech_decoder_decode_streaming` con `DecoderWorkspace` + tiling en `up2`/`up3` (`256 KB`) y entrega PCM a `AudioSink`.
+     - Cualquier error de escritura en `AudioSink` activa `queue.aborted` de inmediato y `thread::scope` garantiza *join* limpio sin hilos huérfanos.
 
 ---
 
-## 5. Servidor HTTP y Schedulers (`qwen-app`)
+## 5. Servidor HTTP y *schedulers* (`qwen-app`)
 
-1. **Frontend único**: valida todas las peticiones en `ValidatedTtsRequest::parse(body)` (HTTP `400` ante cualquier error, ver [INTERFACE_CONTRACT.md](INTERFACE_CONTRACT.md)) y asocia un `AbortGuard` (`Drop` → `abort.cancel()`) a la conexión abierta.
+1. **Validación única**: `ValidatedTtsRequest::parse(body, ...)` valida todas las peticiones antes de encolar (HTTP `400` ante cualquier parámetro fuera de contrato) y `AbortGuard` acopla el ciclo de vida del socket a `AbortHandle::cancel()` vía `Drop`.
 2. **Trait `SynthesisScheduler`** con dos estrategias tras el mismo contrato:
-   - **`ContinuousBatchScheduler` (`--batch-size N`, recomendado)**: un único hilo planificador con `1` `ComputePool` compartido y `BatchWorkspace` ragged; lee los pesos una vez para hasta `N` peticiones simultáneas (WAV y streaming), derivando peticiones con markup multi-span o `rate != 1.0` a un worker dedicado.
-   - **`WorkerPoolScheduler` (`--workers N`)**: `N` workers con `SessionScratch` propios; calcula el presupuesto de hilos por worker y ajusta el *spin-wait* para no exceder los núcleos físicos del host.
+   - **`ContinuousBatchScheduler` (`--batch-size N`, recomendado en servidor)**: un hilo planificador (`run_continuous_batch`) comparte un único `ComputePool` y `BatchWorkspace` *ragged* para procesar hasta `N` peticiones simultáneas (WAV y streaming), derivando peticiones con markup multi-span o `rate != 1.0` a un hilo *fallback* dedicado.
+   - **`WorkerPoolScheduler` (`--workers N`)**: `N` hilos *worker* con `SessionScratch` y `ComputeRuntime` propios; divide el presupuesto de hilos por *worker* y desactiva el *spin-wait* (`spin_budget = 0`) cuando hay sobresuscripción frente a núcleos físicos.
