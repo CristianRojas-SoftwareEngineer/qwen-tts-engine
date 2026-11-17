@@ -1,6 +1,6 @@
 # Revisión de Arquitectura y Plan de Optimización del Pipeline de Inferencia (`0.6B`)
 
-> **Propósito**: Documento técnico autocontenido sobre la arquitectura de inferencia CPU de `qwen-tts-engine` (especializado en **Qwen3-TTS 0.6B**), el análisis de sus cuellos de botella en **CPU**, **memoria RAM** y **ancho de banda de memoria**, el impacto real esperado sobre el **RTF** (*Real-Time Factor*) y una **planificación progresiva de implementación en 4 oleadas** verificables.
+> **Propósito**: Documento técnico autocontenido sobre la arquitectura de inferencia CPU de `qwen-tts-engine` (especializado en **Qwen3-TTS 0.6B**), el análisis de sus cuellos de botella en **CPU**, **memoria RAM** y **ancho de banda de memoria**, el impacto real esperado sobre el **RTF** (*Real-Time Factor*) y una **planificación progresiva de implementación organizada en Fases y Pasos** verificables.
 >
 > **Referencias normativas**: [`ARCHITECTURE.md`](../ARCHITECTURE.md), [`SPEC_06B.md`](../SPEC_06B.md), [`NUMERIC_CONTRACT.md`](../NUMERIC_CONTRACT.md), [`VERIFICATION_PLAN.md`](../VERIFICATION_PLAN.md) y ADRs `001`–`004`.
 >
@@ -190,7 +190,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Propuestas**:
   - Dejar `ftz_on()` solo al inicializar hilos/runtimes (`ComputeRuntime`, `worker_main`, consumidor de `pipeline.rs`).
   - En `batch_talker_step_impl`, compactar slots activos (`n_act`) antes de `batch_proj_q` y paralelizar `(slot activo, cabeza)` en una sola barrera por capa.
-  - Ajustar el umbral de paralelización en `CodePredictor` para reducir salidas del pool (y combinar la fusión `swiglu + quantize_act_int8` en `down_proj` junto con `O6` en la Oleada 3).
+  - Ajustar el umbral de paralelización en `CodePredictor` para reducir salidas del pool (y combinar la fusión `swiglu + quantize_act_int8` en `down_proj` junto con `O6` en la **Fase 3**).
 - **Contrato numérico**: **Bit-idéntico**.
 
 #### O8. Eliminar spin-wait simultáneo en `sd_pool` y vectorizar convoluciones del `SpeechDecoder`
@@ -251,64 +251,95 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 
 ---
 
-## 6. Planificación de implementación progresiva (4 oleadas)
+## 6. Planificación de implementación progresiva (Fases y Pasos)
 
-Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar ajustes de memoria, microkernels SIMD y cambios de precisión numérica dificultaría aislar regresiones de determinismo o concurrencia. Se propone ejecutarlas en **4 oleadas progresivas**, cada una con su propio criterio de aceptación.
+Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar ajustes de memoria, microkernels SIMD y cambios de precisión numérica dificultaría aislar regresiones de determinismo o concurrencia. El plan se estructura en dos niveles coherentes:
 
-### Oleada 1 — *Quick wins* de bajo riesgo en CPU y RAM
-- **Alcance**: `O5`, `O8 (parcial: spin_budget=0 en sd_pool)`, `O7 (parcial: retirar ftz_on() de matvec_*)`, `O10` y `O11`.
-- **Archivos objetivo**:
-  - `crates/qwen-engine/src/speech_decoder.rs` (reemplazar atención escalar streaming por `d.causal_attention_windowed`)
-  - `crates/qwen-kernels/src/dispatch.rs` (`sd_pool` con `spin_budget=0`; retirar `ftz_on()` redundante)
-  - `crates/qwen-engine/src/model.rs` (`KV_INITIAL_POSITIONS=256`, `pref_*_f32` lazy, `tmp_*` movidos a `DecoderWorkspace`)
-  - `crates/qwen-engine/src/batch.rs` (copia directa de `prompt_lens[b]` en `generate_batch_multi`)
-- **Prerequisitos**: ninguno.
-- **Criterio de aceptación**:
-  1. `cargo test --workspace --release` y `qwen_tts --self-test` verdes.
-  2. **Códigos códec** (`Talker + CodePredictor`) **bit-idénticos** frente al baseline previo con semilla fija; **audio PCM** del `SpeechDecoder` con **`SNR >= 100 dB`** frente al baseline previo (debido al paso de *softmax* 2-pasadas escalar a *online softmax* + FMA en `O5`) y **bit-idéntico entre corridas independientes** del nuevo binario.
-  3. Reducción verificada de RSS base (`~144 MiB` menos por `SessionScratch`, `~850 MiB` menos de pico en `generate_batch_multi`) y mejora de TTFA/CPU en streaming.
-
-### Oleada 2 — Microkernels `matmat` reales y escalado del servidor
-- **Alcance**: `O1`, `O2`, `O7 (compactación de slots activos + barrera única de atención batch + umbral en CP)` y `O9`.
-- **Archivos objetivo**:
-  - `crates/qwen-kernels/src/simd/avx2.rs` (nuevos microkernels `int8_matmat_slice` y `q4_0_matmat_slice` para `B=2,4,8`) y `simd/scalar.rs`
-  - `crates/qwen-kernels/src/dispatch.rs` (cuantización directa sobre layout `[B, cols]` sin doble transposición)
-  - `crates/qwen-engine/src/batch.rs` (`batch_proj_q`, `batch_talker_step_impl`, `batch_cp_transformer_step`)
-  - `crates/qwen-app/src/server/scheduler.rs` / `crates/qwen-kernels/src/blas.rs` (fijar OpenBLAS sin carreras en `WorkerPoolScheduler`)
-- **Prerequisitos**: Oleada 1 completada.
-- **Criterio de aceptación**:
-  1. `qwen_tts --self-test` con `L2_rel == 0.0` (`INT8`) y `L2_rel <= 1e-6` (`Q4_0`) entre `matmat(B=8)` y `8 × matvec`.
-  2. `qwen_tts --batch-test` aprobado y salida E2E **bit-idéntica** respecto a la Oleada 1.
-  3. `qwen_tts --matmat-bench` (`QWEN_BATCH_B=2,4,8`) y `--batch-bench` mostrando *speedup* claro (>1.5×–4× según `B` y tamaño de matriz) frente al baseline, y caída medible de `cp_ms` en `cp_prefill2`.
-
-### Oleada 3 — Vectorización SIMD de activaciones, convoluciones y carga paralela
-- **Alcance**: `O6`, `O7 (fusión swiglu + quantize_act_int8 en down_proj)`, `O8 (resto: cs_dwconv, final_conv, add_residual_scaled en AVX2)` y `O12`.
-- **Archivos objetivo**:
-  - `crates/qwen-kernels/src/simd/avx2.rs` y `dispatch.rs` (`swiglu_inplace`, `silu`, fusión opcional `swiglu + quantize_act_int8`, convoluciones/residuales AVX2)
-  - `crates/qwen-engine/src/speech_decoder.rs` (`convnext_mlp` GELU, `cs_dwconv`, `final_conv`)
-  - `crates/qwen-engine/src/model.rs` / `crates/qwen-kernels/src/quant.rs` (cuantización paralela en `load_talker` / `load_cp`)
-- **Prerequisitos**: Oleadas 1–2 estabilizadas (para aislar cualquier variación ULP introducida por `O6` sin tocar `swiglu` en oleadas previas).
-- **Criterio de aceptación**:
-  1. Error máximo relativo de `swiglu_inplace` / `silu` / GELU AVX2 frente a `libm` `< 1e-6`.
-  2. `SNR >= 100 dB` en `SpeechDecoder` streaming vs full, determinismo E2E **bit-idéntico** entre corridas del mismo binario, y validación auditiva/métrica en frases cortas, medias y largas frente a la Oleada 2.
-  3. Reducción medible de `talker_ms`, `cp_ms`, `decoder_ms` y tiempo de carga de modelo.
-
-### Oleada 4 — Cambios con impacto en `NUMERIC_CONTRACT.md` (Ancho de banda Talker / Prefill)
-- **Alcance**: `O3` (`codec_head` en `INT8`) y `O4` (sub-opción A: *tiling* L2 `BF16→F32` sin cambio numérico; sub-opción B: prefill directo con `matmat_q4_0` para prompts cortos).
-- **Archivos objetivo**:
-  - `crates/qwen-engine/src/model.rs` y `pipeline.rs` (`codec_head` cuantizado opcional/por perfil)
-  - `crates/qwen-engine/src/talker.rs` (`talker_prefill`)
-  - `docs/NUMERIC_CONTRACT.md` (actualización explícita si se habilita por defecto bajo `--quant-mixed`)
-- **Prerequisitos**: Oleada 2 (`O1`) si se implementa `O4` Opción B.
-- **Criterio de aceptación**:
-  1. Evaluación A/B con pesos reales de `0.6B` (`CustomVoice` y `Base` con clonación): comparación de códigos generados, SNR/calidad perceptual, ausencia de artefactos al inicio/fin y medición de `prefill_ms`, RSS y RTF final.
-  2. Actualización documentada de [`docs/NUMERIC_CONTRACT.md`](../NUMERIC_CONTRACT.md) antes de habilitar cualquier cambio de precisión por defecto.
+- **Nivel Mapa (Fases 0–4)**: agrupan los cambios por tipo de riesgo y dependencias técnicas, con un criterio de cierre claro por etapa.
+- **Nivel Ejecución (Pasos `X.Y`)**: dentro de cada Fase, cada mejora o sub-mejora se ejecuta como **1 Paso aislado** siguiendo siempre el mismo bucle de 5 reglas:
+  1. **Chequeo previo**: confirmar archivos exactos, invariantes de [`NUMERIC_CONTRACT.md`](../NUMERIC_CONTRACT.md) y riesgos de borde antes de editar.
+  2. **Implementar solo ese Paso**: sin mezclar cambios de otros pasos.
+  3. **Compuerta de exactitud**: ejecutar `clippy`, `cargo test --workspace --release`, `--self-test` y comparar paridad frente al paso anterior o línea base.
+  4. **Compuerta de rendimiento (A/B)**: medir mediana de 3 corridas con parámetros fijos frente al estado inmediatamente anterior.
+  5. **Decisión binaria**: `commit` si aporta mejora comprobada sin regresiones; revertir de inmediato si no aporta ganancia o degrada otra métrica.
 
 ---
 
-## 7. Protocolo de verificación y perfilado entre oleadas
+### Fase 0 — Congelación de línea base y perfilado real (sin cambios de código)
+- **Propósito**: fijar una referencia reproducible en el hardware objetivo antes de alterar código, evitando optimizar a ciegas.
+- **Pasos**:
+  - **Paso 0.1 (Capturar línea base)**: ejecutar `--seed 4 --quant-mixed -j 4` en frase corta, frase larga e ICL (si aplica), además de `--matmat-bench` y `--batch-bench`; registrar `prefill_ms`, `talker_ms`, `cp_ms`, `decoder_ms`, `drain_ms`, `TTFA`, `RTF` y pico de RSS (CLI y servidor `--workers 4` / `--batch-size 4`), conservando códigos códec y WAV de referencia.
+  - **Paso 0.2 (Perfilado 80/20)**: contrastar qué bloque domina el tiempo real de pared para validar el orden de los pasos siguientes y detectar mejoras cuyo peso sea marginal (`< 2–3 %`).
+- **Criterio de cierre**: tabla de métricas base documentada y archivos de referencia guardados.
 
-Todas las oleadas deben validarse antes de cerrar cada etapa con los comandos estándar del proyecto:
+---
+
+### Fase 1 — *Quick wins* de bajo riesgo en CPU y RAM
+- **Alcance**: `O11`, `O10`, `O7 (retirar ftz_on() redundante)`, `O8 (spin_budget=0 en sd_pool)` y `O5`.
+- **Prerequisitos**: Fase 0 completada.
+- **Pasos (ordenados de menor a mayor riesgo de borde)**:
+  - **Paso 1.1 (`O11`)**: en `generate_batch_multi` (`crates/qwen-engine/src/batch.rs`), copiar únicamente `prompt_lens[b] * KV_DIM` por capa en lugar de clonar `112 MiB` completos por petición. *Riesgo a vigilar*: cálculo exacto del offset por capa (`layer * max_pos * KV_DIM`).
+  - **Paso 1.2 (`O10a`)**: reducir `KV_INITIAL_POSITIONS` de `1024` a `256` en `crates/qwen-engine/src/model.rs:33` (`-84.0 MiB`/sesión). *Riesgo a vigilar*: comprobar que el crecimiento vía `ensure_capacity` no introduzca pausas perceptibles en frases largas.
+  - **Paso 1.3 (`O10b`)**: asignar los buffers `pref_*_f32` (`60.0 MiB`) bajo demanda dentro de `TalkerBuffers::ensure_prefill_capacity` (`crates/qwen-engine/src/model.rs`).
+  - **Paso 1.4 (`O10c`)**: mover los `14` vectores temporales `tmp_*` de `SdStreamState` a `DecoderWorkspace` (`crates/qwen-engine/src/model.rs` y `speech_decoder.rs`).
+  - **Paso 1.5 (`O7` parcial)**: auditar todos los puntos de creación de hilos (`qwen-app`, `qwen-engine`, `qwen-kernels`) para garantizar `ftz_on()` al nacer cada hilo y retirar `ftz_on()` repetido de `matvec_*`/`matmat_*` (`crates/qwen-kernels/src/dispatch.rs`). *Riesgo a vigilar*: que ningún hilo HTTP/externo invoque kernels sin `FTZ/DAZ` activo.
+  - **Paso 1.6 (`O8` parcial)**: configurar `sd_pool` con `spin_budget = 0` (`crates/qwen-kernels/src/dispatch.rs`). *Riesgo a vigilar*: en Windows, dormir y despertar hilos por `Condvar` en cada capa/convolución puede añadir latencia; **conservar solo si la medición A/B confirma mejora o neutralidad**.
+  - **Paso 1.7 (`O5`)**: reemplazar la atención escalar en `speech_decoder_decode_streaming` (`crates/qwen-engine/src/speech_decoder.rs:1679-1723`) por `d.causal_attention_windowed` pasando `q_offset = st.kv_len - st.kv_base` y `seq_k = st.kv_len + new_frames - st.kv_base`. *Riesgo a vigilar*: borde de compactación cuando `st.kv_base > 0` en audios largos.
+- **Criterio de cierre de Fase 1**:
+  1. `cargo test --workspace --release` y `qwen_tts --self-test` verdes.
+  2. **Códigos códec** (`Talker + CodePredictor`) **bit-idénticos** frente a la Fase 0 con semilla fija (`--seed 4`); **audio PCM** del `SpeechDecoder` con **`SNR >= 100 dB`** frente a la Fase 0 (por el cambio a *online softmax* + FMA en el Paso 1.7) y **bit-idéntico entre corridas independientes** del nuevo binario.
+  3. Reducción verificada de RSS base (`~144 MiB` menos por `SessionScratch`, menor duplicación de buffers temporales por `ContinuousSlot` y `~850+ MiB` menos de pico en `generate_batch_multi`) y mejora medida en `decoder_ms` / `TTFA`.
+
+---
+
+### Fase 2 — Microkernels `matmat` reales y escalado del servidor
+- **Alcance**: `O1`, `O2`, `O7 (compactación de slots activos + barrera única de atención batch + umbral en CP)` y `O9`.
+- **Prerequisitos**: Fase 1 completada.
+- **Pasos**:
+  - **Paso 2.1 (`O1a`)**: implementar microkernel real `int8_matmat_slice` para `B=2,4,8` en `crates/qwen-kernels/src/simd/avx2.rs` (y paridad en `simd/scalar.rs`).
+  - **Paso 2.2 (`O1b`)**: implementar microkernel real `q4_0_matmat_slice` para `B=2,4,8` con `sumq[0..b_dim]` precalculado por bloque (`avx2.rs` y `scalar.rs`).
+  - **Paso 2.3 (`O2`)**: eliminar la doble transposición en `batch_proj_q` cuantizando directamente filas contiguas `[B, cols]` (`crates/qwen-engine/src/batch.rs` y `dispatch.rs`).
+  - **Paso 2.4 (`O7` batch)**: compactar slots activos (`n_act`) antes de `batch_proj_q` y unificar `causal_attention_bf16kv_heads_parallel` en una sola barrera por capa en `batch_talker_step_impl` (`crates/qwen-engine/src/batch.rs`).
+  - **Paso 2.5 (`O7` CP)**: ajustar umbral de paralelización en `CodePredictor` (`crates/qwen-engine/src/code_predictor.rs`) y verificar con `--batch-test`.
+  - **Paso 2.6 (`O9`)**: fijar `openblas_set_num_threads` una sola vez al inicializar cuando `n_workers > 1` (`crates/qwen-app/src/server/scheduler.rs` y `crates/qwen-kernels/src/blas.rs`).
+- **Criterio de cierre de Fase 2**:
+  1. `qwen_tts --self-test` con `L2_rel == 0.0` (`INT8`) y `L2_rel <= 1e-6` (`Q4_0`) entre `matmat(B=8)` y `8 × matvec`.
+  2. `qwen_tts --batch-test` aprobado y salida E2E **bit-idéntica** respecto al cierre de la Fase 1.
+  3. `qwen_tts --matmat-bench` (`QWEN_BATCH_B=2,4,8`) y `--batch-bench` mostrando *speedup* claro (>1.5×–4× según `B` y tamaño de matriz) frente a la Fase 0, y caída medible de `cp_ms` en `cp_prefill2`.
+
+---
+
+### Fase 3 — Vectorización SIMD de activaciones, convoluciones y carga paralela
+- **Alcance**: `O6`, `O7 (fusión swiglu + quantize_act_int8 en down_proj)`, `O8 (cs_dwconv, final_conv, add_residual_scaled en AVX2)` y `O12`.
+- **Prerequisitos**: Fases 1–2 estabilizadas (para aislar cualquier variación ULP introducida por `O6` sin tocar `swiglu` en fases previas).
+- **Pasos**:
+  - **Paso 3.1 (`O6a`)**: despachar `swiglu_inplace` y `silu` por `KernelDispatch` con `expf` polinomial `AVX2+FMA` (`avx2.rs` y `dispatch.rs`).
+  - **Paso 3.2 (`O7` fusión)**: fusionar `swiglu + quantize_act_int8` para `down_proj` reutilizando la implementación de `Paso 3.1`.
+  - **Paso 3.3 (`O6b` + `O8` vocoder)**: vectorizar `convnext_mlp` (GELU/LayerNorm), `cs_dwconv`, `final_conv` y `add_residual_scaled` (`crates/qwen-engine/src/speech_decoder.rs` y `avx2.rs`).
+  - **Paso 3.4 (`O12`)**: paralelizar la cuantización durante `Model06B::load` sobre `runtime.pool` (`crates/qwen-engine/src/model.rs` y `crates/qwen-kernels/src/quant.rs`).
+- **Criterio de cierre de Fase 3**:
+  1. Error máximo relativo de `swiglu_inplace` / `silu` / GELU AVX2 frente a `libm` `< 1e-6`.
+  2. `SNR >= 100 dB` en `SpeechDecoder` streaming vs full, determinismo E2E **bit-idéntico** entre corridas del mismo binario, y validación auditiva/métrica en frases cortas, medias y largas frente a la Fase 2.
+  3. Reducción medible de `talker_ms`, `cp_ms`, `decoder_ms` y tiempo de carga de modelo.
+
+---
+
+### Fase 4 — Cambios con impacto en `NUMERIC_CONTRACT.md` (Ancho de banda Talker / Prefill)
+- **Alcance**: `O4` (Opción A: *tiling* L2 `BF16→F32` sin cambio numérico; Opción B: prefill con `matmat_q4_0` para prompts cortos) y `O3` (`codec_head` en `INT8`).
+- **Prerequisitos**: Fase 2 (`O1`) completada si se implementa `O4` Opción B.
+- **Pasos**:
+  - **Paso 4.1 (`O4` Opción A)**: convertir `BF16→F32` por bloques L2 dentro de `talker_prefill` (`crates/qwen-engine/src/talker.rs`) sin materializar la capa completa.
+  - **Paso 4.2 (`O3`)**: añadir soporte `QuantWeight::Int8` en `talker.codec_head` (`model.rs`, `pipeline.rs`) tras evaluación A/B.
+  - **Paso 4.3 (`O4` Opción B)**: habilitar prefill cuantizado (`matmat_q4_0`) para `seq_len <= 64` bajo `--quant-mixed` previa aprobación de calidad.
+- **Criterio de cierre de Fase 4**:
+  1. Evaluación A/B con pesos reales de `0.6B` (`CustomVoice` y `Base` con clonación): comparación de códigos generados, SNR/calidad perceptual, ausencia de artefactos al inicio/fin y medición de `prefill_ms`, RSS y RTF final.
+  2. Actualización documentada de [`NUMERIC_CONTRACT.md`](../NUMERIC_CONTRACT.md) antes de habilitar cualquier cambio de precisión por defecto.
+
+---
+
+## 7. Protocolo de verificación y perfilado entre Fases y Pasos
+
+Cada Paso (en su alcance aplicable) y el cierre de cada Fase deben validarse con los comandos estándar del proyecto:
 
 ```bash
 # Linux / macOS
@@ -335,6 +366,6 @@ cargo test --workspace --release --target x86_64-pc-windows-gnu
 .\target\x86_64-pc-windows-gnu\release\qwen_tts.exe --batch-bench -d models\qwen3-tts-0.6b --quant-mixed
 ```
 
-Para registrar el progreso real de cada oleada, medir antes y después con el mismo texto, semilla (`--seed 4`) e hilos (`-j 4 --quant-mixed`):
+Para registrar el progreso real de cada Fase y Paso, medir antes y después con el mismo texto, semilla (`--seed 4`) e hilos (`-j 4 --quant-mixed`):
 - **Latencia y RTF**: `Prefill (ms)`, `Talker step (ms/f)`, `Code Predictor (ms/f)`, `Speech decoder (ms)`, `drain (ms)`, `TTFA (ms)` y `RTF`.
 - **Memoria**: pico de RSS del proceso en CLI (frase corta, frase larga, ICL) y en servidor bajo `--serve --batch-size 4` y `--workers 4`.
