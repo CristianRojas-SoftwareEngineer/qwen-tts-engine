@@ -11,12 +11,12 @@ use std::time::Instant;
 
 use qwen_core::config::{
     CODEBOOK_SIZE, CODEC_BOS, CODEC_EOS, CODEC_NO_THINK, CODEC_PAD, CODEC_THINK, CODEC_THINK_BOS,
-    CODEC_THINK_EOS, CODEC_VOCAB_SIZE, HIDDEN_SIZE, HOP_SAMPLES, NUM_CODEBOOKS, SAMPLE_RATE,
-    TOKEN_ASSISTANT, TOKEN_IM_START, TOKEN_NEWLINE, TOKEN_TTS_BOS, TOKEN_TTS_EOS,
+    CODEC_THINK_EOS, CODEC_VOCAB_SIZE, FRAME_RATE, HIDDEN_SIZE, HOP_SAMPLES, NUM_CODEBOOKS,
+    SAMPLE_RATE, TOKEN_ASSISTANT, TOKEN_IM_START, TOKEN_NEWLINE, TOKEN_TTS_BOS, TOKEN_TTS_EOS,
     TOKEN_TTS_PAD,
 };
 use qwen_core::LcgRng;
-use qwen_kernels::{ftz_on, ComputeRuntime};
+use qwen_kernels::{ftz_on, ComputeRuntime, KernelDispatch};
 
 use crate::audio::{apply_gain, time_stretch, AudioSink, MemorySink};
 use crate::code_predictor::cp_predict;
@@ -59,17 +59,103 @@ impl DecoderQueue {
     }
 
     fn push_frame(&self, codes: &[i32; NUM_CODEBOOKS]) {
-        let mut g = self.state.lock().unwrap();
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
         g.codes.extend_from_slice(codes);
         g.write_pos += 1;
         self.cond.notify_one();
     }
 
     fn finish(&self) {
-        let mut g = self.state.lock().unwrap();
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
         g.done = true;
         self.cond.notify_one();
     }
+}
+
+/// Aplica clamp de logits, supresión de tokens códec especiales y boost progresivo de EOS.
+pub(crate) fn apply_talker_logit_rules(
+    logits: &mut [f32],
+    frame: usize,
+    text_content_len: usize,
+) {
+    for v in logits.iter_mut() {
+        *v = v.clamp(-100.0, 100.0);
+    }
+    for (t, slot) in logits.iter_mut().enumerate().take(CODEC_VOCAB_SIZE).skip(2048) {
+        if t as i32 != CODEC_EOS {
+            *slot = -1e30;
+        }
+    }
+    if frame < 2 {
+        logits[CODEC_EOS as usize] = -1e30;
+    }
+
+    let expected_frames = text_content_len * 3;
+    let is_short = text_content_len > 0 && text_content_len <= 11;
+    let boost_start = if is_short {
+        expected_frames * 3 / 2
+    } else {
+        expected_frames * 2
+    };
+    if expected_frames > 0 && frame > boost_start {
+        let step = if is_short { 1.0 } else { 0.5 };
+        let cap = if is_short { 15.0 } else { 10.0 };
+        let boost = (step * ((frame - boost_start) as f32)).min(cap);
+        logits[CODEC_EOS as usize] += boost;
+    }
+}
+
+/// Construye el embedding de entrada al siguiente paso del Talker acumulando los 16 codebooks y `tts_pad`.
+pub(crate) fn build_step_embed(
+    dispatch: &KernelDispatch,
+    model: &Model06B,
+    voice: &VoiceBindings,
+    code0: i32,
+    cp_codes: &[i32],
+    tts_pad: &[f32],
+    out: &mut [f32],
+) {
+    lookup_codec_embed(dispatch, model, voice, code0, out);
+    for (g, &code_g) in cp_codes.iter().enumerate().take(15) {
+        if code_g >= 0 && (code_g as usize) < CODEBOOK_SIZE {
+            let off = (code_g as usize) * HIDDEN_SIZE;
+            let emb = &model.cp.codec_emb_bf16[g][off..off + HIDDEN_SIZE];
+            dispatch.bf16_accum_f32(out, emb);
+        }
+    }
+    for (dst, &pad) in out[..HIDDEN_SIZE].iter_mut().zip(tts_pad[..HIDDEN_SIZE].iter()) {
+        *dst += pad;
+    }
+}
+
+/// Calcula el tamaño objetivo de chunk en fotogramas según la rampa progresiva de streaming.
+#[inline]
+pub(crate) fn next_stream_chunk_target(
+    first_chunk_emitted: bool,
+    ramp_chunks: usize,
+    chunk_frames: usize,
+) -> (usize, bool) {
+    let target = if !first_chunk_emitted && chunk_frames > 2 {
+        2
+    } else {
+        let ramp = STREAM_RAMP_START_FRAMES
+            + STREAM_RAMP_STEP_FRAMES * (ramp_chunks / STREAM_RAMP_HOLD_CHUNKS);
+        ramp.min(chunk_frames)
+    };
+    let ramped = first_chunk_emitted || chunk_frames <= 2;
+    (target, ramped)
+}
+
+/// Devuelve el número de muestras PCM iniciales a recortar cuando hay contexto ICL activo.
+pub(crate) fn resolve_icl_trim_samples(icl_mode: bool) -> usize {
+    if !icl_mode {
+        return 0;
+    }
+    let tf = std::env::var("QWEN_ICL_TRIM_FRAMES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(2);
+    tf.saturating_mul(HOP_SAMPLES)
 }
 
 fn embed_text_cached(
@@ -225,15 +311,15 @@ pub fn build_prefill_embeds(
 
     let (tts_pad_embed, tts_bos_embed, tts_eos_embed) = if let Some(wovr) = &voice.wovr {
         (
-            wovr.tts_pad_embed.clone(),
-            wovr.tts_bos_embed.clone(),
-            wovr.tts_eos_embed.clone(),
+            wovr.tts_pad_embed.as_slice(),
+            wovr.tts_bos_embed.as_slice(),
+            wovr.tts_eos_embed.as_slice(),
         )
     } else {
         (
-            model.cached_tts_pad_embed.clone(),
-            model.cached_tts_bos_embed.clone(),
-            model.cached_tts_eos_embed.clone(),
+            model.cached_tts_pad_embed.as_slice(),
+            model.cached_tts_bos_embed.as_slice(),
+            model.cached_tts_eos_embed.as_slice(),
         )
     };
 
@@ -264,9 +350,9 @@ pub fn build_prefill_embeds(
     for (i, &ctok) in codec_tokens[..sec2_len].iter().enumerate() {
         let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
         if i + 1 < sec2_len {
-            dst.copy_from_slice(&tts_pad_embed);
+            dst.copy_from_slice(tts_pad_embed);
         } else {
-            dst.copy_from_slice(&tts_bos_embed);
+            dst.copy_from_slice(tts_bos_embed);
         }
         if ctok == -1 {
             if let Some(spk_emb) = spk_emb_opt {
@@ -278,7 +364,9 @@ pub fn build_prefill_embeds(
                 };
                 if let Ok(sse) = std::env::var("QWEN_SPK_SCALE") {
                     if let Ok(f) = sse.trim().parse::<f32>() {
-                        scale *= f;
+                        if f.is_finite() {
+                            scale *= f;
+                        }
                     }
                 }
                 for j in 0..HIDDEN_SIZE {
@@ -304,7 +392,7 @@ pub fn build_prefill_embeds(
                 let idx = i - ref_text_tokens.len();
                 embed_text_cached(runtime, model, voice, scratch, text_tokens[idx], dst);
             } else {
-                dst.copy_from_slice(&tts_eos_embed);
+                dst.copy_from_slice(tts_eos_embed);
             }
             for j in 0..HIDDEN_SIZE {
                 dst[j] += codec_pad_embed[j];
@@ -314,7 +402,7 @@ pub fn build_prefill_embeds(
 
         for i in 0..sec4_len {
             let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-            dst.copy_from_slice(&tts_pad_embed);
+            dst.copy_from_slice(tts_pad_embed);
             if i == 0 {
                 for j in 0..HIDDEN_SIZE {
                     dst[j] += codec_bos_embed[j];
@@ -338,21 +426,23 @@ pub fn build_prefill_embeds(
             pos += 1;
         }
     } else {
-        for i in 0..sec3_len {
+        for &tok in &text_tokens {
             let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-            if i < text_content_len {
-                embed_text_cached(runtime, model, voice, scratch, text_tokens[i], dst);
-            } else {
-                dst.copy_from_slice(&tts_eos_embed);
-            }
-            for j in 0..HIDDEN_SIZE {
-                dst[j] += codec_pad_embed[j];
+            embed_text_cached(runtime, model, voice, scratch, tok, dst);
+            for (d_val, &cp_val) in dst.iter_mut().zip(codec_pad_embed.iter()) {
+                *d_val += cp_val;
             }
             pos += 1;
         }
+        let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
+        dst.copy_from_slice(tts_eos_embed);
+        for (d_val, &cp_val) in dst.iter_mut().zip(codec_pad_embed.iter()) {
+            *d_val += cp_val;
+        }
+        pos += 1;
 
         let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-        dst.copy_from_slice(&tts_pad_embed);
+        dst.copy_from_slice(tts_pad_embed);
         for j in 0..HIDDEN_SIZE {
             dst[j] += codec_bos_embed[j];
         }
@@ -450,11 +540,10 @@ pub fn synthesize_to_sink(
     scratch.prev_tokens.clear();
     scratch.prev_tokens.reserve(max_frames);
 
-    let mut dump_codes_writer = std::env::var("QWEN_DUMP_CODES")
-        .ok()
-        .filter(|p| !p.trim().is_empty())
-        .and_then(|p| File::create(p).ok())
-        .map(BufWriter::new);
+    let mut dump_codes_writer = match std::env::var("QWEN_DUMP_CODES") {
+        Ok(p) if !p.trim().is_empty() => Some(BufWriter::new(File::create(p.trim())?)),
+        _ => None,
+    };
 
     let chunk_frames = if req.stream_chunk_frames > 0 {
         req.stream_chunk_frames.clamp(2, 250)
@@ -462,15 +551,7 @@ pub fn synthesize_to_sink(
         DEFAULT_CHUNK_FRAMES
     };
 
-    let mut trim_head_left = if icl_mode {
-        let tf = std::env::var("QWEN_ICL_TRIM_FRAMES")
-            .ok()
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .unwrap_or(2);
-        tf * HOP_SAMPLES
-    } else {
-        0
-    };
+    let mut trim_head_left = resolve_icl_trim_samples(icl_mode);
 
     let mut gen_blas = if nt > 1 { nt - 1 } else { 1 };
     if let Ok(v) = std::env::var("QWEN_BLAS_GEN_THREADS") {
@@ -511,23 +592,16 @@ pub fn synthesize_to_sink(
             let mut first_chunk_emitted = false;
 
             loop {
-                let target = if req.stream {
-                    if !first_chunk_emitted && chunk_frames > 2 {
-                        2
-                    } else {
-                        let ramp = STREAM_RAMP_START_FRAMES
-                            + STREAM_RAMP_STEP_FRAMES * (ramp_chunks / STREAM_RAMP_HOLD_CHUNKS);
-                        ramp.min(chunk_frames)
-                    }
+                let (target, ramped) = if req.stream {
+                    next_stream_chunk_target(first_chunk_emitted, ramp_chunks, chunk_frames)
                 } else {
-                    chunk_frames
+                    (chunk_frames, false)
                 };
-                let ramped = req.stream && (first_chunk_emitted || chunk_frames <= 2);
 
                 let (avail, is_done) = {
-                    let mut g = queue.state.lock().unwrap();
+                    let mut g = queue.state.lock().unwrap_or_else(|e| e.into_inner());
                     while (g.write_pos - read_pos) < target && !g.done {
-                        g = queue.cond.wait(g).unwrap();
+                        g = queue.cond.wait(g).unwrap_or_else(|e| e.into_inner());
                     }
                     let mut avail = g.write_pos - read_pos;
                     if avail > max_backlog {
@@ -603,9 +677,9 @@ pub fn synthesize_to_sink(
         });
 
         let tts_pad_embed = if let Some(wovr) = &voice.wovr {
-            wovr.tts_pad_embed.clone()
+            wovr.tts_pad_embed.as_slice()
         } else {
-            model.cached_tts_pad_embed.clone()
+            model.cached_tts_pad_embed.as_slice()
         };
 
         for frame in 0..max_frames {
@@ -628,31 +702,7 @@ pub fn synthesize_to_sink(
                     CODEC_VOCAB_SIZE,
                     HIDDEN_SIZE,
                 );
-                for v in tb.logits.iter_mut() {
-                    *v = v.clamp(-100.0, 100.0);
-                }
-                for t in 2048..CODEC_VOCAB_SIZE {
-                    if t as i32 != CODEC_EOS {
-                        tb.logits[t] = -1e30;
-                    }
-                }
-                if frame < 2 {
-                    tb.logits[CODEC_EOS as usize] = -1e30;
-                }
-
-                let expected_frames = text_content_len * 3;
-                let is_short = text_content_len > 0 && text_content_len <= 11;
-                let boost_start = if is_short {
-                    expected_frames * 3 / 2
-                } else {
-                    expected_frames * 2
-                };
-                if expected_frames > 0 && frame > boost_start {
-                    let step = if is_short { 1.0 } else { 0.5 };
-                    let cap = if is_short { 15.0 } else { 10.0 };
-                    let boost = (step * ((frame - boost_start) as f32)).min(cap);
-                    tb.logits[CODEC_EOS as usize] += boost;
-                }
+                apply_talker_logit_rules(&mut tb.logits, frame, text_content_len);
             }
 
             let (frame_temp, frame_top_k) = if req.greedy_warmup > 0 && frame < req.greedy_warmup {
@@ -714,21 +764,15 @@ pub fn synthesize_to_sink(
                 break;
             }
 
-            {
-                let step_embed = &mut scratch.talker_bufs.step_embed;
-                lookup_codec_embed(d, model, voice, code0, step_embed);
-                for g in 0..15 {
-                    let code_g = codes[g + 1];
-                    if code_g >= 0 && (code_g as usize) < CODEBOOK_SIZE {
-                        let off = (code_g as usize) * HIDDEN_SIZE;
-                        let emb = &model.cp.codec_emb_bf16[g][off..off + HIDDEN_SIZE];
-                        d.bf16_accum_f32(step_embed, emb);
-                    }
-                }
-                for j in 0..HIDDEN_SIZE {
-                    step_embed[j] += tts_pad_embed[j];
-                }
-            }
+            build_step_embed(
+                d,
+                model,
+                voice,
+                code0,
+                &codes[1..16],
+                tts_pad_embed,
+                &mut scratch.talker_bufs.step_embed,
+            );
 
             let mut step_embed_copy = [0.0f32; HIDDEN_SIZE];
             step_embed_copy.copy_from_slice(&scratch.talker_bufs.step_embed);
@@ -799,40 +843,19 @@ pub fn synthesize_to_sink(
     let frames = scratch.codec_codes.len() / NUM_CODEBOOKS;
     let total_ms = t_start.elapsed().as_secs_f64() * 1000.0;
     if !req.silent {
-        eprintln!(
-            "\n  Generated {} frames ({:.1}s audio)",
+        log_synthesis_summary(&SynthesisTiming {
+            prefill_ms,
+            talker_ms,
+            cp_ms,
+            decoder_ms,
+            drain_ms,
             frames,
-            (frames as f64) / 12.5
-        );
-        if frames > 0 {
-            eprintln!(
-                "  Talker step: {:.0} ms ({:.1} ms/f), Code Predictor: {:.0} ms ({:.1} ms/f)",
-                talker_ms,
-                talker_ms / (frames as f64),
-                cp_ms,
-                cp_ms / (frames as f64)
-            );
-        }
-        eprintln!(
-            "  Speech decoder: {:.0} ms total ({:.0} ms drain after gen)",
-            decoder_ms, drain_ms
-        );
-        let audio_dur = (samples_produced as f64) / (SAMPLE_RATE as f64);
-        let proc_s = total_ms / 1000.0;
-        if audio_dur > 0.0 {
-            eprintln!(
-                "Audio: {:.1}s generated in {:.1}s (RTF {:.2})",
-                audio_dur,
-                proc_s,
-                proc_s / audio_dur
-            );
-        }
-        if let Some(ttfa) = ttfa_ms {
-            eprintln!(
-                "  TTFA: {:.0} ms (first audio chunk, {}-frame chunk)",
-                ttfa, chunk_frames
-            );
-        }
+            chunks: chunks_decoded,
+            max_backlog_frames: max_backlog,
+            ttfa_ms,
+            total_ms,
+            samples_produced,
+        }, chunk_frames);
     }
 
     Ok(SynthesisTiming {
@@ -848,6 +871,43 @@ pub fn synthesize_to_sink(
         total_ms,
         samples_produced,
     })
+}
+
+fn log_synthesis_summary(t: &SynthesisTiming, chunk_frames: usize) {
+    eprintln!(
+        "\n  Generated {} frames ({:.1}s audio)",
+        t.frames,
+        (t.frames as f64) / (FRAME_RATE as f64)
+    );
+    if t.frames > 0 {
+        eprintln!(
+            "  Talker step: {:.0} ms ({:.1} ms/f), Code Predictor: {:.0} ms ({:.1} ms/f)",
+            t.talker_ms,
+            t.talker_ms / (t.frames as f64),
+            t.cp_ms,
+            t.cp_ms / (t.frames as f64)
+        );
+    }
+    eprintln!(
+        "  Speech decoder: {:.0} ms total ({:.0} ms drain after gen)",
+        t.decoder_ms, t.drain_ms
+    );
+    let audio_dur = (t.samples_produced as f64) / (SAMPLE_RATE as f64);
+    let proc_s = t.total_ms / 1000.0;
+    if audio_dur > 0.0 {
+        eprintln!(
+            "Audio: {:.1}s generated in {:.1}s (RTF {:.2})",
+            audio_dur,
+            proc_s,
+            proc_s / audio_dur
+        );
+    }
+    if let Some(ttfa) = t.ttfa_ms {
+        eprintln!(
+            "  TTFA: {:.0} ms (first audio chunk, {}-frame chunk)",
+            ttfa, chunk_frames
+        );
+    }
 }
 
 /// Ejecuta la síntesis completa y devuelve el buffer mono `f32` a 24 kHz junto con las métricas.

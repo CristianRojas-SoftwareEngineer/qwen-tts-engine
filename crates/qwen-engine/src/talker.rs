@@ -9,68 +9,7 @@ use qwen_core::config::{
 use qwen_kernels::{ComputeRuntime, Transpose};
 
 use crate::error::EngineError;
-use crate::model::{Model06B, QuantWeight, SessionScratch, TalkerLayerWeights};
-
-fn dispatch_qkv(
-    runtime: &ComputeRuntime,
-    l: &TalkerLayerWeights,
-    x_norm: &[f32],
-    q: &mut [f32],
-    k: &mut [f32],
-    v: &mut [f32],
-) {
-    let d = runtime.dispatch;
-    let pool = &runtime.pool;
-    match (&l.wq_q, &l.wk_q, &l.wv_q) {
-        (Some(QuantWeight::Q4_0(wq)), Some(QuantWeight::Q4_0(wk)), Some(QuantWeight::Q4_0(wv))) => {
-            d.matvec_q4_0_qkv(pool, q, k, v, wq, wk, wv, x_norm, HIDDEN_SIZE, Q_DIM, KV_DIM);
-        }
-        (
-            Some(QuantWeight::Int8 { data: wq, scale: sq }),
-            Some(QuantWeight::Int8 { data: wk, scale: sk }),
-            Some(QuantWeight::Int8 { data: wv, scale: sv }),
-        ) => {
-            d.matvec_int8_qkv(
-                pool, q, k, v, wq, sq, wk, sk, wv, sv, x_norm, HIDDEN_SIZE, Q_DIM, KV_DIM,
-            );
-        }
-        _ => {
-            d.matvec_bf16_qkv(
-                pool,
-                q,
-                k,
-                v,
-                &l.wq_bf16,
-                &l.wk_bf16,
-                &l.wv_bf16,
-                x_norm,
-                HIDDEN_SIZE,
-                Q_DIM,
-                KV_DIM,
-            );
-        }
-    }
-}
-
-fn dispatch_proj(
-    runtime: &ComputeRuntime,
-    q_weight: Option<&QuantWeight>,
-    bf16_weight: &[u16],
-    x: &[f32],
-    y: &mut [f32],
-    rows: usize,
-    cols: usize,
-) {
-    let d = runtime.dispatch;
-    let pool = &runtime.pool;
-    match q_weight {
-        Some(QuantWeight::Q4_0(w)) => d.matvec_q4_0(pool, y, w, x, rows, cols),
-        Some(QuantWeight::Int8 { data, scale }) => {
-            d.matvec_int8(pool, y, data, scale, x, rows, cols)
-        }
-        None => d.matvec_bf16(pool, y, bf16_weight, x, rows, cols),
-    }
-}
+use crate::model::{Model06B, SessionScratch, TransformerLayerWeights};
 
 /// Ejecuta el *prefill* completo del Talker (`kv_len = 0`) sobre `input_embeds[seq_len, HIDDEN_SIZE]`.
 pub fn talker_prefill(
@@ -372,13 +311,15 @@ pub fn talker_step(
             );
         }
 
-        dispatch_qkv(
+        l.dispatch_qkv(
             runtime,
-            l,
             &tb.dec_x_norm,
             &mut tb.dec_q,
             &mut tb.dec_k,
             &mut tb.dec_v,
+            HIDDEN_SIZE,
+            Q_DIM,
+            KV_DIM,
         );
 
         d.rms_norm_per_head(&mut tb.dec_q, &l.q_norm, 1, NUM_HEADS, HEAD_DIM, eps);
@@ -423,7 +364,7 @@ pub fn talker_step(
             pos,
         );
 
-        dispatch_proj(
+        TransformerLayerWeights::dispatch_proj(
             runtime,
             l.wo_q.as_ref(),
             &l.wo_bf16,
@@ -442,46 +383,20 @@ pub fn talker_step(
             eps,
         );
 
-        match &l.gate_up_q {
-            Some(QuantWeight::Q4_0(w)) => d.matvec_q4_0(
-                pool,
-                &mut tb.dec_gate,
-                w,
-                &tb.dec_x_norm,
-                2 * INTERMEDIATE_SIZE,
-                HIDDEN_SIZE,
-            ),
-            Some(QuantWeight::Int8 { data, scale }) => d.matvec_int8(
-                pool,
-                &mut tb.dec_gate,
-                data,
-                scale,
-                &tb.dec_x_norm,
-                2 * INTERMEDIATE_SIZE,
-                HIDDEN_SIZE,
-            ),
-            None => {
-                let gu = l
-                    .gate_up_fused_bf16
-                    .as_deref()
-                    .expect("gate_up_fused_bf16 present in BF16 mode");
-                d.matvec_bf16(
-                    pool,
-                    &mut tb.dec_gate,
-                    gu,
-                    &tb.dec_x_norm,
-                    2 * INTERMEDIATE_SIZE,
-                    HIDDEN_SIZE,
-                );
-            }
-        }
+        l.dispatch_gate_up(
+            runtime,
+            &tb.dec_x_norm,
+            &mut tb.dec_gate,
+            INTERMEDIATE_SIZE,
+            HIDDEN_SIZE,
+        )?;
         d.swiglu_inplace(
             &mut tb.dec_gate,
             &mut tb.swiglu_tmp[..INTERMEDIATE_SIZE],
             INTERMEDIATE_SIZE,
         );
 
-        dispatch_proj(
+        TransformerLayerWeights::dispatch_proj(
             runtime,
             l.down_q.as_ref(),
             &l.down_bf16,

@@ -7,10 +7,10 @@ use std::f32::consts::PI;
 use std::path::Path;
 
 use qwen_core::config::{
-    CODEBOOK_SIZE, CODEC_VOCAB_SIZE, CP_HIDDEN_SIZE, CP_INTERMEDIATE_SIZE, CP_KV_DIM,
-    CP_Q_DIM, ENC_DIM, HEAD_DIM, HIDDEN_SIZE, INTERMEDIATE_SIZE, KV_DIM, MEL_DIM,
-    NUM_CODEBOOKS, Q_DIM, SAMPLE_RATE, TEXT_HIDDEN_SIZE, TEXT_VOCAB_SIZE,
-    TOKEN_TTS_BOS, TOKEN_TTS_EOS, TOKEN_TTS_PAD,
+    CODEBOOK_SIZE, CODEC_VOCAB_SIZE, CP_HEAD_DIM, CP_HIDDEN_SIZE, CP_INTERMEDIATE_SIZE,
+    CP_KV_DIM, CP_Q_DIM, ENC_DIM, HEAD_DIM, HIDDEN_SIZE, INTERMEDIATE_SIZE, KV_DIM, MEL_DIM,
+    NUM_CODEBOOKS, Q_DIM, SAMPLE_RATE, TEXT_HIDDEN_SIZE, TEXT_VOCAB_SIZE, TOKEN_TTS_BOS,
+    TOKEN_TTS_EOS, TOKEN_TTS_PAD,
 };
 use qwen_core::{
     encode_wdelta_bf16, lookup_language, read_bin_embedding, write_bin_embedding, F32Ref,
@@ -21,7 +21,9 @@ use qwen_kernels::{AlignedBuf, ComputeRuntime, Transpose};
 
 use crate::audio::{read_wav_24khz, trim_trailing_silence};
 use crate::error::EngineError;
-use crate::model::{Model06B, TextProjOverride, VoiceBindings, VoiceIdentity};
+use crate::model::{
+    compute_text_proj_token, Model06B, TextProjOverride, VoiceBindings, VoiceIdentity,
+};
 use crate::speech_encoder::speech_encoder_encode;
 
 pub struct SeRes2NetWeights {
@@ -227,7 +229,12 @@ fn build_mel_filterbank(sr: usize, n_fft: usize, n_mels: usize, fmin: f32, fmax:
 }
 
 /// Calcula el espectrograma log-mel (`n_fft=1024`, `hop=256`, `n_mels=128`, `sr=24000`).
-pub fn mel_spectrogram(audio: &[f32], _sample_rate: usize) -> Result<(Vec<f32>, usize), EngineError> {
+pub fn mel_spectrogram(audio: &[f32], sample_rate: usize) -> Result<(Vec<f32>, usize), EngineError> {
+    if sample_rate != SAMPLE_RATE {
+        return Err(EngineError::InvalidArg(format!(
+            "mel_spectrogram requires {SAMPLE_RATE} Hz audio (got {sample_rate} Hz)"
+        )));
+    }
     const N_FFT: usize = 1024;
     const N_MELS: usize = 128;
     const HOP_SIZE: usize = 256;
@@ -336,6 +343,9 @@ fn conv1d_same_reflect(
         return;
     }
 
+    if in_len == 0 {
+        return;
+    }
     let effective_k = 1 + (kernel - 1) * dilation;
     let pad_left = (effective_k - 1) / 2;
     let pad_right = effective_k - 1 - pad_left;
@@ -526,23 +536,23 @@ fn se_res2net_block_forward(
     }
 
     let mut se1 = vec![0.0f32; se_ch];
-    for i in 0..se_ch {
+    for (i, slot) in se1.iter_mut().enumerate() {
         let mut val = blk.se_conv1_b[i];
         let w = &blk.se_conv1_w[i * channels..(i + 1) * channels];
         for c in 0..channels {
             val += w[c] * mean[c];
         }
-        se1[i] = val.max(0.0);
+        *slot = val.max(0.0);
     }
 
     let mut se2 = vec![0.0f32; channels];
-    for i in 0..channels {
+    for (i, slot) in se2.iter_mut().enumerate() {
         let mut val = blk.se_conv2_b[i];
         let w = &blk.se_conv2_w[i * se_ch..(i + 1) * se_ch];
         for c in 0..se_ch {
             val += w[c] * se1[c];
         }
-        se2[i] = 1.0f32 / (1.0f32 + (-val).exp());
+        *slot = 1.0f32 / (1.0f32 + (-val).exp());
     }
 
     for c in 0..channels {
@@ -681,9 +691,13 @@ pub fn speaker_encoder_forward(
             *v = (*v - max_val).exp();
             sum += *v;
         }
-        let inv = 1.0f32 / sum;
-        for v in row.iter_mut() {
-            *v *= inv;
+        if sum > 0.0 && sum.is_finite() {
+            let inv = 1.0f32 / sum;
+            for v in row.iter_mut() {
+                *v *= inv;
+            }
+        } else if !row.is_empty() {
+            row.fill(1.0f32 / (row.len() as f32));
         }
     }
 
@@ -705,30 +719,22 @@ pub fn speaker_encoder_forward(
     }
 
     let mut out_emb = vec![0.0f32; ENC_DIM];
-    for i in 0..ENC_DIM {
+    for (i, slot) in out_emb.iter_mut().enumerate() {
         let mut val = enc.fc_b[i];
         let w_row = &enc.fc_w[i * 3072..(i + 1) * 3072];
         for j in 0..3072 {
             val += w_row[j] * pooled[j];
         }
-        out_emb[i] = val;
+        *slot = val;
     }
     out_emb
 }
 
-pub fn extract_speaker_embedding(
-    runtime: &ComputeRuntime,
-    model: &Model06B,
+fn load_and_trim_ref_audio(
     ref_audio_path: &Path,
     max_ref_seconds: f32,
     silent: bool,
 ) -> Result<Vec<f32>, EngineError> {
-    let enc = model.speaker_encoder.as_ref().ok_or_else(|| {
-        EngineError::InvalidArg(
-            "Error: --ref-audio requires a Base model (not CustomVoice)".to_string(),
-        )
-    })?;
-
     let mut audio = read_wav_24khz(ref_audio_path)?;
     if !silent {
         eprintln!(
@@ -739,7 +745,7 @@ pub fn extract_speaker_embedding(
             audio.len() as f32 / SAMPLE_RATE as f32
         );
     }
-    if max_ref_seconds > 0.0 {
+    if max_ref_seconds.is_finite() && max_ref_seconds > 0.0 {
         let max_samples = (max_ref_seconds * SAMPLE_RATE as f32) as usize;
         if audio.len() > max_samples {
             if !silent {
@@ -753,12 +759,7 @@ pub fn extract_speaker_embedding(
         }
     }
     trim_trailing_silence(&mut audio, SAMPLE_RATE, silent);
-
-    let (mel, n_frames) = mel_spectrogram(&audio, SAMPLE_RATE)?;
-    if !silent {
-        eprintln!("Mel spectrogram: {n_frames} frames x {MEL_DIM} mels");
-    }
-    Ok(speaker_encoder_forward(runtime, enc, &mel, n_frames))
+    Ok(audio)
 }
 
 /// Opciones de carga de perfiles `.qvoice` / `.bin` mediante [`load_voice_from_file`].
@@ -806,40 +807,24 @@ pub fn build_wovr_override(
     } else {
         let mut tmp1 = AlignedBuf::<f32>::new_zeroed(TEXT_HIDDEN_SIZE);
         let mut tmp2 = AlignedBuf::<f32>::new_zeroed(TEXT_HIDDEN_SIZE);
-        let d = runtime.dispatch;
-        let pool = &runtime.pool;
         for (tid, out) in [
             (TOKEN_TTS_PAD, &mut pad),
             (TOKEN_TTS_BOS, &mut bos),
             (TOKEN_TTS_EOS, &mut eos),
         ] {
-            let idx = tid as usize;
-            let emb_row =
-                &model.talker.text_embedding_bf16[idx * TEXT_HIDDEN_SIZE..(idx + 1) * TEXT_HIDDEN_SIZE];
-            d.bf16_to_f32_vec(&mut tmp1, emb_row);
-            d.matvec_bf16(
-                pool,
-                &mut tmp2,
+            compute_text_proj_token(
+                runtime.dispatch,
+                &runtime.pool,
+                &model.talker.text_embedding_bf16,
                 &wovr.fc1_bf16,
-                &tmp1,
-                TEXT_HIDDEN_SIZE,
-                TEXT_HIDDEN_SIZE,
-            );
-            for j in 0..TEXT_HIDDEN_SIZE {
-                tmp2[j] += wovr.fc1_bias[j];
-            }
-            d.silu(&mut tmp2);
-            d.matvec_bf16(
-                pool,
-                out,
+                Some(&wovr.fc1_bias),
                 &wovr.fc2_bf16,
-                &tmp2,
-                HIDDEN_SIZE,
-                TEXT_HIDDEN_SIZE,
+                Some(&wovr.fc2_bias),
+                tid,
+                &mut tmp1,
+                &mut tmp2,
+                out,
             );
-            for j in 0..HIDDEN_SIZE {
-                out[j] += wovr.fc2_bias[j];
-            }
         }
     }
 
@@ -988,13 +973,17 @@ pub fn build_voice_from_ref_audio(
     save_path: Option<&Path>,
     opts: &SaveVoiceOptions<'_>,
 ) -> Result<VoiceBindings, EngineError> {
-    let speaker_embedding = extract_speaker_embedding(
-        runtime,
-        model,
-        ref_audio_path,
-        opts.max_ref_seconds,
-        opts.silent,
-    )?;
+    let spk_enc = model.speaker_encoder.as_ref().ok_or_else(|| {
+        EngineError::InvalidArg(
+            "Error: --ref-audio requires a Base model (not CustomVoice)".to_string(),
+        )
+    })?;
+    let audio = load_and_trim_ref_audio(ref_audio_path, opts.max_ref_seconds, opts.silent)?;
+    let (mel, n_frames) = mel_spectrogram(&audio, SAMPLE_RATE)?;
+    if !opts.silent {
+        eprintln!("Mel spectrogram: {n_frames} frames x {MEL_DIM} mels");
+    }
+    let speaker_embedding = speaker_encoder_forward(runtime, spk_enc, &mel, n_frames);
 
     let need_icl = !opts.xvector_only && opts.ref_text.is_some_and(|t| !t.is_empty());
     let mut ref_codes = Vec::new();
@@ -1002,14 +991,6 @@ pub fn build_voice_from_ref_audio(
 
     if need_icl {
         if let Some(enc) = model.speech_encoder.as_ref() {
-            let mut audio = read_wav_24khz(ref_audio_path)?;
-            if opts.max_ref_seconds > 0.0 {
-                let max_s = (opts.max_ref_seconds * SAMPLE_RATE as f32) as usize;
-                if audio.len() > max_s {
-                    audio.truncate(max_s);
-                }
-            }
-            trim_trailing_silence(&mut audio, SAMPLE_RATE, opts.silent);
             let (codes, frames) =
                 speech_encoder_encode(runtime, enc, &audio, opts.debug, opts.silent)?;
             ref_codes = codes;
@@ -1238,8 +1219,8 @@ fn encode_wdelta_override(
         push_bf16(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.self_attn.k_proj.weight"), &cl.wk_bf16[..CP_KV_DIM * CP_HIDDEN_SIZE])?;
         push_bf16(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.self_attn.v_proj.weight"), &cl.wv_bf16[..CP_KV_DIM * CP_HIDDEN_SIZE])?;
         push_bf16(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.self_attn.o_proj.weight"), &cl.wo_bf16[..CP_HIDDEN_SIZE * CP_Q_DIM])?;
-        push_f32(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.self_attn.q_norm.weight"), &cl.q_norm[..HEAD_DIM]);
-        push_f32(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.self_attn.k_norm.weight"), &cl.k_norm[..HEAD_DIM]);
+        push_f32(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.self_attn.q_norm.weight"), &cl.q_norm[..CP_HEAD_DIM]);
+        push_f32(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.self_attn.k_norm.weight"), &cl.k_norm[..CP_HEAD_DIM]);
         push_f32(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.input_layernorm.weight"), &cl.input_norm[..CP_HIDDEN_SIZE]);
         push_f32(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.post_attention_layernorm.weight"), &cl.post_attn_norm[..CP_HIDDEN_SIZE]);
         push_bf16(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.mlp.gate_proj.weight"), &cl.gate_bf16[..CP_INTERMEDIATE_SIZE * CP_HIDDEN_SIZE])?;

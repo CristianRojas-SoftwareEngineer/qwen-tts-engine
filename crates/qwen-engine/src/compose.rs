@@ -69,6 +69,7 @@ pub fn prepare_markup_06b(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn synth_one_span_06b(
     runtime: &ComputeRuntime,
     model: &Model06B,
@@ -79,6 +80,7 @@ fn synth_one_span_06b(
     mood: Option<&str>,
     rate_override: f32,
     volume_override: f32,
+    apply_base_volume: bool,
     idx: usize,
 ) -> Result<Vec<f32>, EngineError> {
     let silent = exec.config.silent;
@@ -90,10 +92,19 @@ fn synth_one_span_06b(
     }
     let mut span_cfg = exec.config.clone();
     if rate_override > 0.0 {
-        span_cfg.rate = rate_override;
+        span_cfg.rate = (span_cfg.rate * rate_override).clamp(0.25, 4.0);
     }
-    if volume_override > 0.0 {
-        span_cfg.volume = volume_override;
+    if apply_base_volume {
+        if volume_override > 0.0 {
+            span_cfg.volume *= volume_override;
+        }
+    } else {
+        // En `render_spans_stream`, el `AudioSink` del llamador aplica `exec.config.volume`.
+        span_cfg.volume = if volume_override > 0.0 {
+            volume_override
+        } else {
+            1.0
+        };
     }
     // Cada span compuesto ejecuta prefill frío sin streaming hacia MemorySink y luego DSP.
     span_cfg.stream = false;
@@ -109,6 +120,15 @@ fn synth_one_span_06b(
         )));
     }
     Ok(samples)
+}
+
+#[inline]
+fn pause_sample_count(seconds: f32) -> usize {
+    if seconds.is_finite() && seconds > 0.0 {
+        (seconds.min(60.0) * SAMPLE_RATE as f32) as usize
+    } else {
+        0
+    }
 }
 
 /// Síntesis multi-span hacia un único buffer `f32` mono a 24 kHz.
@@ -134,12 +154,12 @@ pub fn render_spans_buffer(
         }
         match span {
             SpanSpec::Pause { seconds } => {
-                if *seconds > 0.0 {
-                    let pn = (*seconds * SAMPLE_RATE as f32) as usize;
+                let pn = pause_sample_count(*seconds);
+                if pn > 0 {
                     out.resize(out.len() + pn, 0.0);
                 }
                 if !silent {
-                    eprintln!("  [pause {seconds:.2}s]");
+                    eprintln!("  [pause {:.2}s]", pn as f32 / SAMPLE_RATE as f32);
                 }
                 last_spoken = false;
                 prev_filler = false;
@@ -152,8 +172,12 @@ pub fn render_spans_buffer(
                 volume,
             } => {
                 let xfade_seam = *is_filler || prev_filler;
-                if last_spoken && default_pause_s > 0.0 && !xfade_seam {
-                    let pn = (default_pause_s * SAMPLE_RATE as f32) as usize;
+                let pn = if last_spoken && !xfade_seam {
+                    pause_sample_count(default_pause_s)
+                } else {
+                    0
+                };
+                if pn > 0 {
                     out.resize(out.len() + pn, 0.0);
                 }
 
@@ -167,6 +191,7 @@ pub fn render_spans_buffer(
                     mood.as_deref(),
                     *rate,
                     *volume,
+                    true,
                     spoken,
                 )?;
 
@@ -205,6 +230,7 @@ pub fn render_spans_buffer(
 }
 
 /// Síntesis multi-span en streaming entregando las muestras PCM progresivamente a `sink`.
+#[allow(clippy::too_many_arguments)]
 pub fn render_spans_stream(
     runtime: &ComputeRuntime,
     model: &Model06B,
@@ -218,6 +244,7 @@ pub fn render_spans_stream(
     let silent = exec.config.silent;
     let mut spoken = 0usize;
     let mut last_spoken = false;
+    let mut prev_filler = false;
 
     for span in spans {
         if exec.abort.is_cancelled() {
@@ -225,31 +252,33 @@ pub fn render_spans_stream(
         }
         match span {
             SpanSpec::Pause { seconds } => {
-                if *seconds > 0.0 {
-                    let pn = (*seconds * SAMPLE_RATE as f32) as usize;
-                    if pn > 0 {
-                        let sil = vec![0.0f32; pn];
-                        sink.write_samples(&sil)?;
-                    }
+                let pn = pause_sample_count(*seconds);
+                if pn > 0 {
+                    let sil = vec![0.0f32; pn];
+                    sink.write_samples(&sil)?;
                 }
                 if !silent {
-                    eprintln!("  [pause {seconds:.2}s]");
+                    eprintln!("  [pause {:.2}s]", pn as f32 / SAMPLE_RATE as f32);
                 }
                 last_spoken = false;
+                prev_filler = false;
             }
             SpanSpec::Utterance {
                 text,
                 mood,
-                is_filler: _,
+                is_filler,
                 rate,
                 volume,
             } => {
-                if last_spoken && default_pause_s > 0.0 {
-                    let pn = (default_pause_s * SAMPLE_RATE as f32) as usize;
-                    if pn > 0 {
-                        let sil = vec![0.0f32; pn];
-                        sink.write_samples(&sil)?;
-                    }
+                let xfade_seam = *is_filler || prev_filler;
+                let pn = if last_spoken && !xfade_seam {
+                    pause_sample_count(default_pause_s)
+                } else {
+                    0
+                };
+                if pn > 0 {
+                    let sil = vec![0.0f32; pn];
+                    sink.write_samples(&sil)?;
                 }
                 let seg = synth_one_span_06b(
                     runtime,
@@ -261,6 +290,7 @@ pub fn render_spans_stream(
                     mood.as_deref(),
                     *rate,
                     *volume,
+                    false,
                     spoken,
                 )?;
                 if !seg.is_empty() {
@@ -268,6 +298,7 @@ pub fn render_spans_stream(
                 }
                 spoken += 1;
                 last_spoken = true;
+                prev_filler = *is_filler;
             }
         }
     }

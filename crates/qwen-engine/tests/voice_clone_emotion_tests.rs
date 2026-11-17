@@ -11,10 +11,10 @@ use qwen_core::{write_bin_embedding, MarkupPlanner, QVoiceFile};
 use qwen_engine::{
     apply_emotion_direction, attach_emo_ref, build_voice_from_ref_audio, encode_wav_bytes,
     load_voice_from_file, mel_spectrogram, prepare_markup_06b, read_wav_24khz,
-    render_spans_buffer, resolve_emovoice_06b, synthesize_to_samples, trim_trailing_silence,
-    validate_wav_path_or_header, write_wav, EmoVoice06BAction, Model06B, ModelLoadOptions,
-    RequestConfig, RequestExecution, SaveVoiceOptions, SessionScratch, VoiceBindings,
-    VoiceIdentity, VoiceLoadOptions,
+    render_spans_buffer, render_spans_stream, resolve_emovoice_06b, synthesize_to_samples,
+    trim_trailing_silence, validate_wav_path_or_header, write_wav, EmoVoice06BAction, MemorySink,
+    Model06B, ModelLoadOptions, RequestConfig, RequestExecution, SaveVoiceOptions, SessionScratch,
+    VoiceBindings, VoiceIdentity, VoiceLoadOptions,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -76,6 +76,12 @@ fn test_wav_validation_and_ffmpeg_hints() {
     write_wav(&wav_24k, &samples24, 24000).unwrap();
     let read_back = read_wav_24khz(&wav_24k).unwrap();
     assert_eq!(read_back.len(), 24000);
+
+    // 5. Un WAV con sample_rate = 0 falla en read_wav_pcm
+    let wav_sr0 = dir.join("bad_sr0.wav");
+    let bad_hdr = encode_wav_bytes(&samples24[..128], 0);
+    fs::write(&wav_sr0, bad_hdr).unwrap();
+    assert!(qwen_engine::read_wav_pcm(&wav_sr0).is_err());
 }
 
 #[test]
@@ -346,4 +352,28 @@ fn test_clone_wdelta_q4_error_and_e2e() {
     .unwrap();
     assert!(n_spoken >= 2 && composed.len() > SAMPLE_RATE);
     let _ = encode_wav_bytes(&composed, SAMPLE_RATE as u32);
+
+    // Verifica que `render_spans_stream` entrega muestras sin aplicar doble ganancia base
+    let mut stream_sink = MemorySink::new(composed.len());
+    let n_streamed = render_spans_stream(
+        &runtime,
+        &cv_model,
+        &preset_voice,
+        &mut scratch,
+        &RequestExecution::new(RequestConfig {
+            speaker_id: 3061,
+            language_id: Some(2070),
+            seed: prep.seed,
+            temperature: prep.temperature,
+            volume: 2.0,
+            silent: true,
+            ..Default::default()
+        }),
+        &spans,
+        0.12,
+        &mut stream_sink,
+    )
+    .unwrap();
+    assert_eq!(n_streamed, n_spoken);
+    assert!(!stream_sink.samples.is_empty());
 }

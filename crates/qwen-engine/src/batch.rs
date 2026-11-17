@@ -13,15 +13,19 @@ use qwen_core::config::{
     NUM_LAYERS, Q_DIM, SAMPLE_RATE,
 };
 use qwen_core::{LcgRng, Sampler};
+use qwen_kernels::dispatch::env_batch_b;
 use qwen_kernels::{AlignedBuf, ComputeRuntime};
 
 use crate::audio::apply_gain;
 use crate::error::EngineError;
 use crate::model::{
-    lookup_codec_embed, CpLmHead, Model06B, QuantWeight, RequestConfig, SessionScratch,
-    VoiceBindings, ROPE_MAX_POS,
+    lookup_codec_embed, Model06B, QuantWeight, RequestConfig, SessionScratch, VoiceBindings,
+    ROPE_MAX_POS,
 };
-use crate::pipeline::build_prefill_embeds;
+use crate::pipeline::{
+    apply_talker_logit_rules, build_prefill_embeds, build_step_embed, next_stream_chunk_target,
+    resolve_icl_trim_samples,
+};
 use crate::speech_decoder::{speech_decoder_decode, speech_decoder_decode_streaming};
 use crate::talker::talker_step;
 
@@ -66,7 +70,7 @@ fn batch_scatter(dst: &mut [f32], yt: &[f32], b_dim: usize, rows: usize) {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn batch_proj_q(
+fn batch_proj_q(
     runtime: &ComputeRuntime,
     bw_xt: &mut [f32],
     bw_yt: &mut [f32],
@@ -108,20 +112,6 @@ pub fn batch_proj_q(
         None => d.matmat_bf16(pool, yt, bf16_w, xt, rows, cols, b_dim),
     }
     batch_scatter(dst, yt, b_dim, rows);
-}
-
-fn cp_lm_argmax(runtime: &ComputeRuntime, head: &CpLmHead, normed: &[f32]) -> usize {
-    let d = runtime.dispatch;
-    let pool = &runtime.pool;
-    match &head.quant {
-        Some(QuantWeight::Q4_0(w)) => {
-            d.argmax_matvec_q4_0(pool, normed, w, CP_HIDDEN_SIZE, CODEBOOK_SIZE)
-        }
-        Some(QuantWeight::Int8 { data, scale }) => {
-            d.argmax_matvec_int8(pool, normed, data, scale, CP_HIDDEN_SIZE, CODEBOOK_SIZE)
-        }
-        None => d.argmax_matvec_bf16(normed, &head.bf16, CP_HIDDEN_SIZE, CODEBOOK_SIZE),
-    }
 }
 
 pub struct BatchWorkspace {
@@ -674,6 +664,7 @@ fn batch_cp_transformer_step(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn batch_cp_predict(
     runtime: &ComputeRuntime,
     model: &Model06B,
@@ -724,7 +715,7 @@ pub fn batch_cp_predict(
             CP_HIDDEN_SIZE,
             eps,
         );
-        out_codes[b * 15] = cp_lm_argmax(runtime, &model.cp.lm_heads[0], &normed) as i32;
+        out_codes[b * 15] = model.cp.lm_heads[0].argmax(runtime, &normed) as i32;
     }
 
     // Codebooks 1..15
@@ -760,18 +751,14 @@ pub fn batch_cp_predict(
                 CP_HIDDEN_SIZE,
                 eps,
             );
-            out_codes[b * 15 + g] = cp_lm_argmax(runtime, &model.cp.lm_heads[g], &normed) as i32;
+            out_codes[b * 15 + g] = model.cp.lm_heads[g].argmax(runtime, &normed) as i32;
         }
     }
 }
 
 /// Verifica el paso Talker por lotes y el cableado de CP frente a ejecución secuencial (`--batch-test`).
 pub fn batch_self_test(runtime: &ComputeRuntime, model: &Model06B) -> Result<bool, EngineError> {
-    let b_dim = std::env::var("QWEN_BATCH_B")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&v| (1..=MAX_BATCH_SLOTS).contains(&v))
-        .unwrap_or(8);
+    let b_dim = env_batch_b(8, MAX_BATCH_SLOTS);
     let k_steps = 8usize;
     let kv_max = 64usize;
 
@@ -897,11 +884,7 @@ pub fn batch_self_test(runtime: &ComputeRuntime, model: &Model06B) -> Result<boo
 
 /// Mide el rendimiento de cómputo por lotes frente a ejecución secuencial (`--batch-bench`).
 pub fn batch_bench(runtime: &ComputeRuntime, model: &Model06B) -> Result<(), EngineError> {
-    let b_dim = std::env::var("QWEN_BATCH_B")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&v| (1..=MAX_BATCH_SLOTS).contains(&v))
-        .unwrap_or(8);
+    let b_dim = env_batch_b(8, MAX_BATCH_SLOTS);
     let k_steps = 32usize;
     let mut bw = BatchWorkspace::new(b_dim, k_steps + 4)?;
     let mut scratch = SessionScratch::new();
@@ -1077,6 +1060,59 @@ pub struct BatchReq {
     pub volume: f32,
 }
 
+fn prefill_batch_slot(
+    runtime: &ComputeRuntime,
+    model: &Model06B,
+    base_voice: &VoiceBindings,
+    scratch: &mut SessionScratch,
+    req: &BatchReq,
+    max_prompt: Option<usize>,
+    seed_hidden_out: &mut [f32],
+) -> Result<(usize, usize, bool), EngineError> {
+    let preset_override;
+    let voice_ref: &VoiceBindings =
+        if matches!(base_voice.identity, crate::model::VoiceIdentity::Preset(_)) {
+            preset_override = VoiceBindings {
+                identity: crate::model::VoiceIdentity::Preset(req.speaker_id),
+                ..base_voice.clone()
+            };
+            &preset_override
+        } else {
+            base_voice
+        };
+    let rc = RequestConfig {
+        language_id: req.language_id,
+        temperature: req.temperature,
+        top_k: req.top_k,
+        top_p: req.top_p,
+        rep_penalty: req.rep_penalty,
+        greedy_warmup: req.greedy_warmup,
+        seed: req.seed,
+        silent: true,
+        ..Default::default()
+    };
+    let (embeds, pl, tcl, icl_mode) =
+        build_prefill_embeds(runtime, model, voice_ref, scratch, &rc, &req.text)?;
+    if let Some(limit) = max_prompt {
+        if pl == 0 || pl > limit {
+            return Err(EngineError::InvalidArg(format!(
+                "Prompt length {pl} exceeds batch max {limit}"
+            )));
+        }
+    }
+    scratch.talker_kv.len = 0;
+    crate::talker::talker_prefill(runtime, model, scratch, &embeds, pl, true, false)?;
+    runtime.dispatch.rms_norm(
+        &mut seed_hidden_out[..HIDDEN_SIZE],
+        &scratch.talker_bufs.dec_x,
+        &model.talker.norm,
+        1,
+        HIDDEN_SIZE,
+        model.config.rms_norm_eps,
+    );
+    Ok((pl, tcl, icl_mode))
+}
+
 pub fn generate_batch_multi(
     runtime: &ComputeRuntime,
     model: &Model06B,
@@ -1092,7 +1128,6 @@ pub fn generate_batch_multi(
     let mut out_samples: Vec<Vec<f32>> = vec![Vec::new(); nc];
     let mut scratch = SessionScratch::new();
     let d = runtime.dispatch;
-    let eps = model.config.rms_norm_eps;
     let gen_cap = 600usize;
 
     let nt = runtime.pool.n_threads();
@@ -1100,57 +1135,25 @@ pub fn generate_batch_multi(
         let b_dim = (nc - g0).min(GMAX);
         let mut prompt_lens = vec![0usize; b_dim];
         let mut tcls = vec![0usize; b_dim];
+        let mut icl_modes = vec![false; b_dim];
         let mut seed_hidden = vec![0.0f32; b_dim * HIDDEN_SIZE];
         let mut kv_snapshots: Vec<(Vec<u16>, Vec<u16>, usize)> = Vec::with_capacity(b_dim);
         let mut max_pl = 0usize;
 
         runtime.blas.set_threads(nt);
         for b in 0..b_dim {
-            let r = &reqs[g0 + b];
-            let preset_override;
-            let voice_ref: &VoiceBindings =
-                if matches!(base_voice.identity, crate::model::VoiceIdentity::Preset(_)) {
-                    preset_override = VoiceBindings {
-                        identity: crate::model::VoiceIdentity::Preset(r.speaker_id),
-                        ..base_voice.clone()
-                    };
-                    &preset_override
-                } else {
-                    base_voice
-                };
-            let rc = RequestConfig {
-                language_id: r.language_id,
-                temperature: r.temperature,
-                top_k: r.top_k,
-                top_p: r.top_p,
-                rep_penalty: r.rep_penalty,
-                greedy_warmup: r.greedy_warmup,
-                seed: r.seed,
-                silent: true,
-                ..Default::default()
-            };
-            let (embeds, pl, tcl, _) =
-                build_prefill_embeds(runtime, model, voice_ref, &mut scratch, &rc, &r.text)?;
-            scratch.talker_kv.len = 0;
-            crate::talker::talker_prefill(
+            let (pl, tcl, icl_mode) = prefill_batch_slot(
                 runtime,
                 model,
+                base_voice,
                 &mut scratch,
-                &embeds,
-                pl,
-                true,
-                false,
-            )?;
-            d.rms_norm(
+                &reqs[g0 + b],
+                None,
                 &mut seed_hidden[b * HIDDEN_SIZE..(b + 1) * HIDDEN_SIZE],
-                &scratch.talker_bufs.dec_x,
-                &model.talker.norm,
-                1,
-                HIDDEN_SIZE,
-                eps,
-            );
+            )?;
             prompt_lens[b] = pl;
             tcls[b] = tcl;
+            icl_modes[b] = icl_mode;
             max_pl = max_pl.max(pl);
             kv_snapshots.push((
                 scratch.talker_kv.k.as_slice().to_vec(),
@@ -1175,15 +1178,16 @@ pub fn generate_batch_multi(
         let mut prev_toks: Vec<Vec<i32>> = vec![Vec::new(); b_dim];
         let mut ch_codes: Vec<Vec<i32>> = vec![Vec::new(); b_dim];
         let mut last_hidden = seed_hidden;
+        let mut next_hidden = vec![0.0f32; b_dim * HIDDEN_SIZE];
         let mut logits = vec![0.0f32; b_dim * CODEC_VOCAB_SIZE];
         let mut step_embed = vec![0.0f32; b_dim * HIDDEN_SIZE];
         let mut code0 = vec![0i32; b_dim];
         let mut cpcodes = vec![0i32; b_dim * 15];
         let mut sampler = Sampler::new();
         let tts_pad = if let Some(wovr) = &base_voice.wovr {
-            wovr.tts_pad_embed.clone()
+            wovr.tts_pad_embed.as_slice()
         } else {
-            model.cached_tts_pad_embed.clone()
+            model.cached_tts_pad_embed.as_slice()
         };
         let mut n_active = b_dim;
 
@@ -1214,23 +1218,7 @@ pub fn generate_batch_multi(
                     continue;
                 }
                 let lg = &mut logits[b * CODEC_VOCAB_SIZE..(b + 1) * CODEC_VOCAB_SIZE];
-                for v in lg.iter_mut() {
-                    *v = v.clamp(-100.0, 100.0);
-                }
-                for t in 2048..CODEC_VOCAB_SIZE {
-                    if t as i32 != CODEC_EOS {
-                        lg[t] = -1e30;
-                    }
-                }
-                if frame < 2 {
-                    lg[CODEC_EOS as usize] = -1e30;
-                }
-                let ef = tcls[b] * 3;
-                let bs = ef * 2;
-                if ef > 0 && frame > bs {
-                    let bo = (0.5f32 * ((frame - bs) as f32)).min(10.0);
-                    lg[CODEC_EOS as usize] += bo;
-                }
+                apply_talker_logit_rules(lg, frame, tcls[b]);
                 let r = &reqs[g0 + b];
                 let (ft, ftk) = if r.greedy_warmup > 0 && frame < r.greedy_warmup {
                     (0.0, 1)
@@ -1278,20 +1266,17 @@ pub fn generate_batch_multi(
                 }
                 ch_codes[b].push(code0[b]);
                 ch_codes[b].extend_from_slice(&cpcodes[b * 15..(b + 1) * 15]);
-                lookup_codec_embed(d, model, base_voice, code0[b], se);
-                for g in 0..15 {
-                    let cg = cpcodes[b * 15 + g];
-                    if cg >= 0 && (cg as usize) < CODEBOOK_SIZE {
-                        let off = (cg as usize) * HIDDEN_SIZE;
-                        d.bf16_accum_f32(se, &model.cp.codec_emb_bf16[g][off..off + HIDDEN_SIZE]);
-                    }
-                }
-                for j in 0..HIDDEN_SIZE {
-                    se[j] += tts_pad[j];
-                }
+                build_step_embed(
+                    d,
+                    model,
+                    base_voice,
+                    code0[b],
+                    &cpcodes[b * 15..(b + 1) * 15],
+                    tts_pad,
+                    se,
+                );
             }
 
-            let mut next_hidden = vec![0.0f32; b_dim * HIDDEN_SIZE];
             batch_talker_step_ragged(
                 runtime,
                 model,
@@ -1301,7 +1286,7 @@ pub fn generate_batch_multi(
                 &active,
                 &mut next_hidden,
             )?;
-            last_hidden = next_hidden;
+            std::mem::swap(&mut last_hidden, &mut next_hidden);
             for b in 0..b_dim {
                 if active[b] {
                     pos[b] += 1;
@@ -1313,8 +1298,14 @@ pub fn generate_batch_multi(
         for b in 0..b_dim {
             let nf = ch_codes[b].len() / NUM_CODEBOOKS;
             if nf > 0 {
-                out_samples[g0 + b] =
-                    speech_decoder_decode(runtime, &model.decoder, &ch_codes[b], nf)?;
+                let mut aud = speech_decoder_decode(runtime, &model.decoder, &ch_codes[b], nf)?;
+                let trim_n = resolve_icl_trim_samples(icl_modes[b]);
+                if trim_n > 0 {
+                    let cut = trim_n.min(aud.len());
+                    aud.drain(..cut);
+                }
+                apply_gain(&mut aud, reqs[g0 + b].volume);
+                out_samples[g0 + b] = aud;
             }
         }
     }
@@ -1349,8 +1340,8 @@ pub fn generate_batch_longform(
         })
         .collect();
     let bufs = generate_batch_multi(runtime, model, voice, &reqs, false)?;
-    let pause_n = if chunk_pause_s > 0.0 {
-        (chunk_pause_s * SAMPLE_RATE as f32) as usize
+    let pause_n = if chunk_pause_s.is_finite() && chunk_pause_s > 0.0 {
+        (chunk_pause_s.min(60.0) * SAMPLE_RATE as f32) as usize
     } else {
         0
     };
@@ -1380,41 +1371,37 @@ pub trait ContinuousBatchSink<T> {
     fn on_done(&mut self, tag: T, samples: Option<Vec<f32>>, err: Option<EngineError>);
 }
 
-struct ContinuousSlot<T> {
-    active: bool,
-    tag: Option<T>,
+struct ActiveSlotState<T> {
+    tag: T,
     abort: crate::model::AbortHandle,
-    req: Option<BatchReq>,
+    req: BatchReq,
     pos: usize,
     tcl: usize,
     sframe: usize,
     rng: LcgRng,
     prev_tok: Vec<i32>,
     codes: Vec<i32>,
-    sd_stream: crate::model::SdStreamState,
     decoded_frames: usize,
     ramp_chunks: usize,
     first_chunk_emitted: bool,
+    icl_trim_left: usize,
+}
+
+struct ContinuousSlot<T> {
+    sd_stream: crate::model::SdStreamState,
+    active: Option<ActiveSlotState<T>>,
 }
 
 impl<T> ContinuousSlot<T> {
     fn empty() -> Self {
         Self {
-            active: false,
-            tag: None,
-            abort: crate::model::AbortHandle::new(),
-            req: None,
-            pos: 0,
-            tcl: 0,
-            sframe: 0,
-            rng: LcgRng::new(42),
-            prev_tok: Vec::new(),
-            codes: Vec::new(),
             sd_stream: crate::model::SdStreamState::new(),
-            decoded_frames: 0,
-            ramp_chunks: 0,
-            first_chunk_emitted: false,
+            active: None,
         }
+    }
+
+    fn take_active(&mut self) -> Option<ActiveSlotState<T>> {
+        self.active.take()
     }
 }
 
@@ -1437,6 +1424,7 @@ pub fn run_continuous_batch<T>(
     let mut slots: Vec<ContinuousSlot<T>> = (0..b_dim).map(|_| ContinuousSlot::empty()).collect();
 
     let mut last_hidden = vec![0.0f32; b_dim * HIDDEN_SIZE];
+    let mut next_hidden = vec![0.0f32; b_dim * HIDDEN_SIZE];
     let mut logits = vec![0.0f32; b_dim * CODEC_VOCAB_SIZE];
     let mut step_embed = vec![0.0f32; b_dim * HIDDEN_SIZE];
     let mut code0 = vec![0i32; b_dim];
@@ -1446,13 +1434,12 @@ pub fn run_continuous_batch<T>(
     let mut sampler = Sampler::new();
 
     let d = runtime.dispatch;
-    let eps = model.config.rms_norm_eps;
     let nt = runtime.pool.n_threads();
     let gen_blas = if nt > 1 { nt - 1 } else { 1 };
     let tts_pad = if let Some(wovr) = &base_voice.wovr {
-        wovr.tts_pad_embed.clone()
+        wovr.tts_pad_embed.as_slice()
     } else {
-        model.cached_tts_pad_embed.clone()
+        model.cached_tts_pad_embed.as_slice()
     };
 
     let mut n_active = 0usize;
@@ -1460,7 +1447,7 @@ pub fn run_continuous_batch<T>(
     while sink.is_running() || n_active > 0 {
         // 1. Admitir trabajos en cola dentro de ranuras libres
         for b in 0..b_dim {
-            if slots[b].active {
+            if slots[b].active.is_some() {
                 continue;
             }
             if !sink.is_running() {
@@ -1479,57 +1466,21 @@ pub fn run_continuous_batch<T>(
             }
 
             runtime.blas.set_threads(nt);
-            let preset_override;
-            let voice_ref: &VoiceBindings =
-                if matches!(base_voice.identity, crate::model::VoiceIdentity::Preset(_)) {
-                    preset_override = VoiceBindings {
-                        identity: crate::model::VoiceIdentity::Preset(job.req.speaker_id),
-                        ..base_voice.clone()
-                    };
-                    &preset_override
-                } else {
-                    base_voice
-                };
-            let rc = RequestConfig {
-                language_id: job.req.language_id,
-                temperature: job.req.temperature,
-                top_k: job.req.top_k,
-                top_p: job.req.top_p,
-                rep_penalty: job.req.rep_penalty,
-                greedy_warmup: job.req.greedy_warmup,
-                seed: job.req.seed,
-                silent: true,
-                ..Default::default()
-            };
-            let prep =
-                build_prefill_embeds(runtime, model, voice_ref, &mut prefill_scratch, &rc, &job.req.text);
-            let Ok((embeds, pl, tcl, _)) = prep else {
-                sink.on_done(job.tag, None, prep.err());
-                continue;
-            };
-            if pl == 0 || pl > MAX_PROMPT {
-                sink.on_done(
-                    job.tag,
-                    None,
-                    Some(EngineError::InvalidArg(format!(
-                        "Prompt length {pl} exceeds batch max {MAX_PROMPT}"
-                    ))),
-                );
-                continue;
-            }
-            prefill_scratch.talker_kv.len = 0;
-            if let Err(e) = crate::talker::talker_prefill(
+            let (pl, tcl, icl_mode) = match prefill_batch_slot(
                 runtime,
                 model,
+                base_voice,
                 &mut prefill_scratch,
-                &embeds,
-                pl,
-                true,
-                false,
+                &job.req,
+                Some(MAX_PROMPT),
+                &mut last_hidden[b * HIDDEN_SIZE..(b + 1) * HIDDEN_SIZE],
             ) {
-                sink.on_done(job.tag, None, Some(e));
-                continue;
-            }
+                Ok(res) => res,
+                Err(e) => {
+                    sink.on_done(job.tag, None, Some(e));
+                    continue;
+                }
+            };
 
             bw.load_slot_kv(
                 b,
@@ -1538,31 +1489,25 @@ pub fn run_continuous_batch<T>(
                 prefill_scratch.talker_kv.max_pos,
                 pl,
             );
-            d.rms_norm(
-                &mut last_hidden[b * HIDDEN_SIZE..(b + 1) * HIDDEN_SIZE],
-                &prefill_scratch.talker_bufs.dec_x,
-                &model.talker.norm,
-                1,
-                HIDDEN_SIZE,
-                eps,
-            );
 
             let slot = &mut slots[b];
-            slot.active = true;
-            slot.tag = Some(job.tag);
-            slot.abort = job.abort;
-            slot.pos = pl;
-            slot.tcl = tcl;
-            slot.sframe = 0;
-            slot.rng = LcgRng::new(job.req.seed);
-            slot.prev_tok.clear();
-            slot.codes.clear();
             slot.sd_stream.reset();
             slot.sd_stream.cs_tile = true;
-            slot.decoded_frames = 0;
-            slot.ramp_chunks = 0;
-            slot.first_chunk_emitted = false;
-            slot.req = Some(job.req);
+            slot.active = Some(ActiveSlotState {
+                tag: job.tag,
+                abort: job.abort,
+                pos: pl,
+                tcl,
+                sframe: 0,
+                rng: LcgRng::new(job.req.seed),
+                prev_tok: Vec::new(),
+                codes: Vec::new(),
+                decoded_frames: 0,
+                ramp_chunks: 0,
+                first_chunk_emitted: false,
+                icl_trim_left: resolve_icl_trim_samples(icl_mode),
+                req: job.req,
+            });
             n_active += 1;
         }
 
@@ -1574,13 +1519,12 @@ pub fn run_continuous_batch<T>(
         }
 
         // Comprobar desconexión del cliente en cada ranura activa antes de avanzar
-        for b in 0..b_dim {
-            if slots[b].active && slots[b].abort.is_cancelled() {
-                let tag = slots[b].tag.take().unwrap();
-                slots[b].active = false;
-                slots[b].req = None;
-                n_active -= 1;
-                sink.on_done(tag, None, Some(EngineError::Aborted));
+        for slot in slots.iter_mut().take(b_dim) {
+            if slot.active.as_ref().is_some_and(|st| st.abort.is_cancelled()) {
+                if let Some(st) = slot.take_active() {
+                    n_active -= 1;
+                    sink.on_done(st.tag, None, Some(EngineError::Aborted));
+                }
             }
         }
         if n_active == 0 {
@@ -1604,87 +1548,63 @@ pub fn run_continuous_batch<T>(
         );
 
         for b in 0..b_dim {
-            if !slots[b].active {
+            let Some(st) = slots[b].active.as_mut() else {
                 code0[b] = 0;
                 active_arr[b] = false;
                 pos_arr[b] = 0;
                 continue;
-            }
-            let lg = &mut logits[b * CODEC_VOCAB_SIZE..(b + 1) * CODEC_VOCAB_SIZE];
-            for v in lg.iter_mut() {
-                *v = v.clamp(-100.0, 100.0);
-            }
-            for t in 2048..CODEC_VOCAB_SIZE {
-                if t as i32 != CODEC_EOS {
-                    lg[t] = -1e30;
-                }
-            }
-            let sf = slots[b].sframe;
-            if sf < 2 {
-                lg[CODEC_EOS as usize] = -1e30;
-            }
-            let ef = slots[b].tcl * 3;
-            let bs = ef * 2;
-            if ef > 0 && sf > bs {
-                let bo = (0.5f32 * ((sf - bs) as f32)).min(10.0);
-                lg[CODEC_EOS as usize] += bo;
-            }
-            let (greedy_warmup, r_temp, r_topk, r_topp, r_rep, want_stream, vol) = {
-                let r = slots[b].req.as_ref().unwrap();
-                (
-                    r.greedy_warmup,
-                    r.temperature,
-                    r.top_k,
-                    r.top_p,
-                    r.rep_penalty,
-                    r.want_stream,
-                    r.volume,
-                )
             };
-            let (ft, ftk) = if greedy_warmup > 0 && sf < greedy_warmup {
+            let lg = &mut logits[b * CODEC_VOCAB_SIZE..(b + 1) * CODEC_VOCAB_SIZE];
+            let sf = st.sframe;
+            apply_talker_logit_rules(lg, sf, st.tcl);
+            let (ft, ftk) = if st.req.greedy_warmup > 0 && sf < st.req.greedy_warmup {
                 (0.0, 1)
             } else {
-                (r_temp, r_topk)
+                (st.req.temperature, st.req.top_k)
             };
-            let slot = &mut slots[b];
             let c0 = sampler.sample(
                 lg,
                 ft,
                 ftk,
-                r_topp,
-                r_rep,
-                &slot.prev_tok,
-                &mut slot.rng,
+                st.req.top_p,
+                st.req.rep_penalty,
+                &st.prev_tok,
+                &mut st.rng,
             ) as i32;
-            let nf = slot.codes.len() / NUM_CODEBOOKS;
-            if c0 == CODEC_EOS || nf >= gen_cap || slot.pos >= kv_max - 1 {
+            let nf = st.codes.len() / NUM_CODEBOOKS;
+            if c0 == CODEC_EOS || nf >= gen_cap || st.pos >= kv_max - 1 {
                 active_arr[b] = false;
                 code0[b] = 0;
 
-                if want_stream {
-                    let rem = nf.saturating_sub(slot.decoded_frames);
+                let Some(mut finished) = slots[b].take_active() else {
+                    continue;
+                };
+                n_active -= 1;
+                let vol = finished.req.volume;
+
+                if finished.req.want_stream {
+                    let rem = nf.saturating_sub(finished.decoded_frames);
                     let mut stream_err: Option<EngineError> = None;
                     if rem > 0 {
-                        let start = slot.decoded_frames * NUM_CODEBOOKS;
-                        let tail_codes = slot.codes[start..].to_vec();
+                        let start = finished.decoded_frames * NUM_CODEBOOKS;
                         match speech_decoder_decode_streaming(
                             runtime,
                             &model.decoder,
-                            &mut slot.sd_stream,
+                            &mut slots[b].sd_stream,
                             &mut sd_ws,
-                            &tail_codes,
+                            &finished.codes[start..],
                             rem,
                         ) {
                             Ok(mut aud) => {
+                                if finished.icl_trim_left > 0 {
+                                    let cut = finished.icl_trim_left.min(aud.len());
+                                    aud.drain(..cut);
+                                }
                                 if (vol - 1.0).abs() > 1e-6 {
                                     apply_gain(&mut aud, vol);
                                 }
-                                if !aud.is_empty() {
-                                    if let Some(tag_ref) = slots[b].tag.as_mut() {
-                                        if !sink.on_chunk(tag_ref, &aud) {
-                                            stream_err = Some(EngineError::Aborted);
-                                        }
-                                    }
+                                if !aud.is_empty() && !sink.on_chunk(&mut finished.tag, &aud) {
+                                    stream_err = Some(EngineError::Aborted);
                                 }
                             }
                             Err(e) => stream_err = Some(e),
@@ -1692,47 +1612,49 @@ pub fn run_continuous_batch<T>(
                     } else if nf == 0 {
                         stream_err = Some(EngineError::Runtime("no frames generated".to_string()));
                     }
-                    let tag = slots[b].tag.take().unwrap();
-                    slots[b].active = false;
-                    slots[b].req = None;
-                    n_active -= 1;
-                    sink.on_done(tag, None, stream_err);
-                } else {
-                    let tag = slots[b].tag.take().unwrap();
-                    slots[b].active = false;
-                    slots[b].req = None;
-                    n_active -= 1;
-                    if nf > 0 {
-                        runtime.blas.set_threads(nt);
-                        match speech_decoder_decode(runtime, &model.decoder, &slots[b].codes, nf) {
-                            Ok(mut aud) if !aud.is_empty() => {
-                                if (vol - 1.0).abs() > 1e-6 {
-                                    apply_gain(&mut aud, vol);
-                                }
-                                sink.on_done(tag, Some(aud), None);
+                    sink.on_done(finished.tag, None, stream_err);
+                } else if nf > 0 {
+                    runtime.blas.set_threads(nt);
+                    match speech_decoder_decode(runtime, &model.decoder, &finished.codes, nf) {
+                        Ok(mut aud) if !aud.is_empty() => {
+                            if finished.icl_trim_left > 0 {
+                                let cut = finished.icl_trim_left.min(aud.len());
+                                aud.drain(..cut);
                             }
-                            Ok(_) => sink.on_done(
-                                tag,
-                                None,
-                                Some(EngineError::Runtime("empty decode".to_string())),
-                            ),
-                            Err(e) => sink.on_done(tag, None, Some(e)),
+                            if (vol - 1.0).abs() > 1e-6 {
+                                apply_gain(&mut aud, vol);
+                            }
+                            if aud.is_empty() {
+                                sink.on_done(
+                                    finished.tag,
+                                    None,
+                                    Some(EngineError::Runtime("empty decode".to_string())),
+                                );
+                            } else {
+                                sink.on_done(finished.tag, Some(aud), None);
+                            }
                         }
-                        runtime.blas.set_threads(gen_blas);
-                    } else {
-                        sink.on_done(
-                            tag,
+                        Ok(_) => sink.on_done(
+                            finished.tag,
                             None,
-                            Some(EngineError::Runtime("no frames generated".to_string())),
-                        );
+                            Some(EngineError::Runtime("empty decode".to_string())),
+                        ),
+                        Err(e) => sink.on_done(finished.tag, None, Some(e)),
                     }
+                    runtime.blas.set_threads(gen_blas);
+                } else {
+                    sink.on_done(
+                        finished.tag,
+                        None,
+                        Some(EngineError::Runtime("no frames generated".to_string())),
+                    );
                 }
                 continue;
             }
             code0[b] = c0;
-            slots[b].prev_tok.push(c0);
+            st.prev_tok.push(c0);
             active_arr[b] = true;
-            pos_arr[b] = slots[b].pos;
+            pos_arr[b] = st.pos;
         }
         if n_active == 0 {
             continue;
@@ -1751,83 +1673,70 @@ pub fn run_continuous_batch<T>(
 
         for b in 0..b_dim {
             let se = &mut step_embed[b * HIDDEN_SIZE..(b + 1) * HIDDEN_SIZE];
-            if !slots[b].active {
+            let slot = &mut slots[b];
+            let Some(st) = slot.active.as_mut() else {
                 se.fill(0.0);
                 continue;
-            }
-            slots[b].codes.push(code0[b]);
-            slots[b].codes.extend_from_slice(&cpcodes[b * 15..(b + 1) * 15]);
-            lookup_codec_embed(d, model, base_voice, code0[b], se);
-            for g in 0..15 {
-                let cg = cpcodes[b * 15 + g];
-                if cg >= 0 && (cg as usize) < CODEBOOK_SIZE {
-                    let off = (cg as usize) * HIDDEN_SIZE;
-                    d.bf16_accum_f32(se, &model.cp.codec_emb_bf16[g][off..off + HIDDEN_SIZE]);
-                }
-            }
-            for j in 0..HIDDEN_SIZE {
-                se[j] += tts_pad[j];
-            }
+            };
+            st.codes.push(code0[b]);
+            st.codes.extend_from_slice(&cpcodes[b * 15..(b + 1) * 15]);
+            build_step_embed(
+                d,
+                model,
+                base_voice,
+                code0[b],
+                &cpcodes[b * 15..(b + 1) * 15],
+                tts_pad,
+                se,
+            );
 
             // Emisión de fragmentos streaming siguiendo rampa 2, 4, 6, 8, ... hasta chunk_frames
-            let (want_stream, chunk_frames, vol) = {
-                let r = slots[b].req.as_ref().unwrap();
-                (r.want_stream, r.chunk_frames.clamp(2, 250), r.volume)
-            };
-            if want_stream {
-                let nf = slots[b].codes.len() / NUM_CODEBOOKS;
-                let avail = nf - slots[b].decoded_frames;
-                let target = if !slots[b].first_chunk_emitted && chunk_frames > 2 {
-                    2
-                } else {
-                    let ramp = 4 + 2 * (slots[b].ramp_chunks / 8);
-                    ramp.min(chunk_frames)
-                };
+            if st.req.want_stream {
+                let chunk_frames = st.req.chunk_frames.clamp(2, 250);
+                let vol = st.req.volume;
+                let nf = st.codes.len() / NUM_CODEBOOKS;
+                let avail = nf - st.decoded_frames;
+                let (target, ramped) =
+                    next_stream_chunk_target(st.first_chunk_emitted, st.ramp_chunks, chunk_frames);
                 if avail >= target {
-                    let ramped = slots[b].first_chunk_emitted || chunk_frames <= 2;
-                    let start = slots[b].decoded_frames * NUM_CODEBOOKS;
-                    let end = (slots[b].decoded_frames + target) * NUM_CODEBOOKS;
-                    let chunk_codes = slots[b].codes[start..end].to_vec();
+                    let start = st.decoded_frames * NUM_CODEBOOKS;
+                    let end = (st.decoded_frames + target) * NUM_CODEBOOKS;
                     match speech_decoder_decode_streaming(
                         runtime,
                         &model.decoder,
-                        &mut slots[b].sd_stream,
+                        &mut slot.sd_stream,
                         &mut sd_ws,
-                        &chunk_codes,
+                        &st.codes[start..end],
                         target,
                     ) {
                         Ok(mut aud) => {
+                            if st.icl_trim_left > 0 {
+                                let cut = st.icl_trim_left.min(aud.len());
+                                aud.drain(..cut);
+                                st.icl_trim_left -= cut;
+                            }
                             if (vol - 1.0).abs() > 1e-6 {
                                 apply_gain(&mut aud, vol);
                             }
-                            slots[b].decoded_frames += target;
+                            st.decoded_frames += target;
                             if ramped {
-                                slots[b].ramp_chunks += 1;
+                                st.ramp_chunks += 1;
                             }
-                            slots[b].first_chunk_emitted = true;
-                            if !aud.is_empty() {
-                                let ok = slots[b]
-                                    .tag
-                                    .as_mut()
-                                    .map(|tag_ref| sink.on_chunk(tag_ref, &aud))
-                                    .unwrap_or(false);
-                                if !ok {
-                                    let tag = slots[b].tag.take().unwrap();
-                                    slots[b].active = false;
-                                    slots[b].req = None;
+                            st.first_chunk_emitted = true;
+                            if !aud.is_empty() && !sink.on_chunk(&mut st.tag, &aud) {
+                                if let Some(aborted) = slot.take_active() {
                                     active_arr[b] = false;
                                     n_active -= 1;
-                                    sink.on_done(tag, None, Some(EngineError::Aborted));
+                                    sink.on_done(aborted.tag, None, Some(EngineError::Aborted));
                                 }
                             }
                         }
                         Err(e) => {
-                            let tag = slots[b].tag.take().unwrap();
-                            slots[b].active = false;
-                            slots[b].req = None;
-                            active_arr[b] = false;
-                            n_active -= 1;
-                            sink.on_done(tag, None, Some(e));
+                            if let Some(failed) = slot.take_active() {
+                                active_arr[b] = false;
+                                n_active -= 1;
+                                sink.on_done(failed.tag, None, Some(e));
+                            }
                         }
                     }
                 }
@@ -1838,7 +1747,6 @@ pub fn run_continuous_batch<T>(
             continue;
         }
 
-        let mut next_hidden = vec![0.0f32; b_dim * HIDDEN_SIZE];
         if let Err(e) = batch_talker_step_ragged(
             runtime,
             model,
@@ -1848,30 +1756,27 @@ pub fn run_continuous_batch<T>(
             &active_arr,
             &mut next_hidden,
         ) {
-            for b in 0..b_dim {
-                if slots[b].active {
-                    let tag = slots[b].tag.take().unwrap();
-                    slots[b].active = false;
-                    slots[b].req = None;
-                    sink.on_done(tag, None, Some(EngineError::Runtime(e.to_string())));
+            let err_msg = e.to_string();
+            for slot in &mut slots {
+                if let Some(st) = slot.take_active() {
+                    sink.on_done(st.tag, None, Some(EngineError::Runtime(err_msg.clone())));
                 }
             }
-            break;
+            runtime.blas.set_threads(nt);
+            return Err(EngineError::Runtime(err_msg));
         }
-        last_hidden = next_hidden;
-        for b in 0..b_dim {
-            if slots[b].active {
-                slots[b].pos += 1;
-                slots[b].sframe += 1;
+        std::mem::swap(&mut last_hidden, &mut next_hidden);
+        for slot in slots.iter_mut().take(b_dim) {
+            if let Some(st) = slot.active.as_mut() {
+                st.pos += 1;
+                st.sframe += 1;
             }
         }
     }
 
-    for b in 0..b_dim {
-        if slots[b].active {
-            if let Some(tag) = slots[b].tag.take() {
-                sink.on_done(tag, None, Some(EngineError::Aborted));
-            }
+    for slot in slots.iter_mut().take(b_dim) {
+        if let Some(st) = slot.take_active() {
+            sink.on_done(st.tag, None, Some(EngineError::Aborted));
         }
     }
 

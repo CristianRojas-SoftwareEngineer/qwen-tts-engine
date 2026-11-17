@@ -28,7 +28,11 @@ pub fn apply_gain(samples: &mut [f32], gain: f32) {
 
 /// Estiramiento temporal preservando el pitch mediante WSOLA (`--rate`).
 pub fn time_stretch(input: &[f32], rate: f32) -> Vec<f32> {
-    let rate = if rate <= 0.0 { 1.0 } else { rate };
+    let rate = if !rate.is_finite() || rate <= 0.0 {
+        1.0
+    } else {
+        rate.clamp(0.25, 4.0)
+    };
     let n_in = input.len();
     if (rate - 1.0).abs() < f32::EPSILON || n_in == 0 {
         return input.to_vec();
@@ -40,8 +44,8 @@ pub fn time_stretch(input: &[f32], rate: f32) -> Vec<f32> {
     let hs = n / 2;
     let tol = n / 4;
     let mut win = vec![0.0f32; n];
-    for i in 0..n {
-        win[i] = 0.5f32
+    for (i, w) in win.iter_mut().enumerate() {
+        *w = 0.5f32
             * (1.0f32 - (2.0f32 * std::f32::consts::PI * i as f32 / (n - 1) as f32).cos());
     }
     let cap = ((n_in as f64) / (rate as f64)) as usize + 2 * n + 16;
@@ -107,10 +111,11 @@ pub fn time_stretch(input: &[f32], rate: f32) -> Vec<f32> {
 
 pub fn encode_wav_bytes(samples: &[f32], sample_rate: u32) -> Vec<u8> {
     let n_samples = samples.len();
-    let data_size = (n_samples * 2) as u32;
-    let file_size = 36u32 + data_size;
-    let byte_rate = sample_rate * 2;
-    let mut out = Vec::with_capacity(44 + data_size as usize);
+    let data_bytes_usize = n_samples.saturating_mul(2);
+    let data_size = u32::try_from(data_bytes_usize).unwrap_or(u32::MAX);
+    let file_size = 36u32.saturating_add(data_size);
+    let byte_rate = sample_rate.saturating_mul(2);
+    let mut out = Vec::with_capacity(44 + data_bytes_usize);
     out.extend_from_slice(b"RIFF");
     out.extend_from_slice(&file_size.to_le_bytes());
     out.extend_from_slice(b"WAVEfmt ");
@@ -154,7 +159,7 @@ pub fn write_wav(path: &Path, samples: &[f32], sample_rate: u32) -> Result<(), E
     Ok(())
 }
 
-pub fn write_wav_header<W: Write>(w: &mut W, sample_rate: u32, data_bytes: u32) -> Result<(), EngineError> {
+fn write_wav_header<W: Write>(w: &mut W, sample_rate: u32, data_bytes: u32) -> Result<(), EngineError> {
     let file_size = 36u32.saturating_add(data_bytes);
     let byte_rate = sample_rate * 2;
     w.write_all(b"RIFF")?;
@@ -275,7 +280,7 @@ impl AudioSink for StdoutRawSink {
     }
 }
 
-pub fn first_onset(s: &[f32], sample_rate: usize) -> usize {
+fn first_onset(s: &[f32], sample_rate: usize) -> usize {
     let win = (sample_rate / 200).max(1);
     let floor_sq = (3.16e-3f64) * (3.16e-3f64);
     let mut i = 0;
@@ -516,21 +521,14 @@ pub fn read_wav_pcm(path: &Path) -> Result<(Vec<f32>, u32), EngineError> {
             sample_rate = u32::from_le_bytes([fmt_buf[4], fmt_buf[5], fmt_buf[6], fmt_buf[7]]);
             bits_per_sample = u16::from_le_bytes([fmt_buf[14], fmt_buf[15]]);
             got_fmt = true;
-            let extra = (chunk_size as usize) - 16;
+            let extra = (chunk_size as usize) - 16 + ((chunk_size & 1) as usize);
             if extra > 0 {
                 r.seek(SeekFrom::Current(extra as i64))?;
             }
         } else if &chunk_id == b"data" {
-            let mut buf = vec![0u8; chunk_size as usize];
-            let mut read_total = 0usize;
-            while read_total < buf.len() {
-                let n = r.read(&mut buf[read_total..])?;
-                if n == 0 {
-                    break;
-                }
-                read_total += n;
-            }
-            buf.truncate(read_total);
+            let mut buf = Vec::new();
+            let mut limited = (&mut r).take((chunk_size as u64).min(256 * 1024 * 1024));
+            limited.read_to_end(&mut buf)?;
             raw_data = Some(buf);
             break;
         } else {
@@ -550,7 +548,7 @@ pub fn read_wav_pcm(path: &Path) -> Result<(Vec<f32>, u32), EngineError> {
             path.display()
         )));
     }
-    if !got_fmt || num_channels == 0 {
+    if !got_fmt || num_channels == 0 || sample_rate == 0 {
         return Err(EngineError::InvalidArg(format!(
             "Error: missing or invalid fmt chunk in WAV file: {}",
             path.display()

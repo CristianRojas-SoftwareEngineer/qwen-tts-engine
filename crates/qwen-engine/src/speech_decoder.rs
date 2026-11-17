@@ -4,9 +4,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use qwen_core::config::{
-    CODEBOOK_DIM, CODEBOOK_SIZE, DEC_HEAD_DIM, DEC_HIDDEN_SIZE, DEC_INTERMEDIATE_SIZE,
-    DEC_LATENT_DIM, DEC_NUM_HEADS, DEC_NUM_LAYERS, DEC_RMS_NORM_EPS, DEC_SLIDING_WINDOW,
-    DEC_UPSAMPLE_CHANNELS, DEC_UPSAMPLE_RATES, NUM_CODEBOOKS,
+    CODEBOOK_DIM, CODEBOOK_SIZE, DEC_CODEBOOK_DIM, DEC_HEAD_DIM, DEC_HIDDEN_SIZE,
+    DEC_INTERMEDIATE_SIZE, DEC_LATENT_DIM, DEC_NUM_HEADS, DEC_NUM_LAYERS, DEC_RMS_NORM_EPS,
+    DEC_SLIDING_WINDOW, DEC_UPSAMPLE_CHANNELS, DEC_UPSAMPLE_RATES, NUM_CODEBOOKS,
 };
 use qwen_kernels::quant::erff;
 use qwen_kernels::{AlignedBuf, ComputeRuntime, Transpose};
@@ -18,7 +18,6 @@ use crate::model::{
 
 const SD_TILE_BYTES: usize = 256 * 1024;
 const SD_TILE_FROM_BLOCK: usize = 2;
-const VQ_HIDDEN: usize = 512;
 
 #[inline]
 fn conv1d_out_len(in_len: usize, kernel: usize, stride: usize, pad_left: usize) -> usize {
@@ -43,14 +42,19 @@ fn conv_add_bias(out: &mut [f32], bias: Option<&[f32]>, channels: usize, length:
     }
 }
 
+#[derive(Clone, Copy)]
+enum CausalConvWeight<'a> {
+    Pointwise(&'a [f32]),
+    Reordered(&'a [f32]),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn causal_conv1d(
     runtime: &ComputeRuntime,
     xp: &mut AlignedBuf<f32>,
     out: &mut [f32],
     input: &[f32],
-    weight: &[f32],
-    weight_k: Option<&[f32]>,
+    weight: CausalConvWeight<'_>,
     bias: Option<&[f32]>,
     in_ch: usize,
     out_ch: usize,
@@ -59,54 +63,57 @@ fn causal_conv1d(
     dilation: usize,
 ) {
     let blas = &runtime.blas;
-    if kernel == 1 {
-        blas.sgemm(
-            Transpose::NoTrans,
-            Transpose::NoTrans,
-            out_ch,
-            length,
-            in_ch,
-            1.0,
-            weight,
-            in_ch,
-            input,
-            length,
-            0.0,
-            out,
-            length,
-        );
-        conv_add_bias(out, bias, out_ch, length);
-        return;
+    match weight {
+        CausalConvWeight::Pointwise(w) => {
+            debug_assert_eq!(kernel, 1);
+            blas.sgemm(
+                Transpose::NoTrans,
+                Transpose::NoTrans,
+                out_ch,
+                length,
+                in_ch,
+                1.0,
+                w,
+                in_ch,
+                input,
+                length,
+                0.0,
+                out,
+                length,
+            );
+            conv_add_bias(out, bias, out_ch, length);
+        }
+        CausalConvWeight::Reordered(wk) => {
+            let pad_left = (kernel - 1) * dilation;
+            let ld = pad_left + length;
+            xp.resize_zeroed(in_ch * ld);
+            let xp_s = xp.as_mut_slice();
+            for ic in 0..in_ch {
+                let row_off = ic * ld;
+                xp_s[row_off..row_off + pad_left].fill(0.0);
+                xp_s[row_off + pad_left..row_off + pad_left + length]
+                    .copy_from_slice(&input[ic * length..(ic + 1) * length]);
+            }
+            for k in 0..kernel {
+                blas.sgemm(
+                    Transpose::NoTrans,
+                    Transpose::NoTrans,
+                    out_ch,
+                    length,
+                    in_ch,
+                    1.0,
+                    &wk[k * out_ch * in_ch..],
+                    in_ch,
+                    &xp_s[k * dilation..],
+                    ld,
+                    if k > 0 { 1.0 } else { 0.0 },
+                    out,
+                    length,
+                );
+            }
+            conv_add_bias(out, bias, out_ch, length);
+        }
     }
-    let wk = weight_k.expect("weight_k required for kernel > 1");
-    let pad_left = (kernel - 1) * dilation;
-    let ld = pad_left + length;
-    xp.resize_zeroed(in_ch * ld);
-    let xp_s = xp.as_mut_slice();
-    for ic in 0..in_ch {
-        let row_off = ic * ld;
-        xp_s[row_off..row_off + pad_left].fill(0.0);
-        xp_s[row_off + pad_left..row_off + pad_left + length]
-            .copy_from_slice(&input[ic * length..(ic + 1) * length]);
-    }
-    for k in 0..kernel {
-        blas.sgemm(
-            Transpose::NoTrans,
-            Transpose::NoTrans,
-            out_ch,
-            length,
-            in_ch,
-            1.0,
-            &wk[k * out_ch * in_ch..],
-            in_ch,
-            &xp_s[k * dilation..],
-            ld,
-            if k > 0 { 1.0 } else { 0.0 },
-            out,
-            length,
-        );
-    }
-    conv_add_bias(out, bias, out_ch, length);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -148,10 +155,10 @@ fn causal_conv_transpose1d(
         for oc in 0..out_ch {
             let src = &r[(oc * kernel + k) * in_len..(oc * kernel + k + 1) * in_len];
             let dst = &mut out[oc * out_len..(oc + 1) * out_len];
-            for t in 0..in_len {
+            for (t, &src_val) in src.iter().enumerate().take(in_len) {
                 let out_pos = t * stride + k;
                 if out_pos < out_len {
-                    dst[out_pos] += src[t];
+                    dst[out_pos] += src_val;
                 }
             }
         }
@@ -255,6 +262,19 @@ fn cur_slot_mut<'a>(
     }
 }
 
+#[inline]
+fn buf_pair_mut<'a>(
+    a: &'a mut AlignedBuf<f32>,
+    b: &'a mut AlignedBuf<f32>,
+    cur_slot: usize,
+) -> (&'a mut AlignedBuf<f32>, &'a mut AlignedBuf<f32>) {
+    if cur_slot == 0 {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
 fn conv_decoder_forward(
     runtime: &ComputeRuntime,
     sd: &SpeechDecoderWeights,
@@ -292,15 +312,15 @@ fn conv_decoder_forward(
             let w_c = &cn.dwconv_weight[c * 7..(c + 1) * 7];
             let src_c = &up_out[c * cur_len..(c + 1) * cur_len];
             let dst_c = &mut dw_out[c * cur_len..(c + 1) * cur_len];
-            for t in 0..cur_len {
+            for (t, dst_slot) in dst_c.iter_mut().enumerate().take(cur_len) {
                 let mut sum = bias;
-                for k in 0..7 {
+                for (k, &wk) in w_c.iter().enumerate().take(7) {
                     let in_pos = t as isize - 6 + k as isize;
                     if in_pos >= 0 && (in_pos as usize) < cur_len {
-                        sum += w_c[k] * src_c[in_pos as usize];
+                        sum += wk * src_c[in_pos as usize];
                     }
                 }
-                dst_c[t] = sum;
+                *dst_slot = sum;
             }
         }
         convnext_mlp(runtime, &mut ws.pw1, cn, dw_out, up_out, cur_ch, cur_len);
@@ -314,8 +334,7 @@ fn conv_decoder_forward(
         &mut ws.xp,
         &mut ws.b[..new_ch * new_len],
         &ws.a[..cur_ch * cur_len],
-        &sd.initial_conv_weight,
-        Some(&sd.initial_conv_wk),
+        CausalConvWeight::Reordered(&sd.initial_conv_wk),
         sd.initial_conv_bias.as_deref(),
         cur_ch,
         new_ch,
@@ -346,29 +365,14 @@ fn conv_decoder_forward(
         }
 
         let up_len = conv_transpose1d_out_len(cur_len, rate);
-        if ci == 0 {
-            ws.b.resize_zeroed(out_ch * up_len);
+        {
+            let (cur_buf, next_buf) = buf_pair_mut(&mut ws.a, &mut ws.b, ci);
+            next_buf.resize_zeroed(out_ch * up_len);
             causal_conv_transpose1d(
                 runtime,
                 &mut ws.ct,
-                &mut ws.b[..out_ch * up_len],
-                &ws.a[..cur_ch * cur_len],
-                &ub.conv_weight,
-                ub.conv_bias.as_deref(),
-                cur_ch,
-                out_ch,
-                cur_len,
-                up_len,
-                kernel,
-                rate,
-            );
-        } else {
-            ws.a.resize_zeroed(out_ch * up_len);
-            causal_conv_transpose1d(
-                runtime,
-                &mut ws.ct,
-                &mut ws.a[..out_ch * up_len],
-                &ws.b[..cur_ch * cur_len],
+                &mut next_buf[..out_ch * up_len],
+                &cur_buf[..cur_ch * cur_len],
                 &ub.conv_weight,
                 ub.conv_bias.as_deref(),
                 cur_ch,
@@ -404,96 +408,48 @@ fn conv_decoder_forward(
                 }
             }
 
-            if ci == 0 {
-                ws.b.resize_zeroed(n_el);
-                causal_conv1d(
-                    runtime,
-                    &mut ws.xp,
-                    &mut ws.b[..n_el],
-                    &ws.a[..n_el],
-                    &res_blk.conv1_weight,
-                    Some(&res_blk.conv1_wk),
-                    res_blk.conv1_bias.as_deref(),
-                    cur_ch,
-                    cur_ch,
-                    cur_len,
-                    7,
-                    dil,
-                );
-                if let (Some(a2), Some(b2)) =
-                    (res_blk.snake2_alpha.as_deref(), res_blk.snake2_beta.as_deref())
-                {
-                    runtime.dispatch.snake_activation(
-                        &runtime.sd_pool,
-                        &mut ws.b[..n_el],
-                        cur_ch,
-                        cur_len,
-                        a2,
-                        b2,
-                    );
-                }
-                causal_conv1d(
-                    runtime,
-                    &mut ws.xp,
-                    &mut ws.a[..n_el],
-                    &ws.b[..n_el],
-                    &res_blk.conv2_weight,
-                    None,
-                    res_blk.conv2_bias.as_deref(),
-                    cur_ch,
+            let (cur_buf, next_buf) = buf_pair_mut(&mut ws.a, &mut ws.b, ci);
+            next_buf.resize_zeroed(n_el);
+            causal_conv1d(
+                runtime,
+                &mut ws.xp,
+                &mut next_buf[..n_el],
+                &cur_buf[..n_el],
+                CausalConvWeight::Reordered(&res_blk.conv1_wk),
+                res_blk.conv1_bias.as_deref(),
+                cur_ch,
+                cur_ch,
+                cur_len,
+                7,
+                dil,
+            );
+            if let (Some(a2), Some(b2)) =
+                (res_blk.snake2_alpha.as_deref(), res_blk.snake2_beta.as_deref())
+            {
+                runtime.dispatch.snake_activation(
+                    &runtime.sd_pool,
+                    &mut next_buf[..n_el],
                     cur_ch,
                     cur_len,
-                    1,
-                    1,
+                    a2,
+                    b2,
                 );
-                for i in 0..n_el {
-                    ws.a[i] += ws.res[i];
-                }
-            } else {
-                ws.a.resize_zeroed(n_el);
-                causal_conv1d(
-                    runtime,
-                    &mut ws.xp,
-                    &mut ws.a[..n_el],
-                    &ws.b[..n_el],
-                    &res_blk.conv1_weight,
-                    Some(&res_blk.conv1_wk),
-                    res_blk.conv1_bias.as_deref(),
-                    cur_ch,
-                    cur_ch,
-                    cur_len,
-                    7,
-                    dil,
-                );
-                if let (Some(a2), Some(b2)) =
-                    (res_blk.snake2_alpha.as_deref(), res_blk.snake2_beta.as_deref())
-                {
-                    runtime.dispatch.snake_activation(
-                        &runtime.sd_pool,
-                        &mut ws.a[..n_el],
-                        cur_ch,
-                        cur_len,
-                        a2,
-                        b2,
-                    );
-                }
-                causal_conv1d(
-                    runtime,
-                    &mut ws.xp,
-                    &mut ws.b[..n_el],
-                    &ws.a[..n_el],
-                    &res_blk.conv2_weight,
-                    None,
-                    res_blk.conv2_bias.as_deref(),
-                    cur_ch,
-                    cur_ch,
-                    cur_len,
-                    1,
-                    1,
-                );
-                for i in 0..n_el {
-                    ws.b[i] += ws.res[i];
-                }
+            }
+            causal_conv1d(
+                runtime,
+                &mut ws.xp,
+                &mut cur_buf[..n_el],
+                &next_buf[..n_el],
+                CausalConvWeight::Pointwise(&res_blk.conv2_weight),
+                res_blk.conv2_bias.as_deref(),
+                cur_ch,
+                cur_ch,
+                cur_len,
+                1,
+                1,
+            );
+            for (dst, &res_v) in cur_buf[..n_el].iter_mut().zip(ws.res[..n_el].iter()) {
+                *dst += res_v;
             }
         }
     }
@@ -523,16 +479,49 @@ fn conv_decoder_forward(
         for ic in 0..cur_ch {
             let wc = &sd.final_conv_weight[ic * 7..(ic + 1) * 7];
             let xc = &cur[ic * cur_len..(ic + 1) * cur_len];
-            for k in 0..7 {
+            for (k, &wk) in wc.iter().enumerate().take(7) {
                 let in_pos = t as isize - (6 - k as isize);
                 if in_pos >= 0 && (in_pos as usize) < cur_len {
-                    sum += wc[k] * xc[in_pos as usize];
+                    sum += wk * xc[in_pos as usize];
                 }
             }
         }
         *out_s = sum.clamp(-1.0, 1.0);
     }
     audio
+}
+
+fn add_bias_rm(buf: &mut [f32], bias: Option<&[f32]>, n_frames: usize, dim: usize) {
+    let Some(b) = bias else {
+        return;
+    };
+    for f in 0..n_frames {
+        for o in 0..dim {
+            buf[f * dim + o] += b[o];
+        }
+    }
+}
+
+fn add_residual_scaled(
+    hidden: &mut [f32],
+    proj: &[f32],
+    layer_scale: Option<&[f32]>,
+    n_frames: usize,
+    dim: usize,
+) {
+    for s in 0..n_frames {
+        let hs = &mut hidden[s * dim..(s + 1) * dim];
+        let ps = &proj[s * dim..(s + 1) * dim];
+        if let Some(ls) = layer_scale {
+            for o in 0..dim {
+                hs[o] += ps[o] * ls[o];
+            }
+        } else {
+            for o in 0..dim {
+                hs[o] += ps[o];
+            }
+        }
+    }
 }
 
 pub fn speech_decoder_decode(
@@ -543,6 +532,15 @@ pub fn speech_decoder_decode(
 ) -> Result<Vec<f32>, EngineError> {
     if n_frames == 0 {
         return Ok(Vec::new());
+    }
+    if codes.len() < n_frames * NUM_CODEBOOKS {
+        return Err(EngineError::InvalidArg(format!(
+            "speech_decoder_decode: codes length {} < {} ({} frames * {})",
+            codes.len(),
+            n_frames * NUM_CODEBOOKS,
+            n_frames,
+            NUM_CODEBOOKS
+        )));
     }
     let blas = &runtime.blas;
     let d = runtime.dispatch;
@@ -567,12 +565,12 @@ pub fn speech_decoder_decode(
         }
     }
 
-    let mut vq_out = vec![0.0f32; n_frames * VQ_HIDDEN];
+    let mut vq_out = vec![0.0f32; n_frames * DEC_CODEBOOK_DIM];
     blas.sgemm(
         Transpose::NoTrans,
         Transpose::Trans,
         n_frames,
-        VQ_HIDDEN,
+        DEC_CODEBOOK_DIM,
         CODEBOOK_DIM,
         1.0,
         &emb_first,
@@ -581,13 +579,13 @@ pub fn speech_decoder_decode(
         CODEBOOK_DIM,
         0.0,
         &mut vq_out,
-        VQ_HIDDEN,
+        DEC_CODEBOOK_DIM,
     );
     blas.sgemm(
         Transpose::NoTrans,
         Transpose::Trans,
         n_frames,
-        VQ_HIDDEN,
+        DEC_CODEBOOK_DIM,
         CODEBOOK_DIM,
         1.0,
         &emb_rest,
@@ -596,13 +594,13 @@ pub fn speech_decoder_decode(
         CODEBOOK_DIM,
         1.0,
         &mut vq_out,
-        VQ_HIDDEN,
+        DEC_CODEBOOK_DIM,
     );
 
-    let mut vq_cf = vec![0.0f32; VQ_HIDDEN * n_frames];
+    let mut vq_cf = vec![0.0f32; DEC_CODEBOOK_DIM * n_frames];
     for f in 0..n_frames {
-        for dd in 0..VQ_HIDDEN {
-            vq_cf[dd * n_frames + f] = vq_out[f * VQ_HIDDEN + dd];
+        for dd in 0..DEC_CODEBOOK_DIM {
+            vq_cf[dd * n_frames + f] = vq_out[f * DEC_CODEBOOK_DIM + dd];
         }
     }
 
@@ -613,10 +611,9 @@ pub fn speech_decoder_decode(
         &mut ws.xp,
         &mut pre_conv_out,
         &vq_cf,
-        &sd.pre_conv_weight,
-        Some(&sd.pre_conv_wk),
+        CausalConvWeight::Reordered(&sd.pre_conv_wk),
         sd.pre_conv_bias.as_deref(),
-        VQ_HIDDEN,
+        DEC_CODEBOOK_DIM,
         DEC_LATENT_DIM,
         n_frames,
         3,
@@ -646,13 +643,7 @@ pub fn speech_decoder_decode(
         &mut hidden,
         DEC_HIDDEN_SIZE,
     );
-    if let Some(b) = sd.input_proj_bias.as_deref() {
-        for f in 0..n_frames {
-            for o in 0..DEC_HIDDEN_SIZE {
-                hidden[f * DEC_HIDDEN_SIZE + o] += b[o];
-            }
-        }
-    }
+    add_bias_rm(&mut hidden, sd.input_proj_bias.as_deref(), n_frames, DEC_HIDDEN_SIZE);
 
     let qkv_dim = DEC_NUM_HEADS * DEC_HEAD_DIM;
     let mut q = vec![0.0f32; n_frames * qkv_dim];
@@ -769,19 +760,13 @@ pub fn speech_decoder_decode(
             &mut x_norm,
             DEC_HIDDEN_SIZE,
         );
-        for s in 0..n_frames {
-            let hs = &mut hidden[s * DEC_HIDDEN_SIZE..(s + 1) * DEC_HIDDEN_SIZE];
-            let ps = &x_norm[s * DEC_HIDDEN_SIZE..(s + 1) * DEC_HIDDEN_SIZE];
-            if let Some(ls) = l.attn_layer_scale.as_deref() {
-                for o in 0..DEC_HIDDEN_SIZE {
-                    hs[o] += ps[o] * ls[o];
-                }
-            } else {
-                for o in 0..DEC_HIDDEN_SIZE {
-                    hs[o] += ps[o];
-                }
-            }
-        }
+        add_residual_scaled(
+            &mut hidden,
+            &x_norm,
+            l.attn_layer_scale.as_deref(),
+            n_frames,
+            DEC_HIDDEN_SIZE,
+        );
 
         d.rms_norm(
             &mut x_norm,
@@ -839,19 +824,13 @@ pub fn speech_decoder_decode(
             &mut ffn_down_out,
             DEC_HIDDEN_SIZE,
         );
-        for s in 0..n_frames {
-            let hs = &mut hidden[s * DEC_HIDDEN_SIZE..(s + 1) * DEC_HIDDEN_SIZE];
-            let ds = &ffn_down_out[s * DEC_HIDDEN_SIZE..(s + 1) * DEC_HIDDEN_SIZE];
-            if let Some(ls) = l.ffn_layer_scale.as_deref() {
-                for o in 0..DEC_HIDDEN_SIZE {
-                    hs[o] += ds[o] * ls[o];
-                }
-            } else {
-                for o in 0..DEC_HIDDEN_SIZE {
-                    hs[o] += ds[o];
-                }
-            }
-        }
+        add_residual_scaled(
+            &mut hidden,
+            &ffn_down_out,
+            l.ffn_layer_scale.as_deref(),
+            n_frames,
+            DEC_HIDDEN_SIZE,
+        );
     }
 
     if let Some(w) = sd.final_norm_weight.as_deref() {
@@ -882,13 +861,7 @@ pub fn speech_decoder_decode(
         &mut latent_out,
         DEC_LATENT_DIM,
     );
-    if let Some(b) = sd.output_proj_bias.as_deref() {
-        for f in 0..n_frames {
-            for o in 0..DEC_LATENT_DIM {
-                latent_out[f * DEC_LATENT_DIM + o] += b[o];
-            }
-        }
-    }
+    add_bias_rm(&mut latent_out, sd.output_proj_bias.as_deref(), n_frames, DEC_LATENT_DIM);
 
     ws.a.resize_zeroed(DEC_LATENT_DIM * n_frames);
     for f in 0..n_frames {
@@ -929,7 +902,6 @@ fn cs_conv1d(
     len: usize,
     kernel: usize,
     dilation: usize,
-    w: &[f32],
     wk: &[f32],
     b: Option<&[f32]>,
     tail: &mut [f32],
@@ -943,8 +915,7 @@ fn cs_conv1d(
             ws_xp,
             &mut out[..out_ch * len],
             input,
-            w,
-            Some(wk),
+            CausalConvWeight::Reordered(wk),
             b,
             in_ch,
             out_ch,
@@ -1056,18 +1027,18 @@ fn cs_dwconv(
         let dst = &mut out_s[c * len..(c + 1) * len];
         let bb = b.map_or(0.0, |bs| bs[c]);
         let wc = &w[c * 7..(c + 1) * 7];
-        for t in 0..len {
+        for (t, dst_slot) in dst.iter_mut().enumerate().take(len) {
             let mut sum = bb;
-            for k in 0..7 {
+            for (k, &wk) in wc.iter().enumerate().take(7) {
                 let p = t as isize - 6 + k as isize;
                 let v = if p >= 0 {
                     src[p as usize]
                 } else {
                     tl[(6 + p) as usize]
                 };
-                sum += wc[k] * v;
+                sum += wk * v;
             }
-            dst[t] = sum;
+            *dst_slot = sum;
         }
         if len >= 6 {
             tl.copy_from_slice(&src[len - 6..len]);
@@ -1145,7 +1116,6 @@ fn cs_res_tiled(
                 n,
                 7,
                 DILS[r],
-                &res_blk.conv1_weight,
                 &res_blk.conv1_wk,
                 res_blk.conv1_bias.as_deref(),
                 &mut st.cs_res_tail[b][r],
@@ -1168,8 +1138,7 @@ fn cs_res_tiled(
                 &mut ws.xp,
                 &mut ws.pw1[..cur_ch * n],
                 &free_buf[..cur_ch * n],
-                &res_blk.conv2_weight,
-                None,
+                CausalConvWeight::Pointwise(&res_blk.conv2_weight),
                 res_blk.conv2_bias.as_deref(),
                 cur_ch,
                 cur_ch,
@@ -1253,7 +1222,6 @@ fn conv_decoder_forward_streaming(
         cur_len,
         7,
         1,
-        &sd.initial_conv_weight,
         &sd.initial_conv_wk,
         sd.initial_conv_bias.as_deref(),
         &mut st.cs_init_tail,
@@ -1280,29 +1248,14 @@ fn conv_decoder_forward_streaming(
             );
         }
 
-        if ci == 0 {
+        {
+            let (cur_buf, next_buf) = buf_pair_mut(&mut ws.a, &mut ws.b, ci);
             cs_convt(
                 runtime,
                 &mut ws.full,
                 &mut ws.ct,
-                &mut ws.b,
-                &ws.a[..cur_ch * cur_len],
-                cur_ch,
-                out_ch,
-                cur_len,
-                kernel,
-                rate,
-                &ub.conv_weight,
-                ub.conv_bias.as_deref(),
-                Some(&mut st.cs_up_carry[b]),
-            );
-        } else {
-            cs_convt(
-                runtime,
-                &mut ws.full,
-                &mut ws.ct,
-                &mut ws.a,
-                &ws.b[..cur_ch * cur_len],
+                next_buf,
+                &cur_buf[..cur_ch * cur_len],
                 cur_ch,
                 out_ch,
                 cur_len,
@@ -1340,102 +1293,51 @@ fn conv_decoder_forward_streaming(
                         );
                     }
                 }
-                if ci == 0 {
-                    cs_conv1d(
-                        runtime,
-                        &mut ws.ext,
-                        &mut ws.xp,
-                        &mut ws.b,
-                        &ws.a[..n_el],
-                        cur_ch,
-                        cur_ch,
-                        cur_len,
-                        7,
-                        DILS[r],
-                        &res_blk.conv1_weight,
-                        &res_blk.conv1_wk,
-                        res_blk.conv1_bias.as_deref(),
-                        &mut st.cs_res_tail[b][r],
-                        st.cs_warm,
-                    );
-                    if let (Some(a2), Some(b2)) = (
-                        res_blk.snake2_alpha.as_deref(),
-                        res_blk.snake2_beta.as_deref(),
-                    ) {
-                        runtime.dispatch.snake_activation(
-                            &runtime.sd_pool,
-                            &mut ws.b[..n_el],
-                            cur_ch,
-                            cur_len,
-                            a2,
-                            b2,
-                        );
-                    }
-                    causal_conv1d(
-                        runtime,
-                        &mut ws.xp,
-                        &mut ws.a[..n_el],
-                        &ws.b[..n_el],
-                        &res_blk.conv2_weight,
-                        None,
-                        res_blk.conv2_bias.as_deref(),
-                        cur_ch,
+                let (cur_buf, next_buf) = buf_pair_mut(&mut ws.a, &mut ws.b, ci);
+                cs_conv1d(
+                    runtime,
+                    &mut ws.ext,
+                    &mut ws.xp,
+                    next_buf,
+                    &cur_buf[..n_el],
+                    cur_ch,
+                    cur_ch,
+                    cur_len,
+                    7,
+                    DILS[r],
+                    &res_blk.conv1_wk,
+                    res_blk.conv1_bias.as_deref(),
+                    &mut st.cs_res_tail[b][r],
+                    st.cs_warm,
+                );
+                if let (Some(a2), Some(b2)) = (
+                    res_blk.snake2_alpha.as_deref(),
+                    res_blk.snake2_beta.as_deref(),
+                ) {
+                    runtime.dispatch.snake_activation(
+                        &runtime.sd_pool,
+                        &mut next_buf[..n_el],
                         cur_ch,
                         cur_len,
-                        1,
-                        1,
+                        a2,
+                        b2,
                     );
-                    for i in 0..n_el {
-                        ws.a[i] += ws.res[i];
-                    }
-                } else {
-                    cs_conv1d(
-                        runtime,
-                        &mut ws.ext,
-                        &mut ws.xp,
-                        &mut ws.a,
-                        &ws.b[..n_el],
-                        cur_ch,
-                        cur_ch,
-                        cur_len,
-                        7,
-                        DILS[r],
-                        &res_blk.conv1_weight,
-                        &res_blk.conv1_wk,
-                        res_blk.conv1_bias.as_deref(),
-                        &mut st.cs_res_tail[b][r],
-                        st.cs_warm,
-                    );
-                    if let (Some(a2), Some(b2)) = (
-                        res_blk.snake2_alpha.as_deref(),
-                        res_blk.snake2_beta.as_deref(),
-                    ) {
-                        runtime.dispatch.snake_activation(
-                            &runtime.sd_pool,
-                            &mut ws.a[..n_el],
-                            cur_ch,
-                            cur_len,
-                            a2,
-                            b2,
-                        );
-                    }
-                    causal_conv1d(
-                        runtime,
-                        &mut ws.xp,
-                        &mut ws.b[..n_el],
-                        &ws.a[..n_el],
-                        &res_blk.conv2_weight,
-                        None,
-                        res_blk.conv2_bias.as_deref(),
-                        cur_ch,
-                        cur_ch,
-                        cur_len,
-                        1,
-                        1,
-                    );
-                    for i in 0..n_el {
-                        ws.b[i] += ws.res[i];
-                    }
+                }
+                causal_conv1d(
+                    runtime,
+                    &mut ws.xp,
+                    &mut cur_buf[..n_el],
+                    &next_buf[..n_el],
+                    CausalConvWeight::Pointwise(&res_blk.conv2_weight),
+                    res_blk.conv2_bias.as_deref(),
+                    cur_ch,
+                    cur_ch,
+                    cur_len,
+                    1,
+                    1,
+                );
+                for (dst, &res_v) in cur_buf[..n_el].iter_mut().zip(ws.res[..n_el].iter()) {
+                    *dst += res_v;
                 }
             }
         }
@@ -1467,14 +1369,14 @@ fn conv_decoder_forward_streaming(
         let tc = &tl[ic * 6..(ic + 1) * 6];
         for (t, out_s) in audio.iter_mut().enumerate() {
             let mut sum = 0.0f32;
-            for k in 0..7 {
+            for (k, &wk) in wc.iter().enumerate().take(7) {
                 let p = t as isize - 6 + k as isize;
                 let v = if p >= 0 {
                     src[p as usize]
                 } else {
                     tc[(6 + p) as usize]
                 };
-                sum += wc[k] * v;
+                sum += wk * v;
             }
             *out_s += sum;
         }
@@ -1515,24 +1417,33 @@ pub fn speech_decoder_decode_streaming(
     if new_frames == 0 {
         return Ok(Vec::new());
     }
+    if new_codes.len() < new_frames * NUM_CODEBOOKS {
+        return Err(EngineError::InvalidArg(format!(
+            "speech_decoder_decode_streaming: codes length {} < {} ({} frames * {})",
+            new_codes.len(),
+            new_frames * NUM_CODEBOOKS,
+            new_frames,
+            NUM_CODEBOOKS
+        )));
+    }
     let blas = &runtime.blas;
     let d = runtime.dispatch;
 
     // Paso 1: descuantización VQ por fotograma
-    if st.tmp_vq_out.len() < new_frames * VQ_HIDDEN {
-        st.tmp_vq_out.resize(new_frames * VQ_HIDDEN, 0.0);
+    if st.tmp_vq_out.len() < new_frames * DEC_CODEBOOK_DIM {
+        st.tmp_vq_out.resize(new_frames * DEC_CODEBOOK_DIM, 0.0);
     }
-    let vq_out = &mut st.tmp_vq_out[..new_frames * VQ_HIDDEN];
+    let vq_out = &mut st.tmp_vq_out[..new_frames * DEC_CODEBOOK_DIM];
     vq_out.fill(0.0);
     let mut cb_sum = [0.0f32; CODEBOOK_DIM];
     let rvq_first = sd.rvq_first_output_proj.as_slice();
     let rvq_rest = sd.rvq_rest_output_proj.as_slice();
     for f in 0..new_frames {
         let code0 = new_codes[f * NUM_CODEBOOKS];
-        let vq_row = &mut vq_out[f * VQ_HIDDEN..(f + 1) * VQ_HIDDEN];
+        let vq_row = &mut vq_out[f * DEC_CODEBOOK_DIM..(f + 1) * DEC_CODEBOOK_DIM];
         if code0 >= 0 && (code0 as usize) < CODEBOOK_SIZE {
             let emb = &sd.codebooks[0][(code0 as usize) * CODEBOOK_DIM..][..CODEBOOK_DIM];
-            d.f32_matvec_accum(vq_row, rvq_first, emb, VQ_HIDDEN, CODEBOOK_DIM);
+            d.f32_matvec_accum(vq_row, rvq_first, emb, DEC_CODEBOOK_DIM, CODEBOOK_DIM);
         }
         cb_sum.fill(0.0);
         for k in 1..NUM_CODEBOOKS {
@@ -1544,33 +1455,33 @@ pub fn speech_decoder_decode_streaming(
                 }
             }
         }
-        d.f32_matvec_accum(vq_row, rvq_rest, &cb_sum, VQ_HIDDEN, CODEBOOK_DIM);
+        d.f32_matvec_accum(vq_row, rvq_rest, &cb_sum, DEC_CODEBOOK_DIM, CODEBOOK_DIM);
     }
 
     // Paso 2: pre-conv con relleno izquierdo de 2 fotogramas del fragmento previo
     let pad_frames = if st.vq_pad_valid { 2 } else { 0 };
     let conv_in_len = pad_frames + new_frames;
-    if st.tmp_vq_cf.len() < VQ_HIDDEN * conv_in_len {
-        st.tmp_vq_cf.resize(VQ_HIDDEN * conv_in_len, 0.0);
+    if st.tmp_vq_cf.len() < DEC_CODEBOOK_DIM * conv_in_len {
+        st.tmp_vq_cf.resize(DEC_CODEBOOK_DIM * conv_in_len, 0.0);
     }
-    let vq_cf = &mut st.tmp_vq_cf[..VQ_HIDDEN * conv_in_len];
+    let vq_cf = &mut st.tmp_vq_cf[..DEC_CODEBOOK_DIM * conv_in_len];
     if st.vq_pad_valid && !st.vq_pad.is_empty() {
-        for ch in 0..VQ_HIDDEN {
+        for ch in 0..DEC_CODEBOOK_DIM {
             vq_cf[ch * conv_in_len] = st.vq_pad[ch * 2];
             vq_cf[ch * conv_in_len + 1] = st.vq_pad[ch * 2 + 1];
         }
     }
     for f in 0..new_frames {
-        for ch in 0..VQ_HIDDEN {
-            vq_cf[ch * conv_in_len + pad_frames + f] = vq_out[f * VQ_HIDDEN + ch];
+        for ch in 0..DEC_CODEBOOK_DIM {
+            vq_cf[ch * conv_in_len + pad_frames + f] = vq_out[f * DEC_CODEBOOK_DIM + ch];
         }
     }
-    if st.vq_pad.len() < VQ_HIDDEN * 2 {
-        st.vq_pad.resize(VQ_HIDDEN * 2, 0.0);
+    if st.vq_pad.len() < DEC_CODEBOOK_DIM * 2 {
+        st.vq_pad.resize(DEC_CODEBOOK_DIM * 2, 0.0);
     }
     let save_start = conv_in_len.saturating_sub(2);
     let save_count = conv_in_len.min(2);
-    for ch in 0..VQ_HIDDEN {
+    for ch in 0..DEC_CODEBOOK_DIM {
         for t in 0..save_count {
             st.vq_pad[ch * 2 + (2 - save_count + t)] = vq_cf[ch * conv_in_len + save_start + t];
         }
@@ -1591,10 +1502,9 @@ pub fn speech_decoder_decode_streaming(
         &mut ws.xp,
         pre_conv_out,
         vq_cf,
-        &sd.pre_conv_weight,
-        Some(&sd.pre_conv_wk),
+        CausalConvWeight::Reordered(&sd.pre_conv_wk),
         sd.pre_conv_bias.as_deref(),
-        VQ_HIDDEN,
+        DEC_CODEBOOK_DIM,
         DEC_LATENT_DIM,
         conv_in_len,
         3,
@@ -1630,13 +1540,7 @@ pub fn speech_decoder_decode_streaming(
         hidden,
         DEC_HIDDEN_SIZE,
     );
-    if let Some(b) = sd.input_proj_bias.as_deref() {
-        for f in 0..new_frames {
-            for o in 0..DEC_HIDDEN_SIZE {
-                hidden[f * DEC_HIDDEN_SIZE + o] += b[o];
-            }
-        }
-    }
+    add_bias_rm(hidden, sd.input_proj_bias.as_deref(), new_frames, DEC_HIDDEN_SIZE);
 
     // Paso 4: pre-transformer con KV cache compactable
     let qkv_dim = DEC_NUM_HEADS * DEC_HEAD_DIM;
@@ -1787,7 +1691,7 @@ pub fn speech_decoder_decode_streaming(
                 let qh = &q[sq * qkv_dim + h * DEC_HEAD_DIM..][..DEC_HEAD_DIM];
                 let oh = &mut out[h * DEC_HEAD_DIM..(h + 1) * DEC_HEAD_DIM];
                 let mut max_score = -1e30f32;
-                for j in 0..n_keys {
+                for (j, sc_slot) in scores[..n_keys].iter_mut().enumerate() {
                     let sk = sk_start + j;
                     let kh = &kc[(sk - st.kv_base) * qkv_dim + h * DEC_HEAD_DIM..][..DEC_HEAD_DIM];
                     let mut dot = 0.0f32;
@@ -1795,7 +1699,7 @@ pub fn speech_decoder_decode_streaming(
                         dot += qh[dd] * kh[dd];
                     }
                     let sc = dot * scale;
-                    scores[j] = sc;
+                    *sc_slot = sc;
                     if sc > max_score {
                         max_score = sc;
                     }
@@ -1807,10 +1711,10 @@ pub fn speech_decoder_decode_streaming(
                     sum_exp += e;
                 }
                 let inv_sum = 1.0f32 / sum_exp;
-                for j in 0..n_keys {
+                for (j, &sc) in scores[..n_keys].iter().enumerate() {
                     let sk = sk_start + j;
                     let vh = &vc[(sk - st.kv_base) * qkv_dim + h * DEC_HEAD_DIM..][..DEC_HEAD_DIM];
-                    let w = scores[j] * inv_sum;
+                    let w = sc * inv_sum;
                     for dd in 0..DEC_HEAD_DIM {
                         oh[dd] += vh[dd] * w;
                     }
@@ -1833,19 +1737,13 @@ pub fn speech_decoder_decode_streaming(
             x_norm,
             DEC_HIDDEN_SIZE,
         );
-        for s in 0..new_frames {
-            let hs = &mut hidden[s * DEC_HIDDEN_SIZE..(s + 1) * DEC_HIDDEN_SIZE];
-            let ps = &x_norm[s * DEC_HIDDEN_SIZE..(s + 1) * DEC_HIDDEN_SIZE];
-            if let Some(ls) = l.attn_layer_scale.as_deref() {
-                for o in 0..DEC_HIDDEN_SIZE {
-                    hs[o] += ps[o] * ls[o];
-                }
-            } else {
-                for o in 0..DEC_HIDDEN_SIZE {
-                    hs[o] += ps[o];
-                }
-            }
-        }
+        add_residual_scaled(
+            hidden,
+            x_norm,
+            l.attn_layer_scale.as_deref(),
+            new_frames,
+            DEC_HIDDEN_SIZE,
+        );
 
         d.rms_norm(
             x_norm,
@@ -1903,19 +1801,13 @@ pub fn speech_decoder_decode_streaming(
             ffn_down_out,
             DEC_HIDDEN_SIZE,
         );
-        for s in 0..new_frames {
-            let hs = &mut hidden[s * DEC_HIDDEN_SIZE..(s + 1) * DEC_HIDDEN_SIZE];
-            let ds = &ffn_down_out[s * DEC_HIDDEN_SIZE..(s + 1) * DEC_HIDDEN_SIZE];
-            if let Some(ls) = l.ffn_layer_scale.as_deref() {
-                for o in 0..DEC_HIDDEN_SIZE {
-                    hs[o] += ds[o] * ls[o];
-                }
-            } else {
-                for o in 0..DEC_HIDDEN_SIZE {
-                    hs[o] += ds[o];
-                }
-            }
-        }
+        add_residual_scaled(
+            hidden,
+            ffn_down_out,
+            l.ffn_layer_scale.as_deref(),
+            new_frames,
+            DEC_HIDDEN_SIZE,
+        );
     }
     st.kv_len += new_frames;
 
@@ -1960,13 +1852,7 @@ pub fn speech_decoder_decode_streaming(
         lat_dst,
         DEC_LATENT_DIM,
     );
-    if let Some(b) = sd.output_proj_bias.as_deref() {
-        for f in 0..new_frames {
-            for o in 0..DEC_LATENT_DIM {
-                lat_dst[f * DEC_LATENT_DIM + o] += b[o];
-            }
-        }
-    }
+    add_bias_rm(lat_dst, sd.output_proj_bias.as_deref(), new_frames, DEC_LATENT_DIM);
     st.latent_frames += new_frames;
 
     ws.a.resize_zeroed(DEC_LATENT_DIM * new_frames);
@@ -1978,7 +1864,5 @@ pub fn speech_decoder_decode_streaming(
     }
 
     let audio = conv_decoder_forward_streaming(runtime, sd, st, ws, new_frames);
-    st.frames_decoded += new_frames;
-    st.samples_produced += audio.len();
     Ok(audio)
 }

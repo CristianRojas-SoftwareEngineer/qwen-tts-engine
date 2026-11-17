@@ -11,7 +11,7 @@ use qwen_kernels::quant::quantize_bf16_to_q2_0;
 use qwen_kernels::ComputeRuntime;
 
 use crate::model::{
-    lookup_codec_embed, CpLayerWeights, CpLmHead, Model06B, QuantWeight, SessionScratch,
+    lookup_codec_embed, Model06B, QuantWeight, SessionScratch, TransformerLayerWeights,
     VoiceBindings,
 };
 
@@ -43,106 +43,6 @@ fn cp_mm2(
     match w {
         QuantWeight::Q4_0(q4) => d.matmat_q4_0(pool, y2, q4, x2, rows, cols, 2),
         QuantWeight::Int8 { data, scale } => d.matmat_int8(pool, y2, data, scale, x2, rows, cols, 2),
-    }
-}
-
-fn cp_dispatch_qkv(
-    runtime: &ComputeRuntime,
-    l: &CpLayerWeights,
-    x_norm: &[f32],
-    q: &mut [f32],
-    k: &mut [f32],
-    v: &mut [f32],
-) {
-    let d = runtime.dispatch;
-    let pool = &runtime.pool;
-    match (&l.wq_q, &l.wk_q, &l.wv_q) {
-        (Some(QuantWeight::Q4_0(wq)), Some(QuantWeight::Q4_0(wk)), Some(QuantWeight::Q4_0(wv))) => {
-            d.matvec_q4_0_qkv(
-                pool,
-                q,
-                k,
-                v,
-                wq,
-                wk,
-                wv,
-                x_norm,
-                CP_HIDDEN_SIZE,
-                CP_Q_DIM,
-                CP_KV_DIM,
-            );
-        }
-        (
-            Some(QuantWeight::Int8 { data: wq, scale: sq }),
-            Some(QuantWeight::Int8 { data: wk, scale: sk }),
-            Some(QuantWeight::Int8 { data: wv, scale: sv }),
-        ) => {
-            d.matvec_int8_qkv(
-                pool,
-                q,
-                k,
-                v,
-                wq,
-                sq,
-                wk,
-                sk,
-                wv,
-                sv,
-                x_norm,
-                CP_HIDDEN_SIZE,
-                CP_Q_DIM,
-                CP_KV_DIM,
-            );
-        }
-        _ => {
-            d.matvec_bf16_qkv(
-                pool,
-                q,
-                k,
-                v,
-                &l.wq_bf16,
-                &l.wk_bf16,
-                &l.wv_bf16,
-                x_norm,
-                CP_HIDDEN_SIZE,
-                CP_Q_DIM,
-                CP_KV_DIM,
-            );
-        }
-    }
-}
-
-fn cp_dispatch_proj(
-    runtime: &ComputeRuntime,
-    q_w: Option<&QuantWeight>,
-    bf16_w: &[u16],
-    x: &[f32],
-    y: &mut [f32],
-    rows: usize,
-    cols: usize,
-) {
-    let d = runtime.dispatch;
-    let pool = &runtime.pool;
-    match q_w {
-        Some(QuantWeight::Q4_0(w)) => d.matvec_q4_0(pool, y, w, x, rows, cols),
-        Some(QuantWeight::Int8 { data, scale }) => {
-            d.matvec_int8(pool, y, data, scale, x, rows, cols)
-        }
-        None => d.matvec_bf16(pool, y, bf16_w, x, rows, cols),
-    }
-}
-
-fn cp_lm_argmax(runtime: &ComputeRuntime, head: &CpLmHead, normed: &[f32]) -> usize {
-    let d = runtime.dispatch;
-    let pool = &runtime.pool;
-    match &head.quant {
-        Some(QuantWeight::Q4_0(w)) => {
-            d.argmax_matvec_q4_0(pool, normed, w, CP_HIDDEN_SIZE, CODEBOOK_SIZE)
-        }
-        Some(QuantWeight::Int8 { data, scale }) => {
-            d.argmax_matvec_int8(pool, normed, data, scale, CP_HIDDEN_SIZE, CODEBOOK_SIZE)
-        }
-        None => d.argmax_matvec_bf16(normed, &head.bf16, CP_HIDDEN_SIZE, CODEBOOK_SIZE),
     }
 }
 
@@ -313,7 +213,6 @@ fn cp_transformer_step(
     let eps = model.config.rms_norm_eps;
     let attn_scale = 1.0f32 / (CP_HEAD_DIM as f32).sqrt();
     let d = runtime.dispatch;
-    let pool = &runtime.pool;
     let kv_max = scratch.cp_kv.max_pos;
 
     let cb = &mut scratch.cp_bufs;
@@ -334,13 +233,15 @@ fn cp_transformer_step(
     for layer_idx in 0..CP_NUM_LAYERS {
         let l = &model.cp.layers[layer_idx];
 
-        cp_dispatch_qkv(
+        l.dispatch_qkv(
             runtime,
-            l,
             x_norm,
             &mut cb.dec_q,
             &mut cb.dec_k,
             &mut cb.dec_v,
+            CP_HIDDEN_SIZE,
+            CP_Q_DIM,
+            CP_KV_DIM,
         );
 
         d.rms_norm_per_head(&mut cb.dec_q, &l.q_norm, 1, CP_NUM_HEADS, CP_HEAD_DIM, eps);
@@ -384,7 +285,7 @@ fn cp_transformer_step(
             pos,
         );
 
-        cp_dispatch_proj(
+        TransformerLayerWeights::dispatch_proj(
             runtime,
             l.wo_q.as_ref(),
             &l.wo_bf16,
@@ -403,42 +304,20 @@ fn cp_transformer_step(
             eps,
         );
 
-        match &l.gate_up_q {
-            Some(QuantWeight::Q4_0(w)) => d.matvec_q4_0(
-                pool,
-                &mut cb.dec_gate,
-                w,
-                x_norm,
-                2 * CP_INTERMEDIATE_SIZE,
-                CP_HIDDEN_SIZE,
-            ),
-            Some(QuantWeight::Int8 { data, scale }) => d.matvec_int8(
-                pool,
-                &mut cb.dec_gate,
-                data,
-                scale,
-                x_norm,
-                2 * CP_INTERMEDIATE_SIZE,
-                CP_HIDDEN_SIZE,
-            ),
-            None => {
-                let gu = l
-                    .gate_up_fused_bf16
-                    .as_deref()
-                    .expect("CP gate_up_fused_bf16 present in BF16 mode");
-                d.matvec_bf16(
-                    pool,
-                    &mut cb.dec_gate,
-                    gu,
-                    x_norm,
-                    2 * CP_INTERMEDIATE_SIZE,
-                    CP_HIDDEN_SIZE,
-                );
-            }
+        if l.dispatch_gate_up(
+            runtime,
+            x_norm,
+            &mut cb.dec_gate,
+            CP_INTERMEDIATE_SIZE,
+            CP_HIDDEN_SIZE,
+        )
+        .is_err()
+        {
+            unreachable!("CP gate_up_fused_bf16 must exist in BF16 mode");
         }
         d.swiglu_inplace(&mut cb.dec_gate, swiglu_tmp, CP_INTERMEDIATE_SIZE);
 
-        cp_dispatch_proj(
+        TransformerLayerWeights::dispatch_proj(
             runtime,
             l.down_q.as_ref(),
             &l.down_bf16,
@@ -482,6 +361,7 @@ fn cp_transformer_step(
 
 /// Predice los 15 codebooks acústicos (`out_codes[0..15]`) en el Code Predictor de 5 capas
 /// a partir de `talker_hidden` y `code0` (usando `cp_prefill2` cuando las capas están cuantizadas).
+#[allow(clippy::too_many_arguments)]
 pub fn cp_predict(
     runtime: &ComputeRuntime,
     model: &Model06B,
@@ -536,7 +416,7 @@ pub fn cp_predict(
         CP_HIDDEN_SIZE,
         eps,
     );
-    out_codes[0] = cp_lm_argmax(runtime, &model.cp.lm_heads[0], &normed) as i32;
+    out_codes[0] = model.cp.lm_heads[0].argmax(runtime, &normed) as i32;
 
     for g in 1..15 {
         let prev_code = out_codes[g - 1];
@@ -557,6 +437,6 @@ pub fn cp_predict(
             CP_HIDDEN_SIZE,
             eps,
         );
-        out_codes[g] = cp_lm_argmax(runtime, &model.cp.lm_heads[g], &normed) as i32;
+        out_codes[g] = model.cp.lm_heads[g].argmax(runtime, &normed) as i32;
     }
 }

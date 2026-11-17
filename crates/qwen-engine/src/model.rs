@@ -37,14 +37,7 @@ pub const SD_ROPE_MAX_POS: usize = 8000;
 pub const EMB_CACHE_CAPACITY: usize = 2048;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum TalkerPrecision {
-    Bf16,
-    Int8,
-    Int4,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum CpPrecision {
+enum LayerQuantScheme {
     Bf16,
     Int8,
     Int4,
@@ -55,7 +48,6 @@ pub enum CpPrecision {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ModelLoadOptions {
     pub silent: bool,
-    pub debug: bool,
     pub use_int8: bool,
     pub use_int4: bool,
     pub quant_mixed: bool,
@@ -117,7 +109,8 @@ pub enum QuantWeight {
     Q4_0(AlignedBuf<Q4_0Block>),
 }
 
-pub struct TalkerLayerWeights {
+/// Pesos de una capa Transformer estándar (atención GQA + MLP SwiGLU), compartida entre Talker y Code Predictor.
+pub struct TransformerLayerWeights {
     pub wq_bf16: Bf16Weight,
     pub wk_bf16: Bf16Weight,
     pub wv_bf16: Bf16Weight,
@@ -129,7 +122,7 @@ pub struct TalkerLayerWeights {
     pub gate_bf16: Bf16Weight,
     pub up_bf16: Bf16Weight,
     pub down_bf16: Bf16Weight,
-    /// Matriz intercalada `[2*inter, hidden]`; solo presente cuando el Talker corre en BF16.
+    /// Matriz intercalada `[2*inter, hidden]`; solo presente cuando la capa corre en BF16.
     pub gate_up_fused_bf16: Option<AlignedBuf<u16>>,
     pub wq_q: Option<QuantWeight>,
     pub wk_q: Option<QuantWeight>,
@@ -137,6 +130,245 @@ pub struct TalkerLayerWeights {
     pub wo_q: Option<QuantWeight>,
     pub gate_up_q: Option<QuantWeight>,
     pub down_q: Option<QuantWeight>,
+}
+
+impl TransformerLayerWeights {
+    #[inline]
+    pub fn all_quantized(&self) -> bool {
+        self.wq_q.is_some()
+            && self.wk_q.is_some()
+            && self.wv_q.is_some()
+            && self.wo_q.is_some()
+            && self.gate_up_q.is_some()
+            && self.down_q.is_some()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn dispatch_qkv(
+        &self,
+        runtime: &ComputeRuntime,
+        x_norm: &[f32],
+        q: &mut [f32],
+        k: &mut [f32],
+        v: &mut [f32],
+        hidden: usize,
+        q_dim: usize,
+        kv_dim: usize,
+    ) {
+        let d = runtime.dispatch;
+        let pool = &runtime.pool;
+        match (&self.wq_q, &self.wk_q, &self.wv_q) {
+            (Some(QuantWeight::Q4_0(wq)), Some(QuantWeight::Q4_0(wk)), Some(QuantWeight::Q4_0(wv))) => {
+                d.matvec_q4_0_qkv(pool, q, k, v, wq, wk, wv, x_norm, hidden, q_dim, kv_dim);
+            }
+            (
+                Some(QuantWeight::Int8 { data: wq, scale: sq }),
+                Some(QuantWeight::Int8 { data: wk, scale: sk }),
+                Some(QuantWeight::Int8 { data: wv, scale: sv }),
+            ) => {
+                d.matvec_int8_qkv(
+                    pool, q, k, v, wq, sq, wk, sk, wv, sv, x_norm, hidden, q_dim, kv_dim,
+                );
+            }
+            _ => {
+                d.matvec_bf16_qkv(
+                    pool,
+                    q,
+                    k,
+                    v,
+                    &self.wq_bf16,
+                    &self.wk_bf16,
+                    &self.wv_bf16,
+                    x_norm,
+                    hidden,
+                    q_dim,
+                    kv_dim,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn dispatch_proj(
+        runtime: &ComputeRuntime,
+        q_weight: Option<&QuantWeight>,
+        bf16_weight: &[u16],
+        x: &[f32],
+        y: &mut [f32],
+        rows: usize,
+        cols: usize,
+    ) {
+        let d = runtime.dispatch;
+        let pool = &runtime.pool;
+        match q_weight {
+            Some(QuantWeight::Q4_0(w)) => d.matvec_q4_0(pool, y, w, x, rows, cols),
+            Some(QuantWeight::Int8 { data, scale }) => {
+                d.matvec_int8(pool, y, data, scale, x, rows, cols);
+            }
+            None => d.matvec_bf16(pool, y, bf16_weight, x, rows, cols),
+        }
+    }
+
+    pub(crate) fn dispatch_gate_up(
+        &self,
+        runtime: &ComputeRuntime,
+        x_norm: &[f32],
+        gate_out: &mut [f32],
+        inter: usize,
+        hidden: usize,
+    ) -> Result<(), EngineError> {
+        let d = runtime.dispatch;
+        let pool = &runtime.pool;
+        match &self.gate_up_q {
+            Some(QuantWeight::Q4_0(w)) => {
+                d.matvec_q4_0(pool, gate_out, w, x_norm, 2 * inter, hidden);
+            }
+            Some(QuantWeight::Int8 { data, scale }) => {
+                d.matvec_int8(pool, gate_out, data, scale, x_norm, 2 * inter, hidden);
+            }
+            None => {
+                let gu = self.gate_up_fused_bf16.as_deref().ok_or_else(|| {
+                    EngineError::Model("Missing gate_up_fused_bf16 in BF16 layer".to_string())
+                })?;
+                d.matvec_bf16(pool, gate_out, gu, x_norm, 2 * inter, hidden);
+            }
+        }
+        Ok(())
+    }
+
+    fn load(
+        store: &MmapStore,
+        prefix: &str,
+        hidden: usize,
+        q_dim: usize,
+        kv_dim: usize,
+        inter: usize,
+        scheme: LayerQuantScheme,
+    ) -> Result<Self, EngineError> {
+        let wq_bf16 = req_bf16(store, &format!("{prefix}.self_attn.q_proj.weight"))?;
+        let wk_bf16 = req_bf16(store, &format!("{prefix}.self_attn.k_proj.weight"))?;
+        let wv_bf16 = req_bf16(store, &format!("{prefix}.self_attn.v_proj.weight"))?;
+        let wo_bf16 = req_bf16(store, &format!("{prefix}.self_attn.o_proj.weight"))?;
+        let q_norm = req_f32_w(store, &format!("{prefix}.self_attn.q_norm.weight"))?;
+        let k_norm = req_f32_w(store, &format!("{prefix}.self_attn.k_norm.weight"))?;
+        let input_norm = req_f32_w(store, &format!("{prefix}.input_layernorm.weight"))?;
+        let post_attn_norm = req_f32_w(store, &format!("{prefix}.post_attention_layernorm.weight"))?;
+        let gate_bf16 = req_bf16(store, &format!("{prefix}.mlp.gate_proj.weight"))?;
+        let up_bf16 = req_bf16(store, &format!("{prefix}.mlp.up_proj.weight"))?;
+        let down_bf16 = req_bf16(store, &format!("{prefix}.mlp.down_proj.weight"))?;
+
+        let gate_up_fused_bf16 = if scheme == LayerQuantScheme::Bf16 {
+            let mut fused = AlignedBuf::new_zeroed(2 * inter * hidden);
+            interleave_gate_up_bf16(&mut fused, &gate_bf16, &up_bf16, inter, hidden);
+            Some(fused)
+        } else {
+            None
+        };
+
+        let (wq_q, wk_q, wv_q, wo_q, gate_up_q, down_q) = match scheme {
+            LayerQuantScheme::Bf16 => (None, None, None, None, None, None),
+            LayerQuantScheme::Int8 => {
+                let (gu_d, gu_s) = quantize_gate_up_int8(&gate_bf16, &up_bf16, inter, hidden);
+                (
+                    Some(quantize_matrix_int8(&wq_bf16, q_dim, hidden)),
+                    Some(quantize_matrix_int8(&wk_bf16, kv_dim, hidden)),
+                    Some(quantize_matrix_int8(&wv_bf16, kv_dim, hidden)),
+                    Some(quantize_matrix_int8(&wo_bf16, hidden, q_dim)),
+                    Some(QuantWeight::Int8 {
+                        data: gu_d,
+                        scale: gu_s,
+                    }),
+                    Some(quantize_matrix_int8(&down_bf16, hidden, inter)),
+                )
+            }
+            LayerQuantScheme::Int4 => {
+                let gu_q4 = quantize_gate_up_q4_0(&gate_bf16, &up_bf16, inter, hidden);
+                (
+                    Some(quantize_matrix_q4(&wq_bf16, q_dim, hidden)),
+                    Some(quantize_matrix_q4(&wk_bf16, kv_dim, hidden)),
+                    Some(quantize_matrix_q4(&wv_bf16, kv_dim, hidden)),
+                    Some(quantize_matrix_q4(&wo_bf16, hidden, q_dim)),
+                    Some(QuantWeight::Q4_0(gu_q4)),
+                    Some(quantize_matrix_q4(&down_bf16, hidden, inter)),
+                )
+            }
+            LayerQuantScheme::Mixed => {
+                let gu_q4 = quantize_gate_up_q4_0(&gate_bf16, &up_bf16, inter, hidden);
+                (
+                    Some(quantize_matrix_int8(&wq_bf16, q_dim, hidden)),
+                    Some(quantize_matrix_int8(&wk_bf16, kv_dim, hidden)),
+                    Some(quantize_matrix_int8(&wv_bf16, kv_dim, hidden)),
+                    Some(quantize_matrix_int8(&wo_bf16, hidden, q_dim)),
+                    Some(QuantWeight::Q4_0(gu_q4)),
+                    Some(quantize_matrix_q4(&down_bf16, hidden, inter)),
+                )
+            }
+        };
+
+        Ok(Self {
+            wq_bf16,
+            wk_bf16,
+            wv_bf16,
+            wo_bf16,
+            q_norm,
+            k_norm,
+            input_norm,
+            post_attn_norm,
+            gate_bf16,
+            up_bf16,
+            down_bf16,
+            gate_up_fused_bf16,
+            wq_q,
+            wk_q,
+            wv_q,
+            wo_q,
+            gate_up_q,
+            down_q,
+        })
+    }
+
+    fn match_wdelta_slot(
+        &mut self,
+        suffix: &str,
+    ) -> (Option<&mut Bf16Weight>, Option<&mut F32Weight>) {
+        match suffix {
+            "self_attn.q_proj.weight" => (Some(&mut self.wq_bf16), None),
+            "self_attn.k_proj.weight" => (Some(&mut self.wk_bf16), None),
+            "self_attn.v_proj.weight" => (Some(&mut self.wv_bf16), None),
+            "self_attn.o_proj.weight" => (Some(&mut self.wo_bf16), None),
+            "self_attn.q_norm.weight" => (None, Some(&mut self.q_norm)),
+            "self_attn.k_norm.weight" => (None, Some(&mut self.k_norm)),
+            "input_layernorm.weight" => (None, Some(&mut self.input_norm)),
+            "post_attention_layernorm.weight" => (None, Some(&mut self.post_attn_norm)),
+            "mlp.gate_proj.weight" => (Some(&mut self.gate_bf16), None),
+            "mlp.up_proj.weight" => (Some(&mut self.up_bf16), None),
+            "mlp.down_proj.weight" => (Some(&mut self.down_bf16), None),
+            _ => (None, None),
+        }
+    }
+
+    fn refresh_derived_weights(
+        &mut self,
+        hidden: usize,
+        q_dim: usize,
+        kv_dim: usize,
+        inter: usize,
+    ) {
+        if let Some(ref mut fused) = self.gate_up_fused_bf16 {
+            interleave_gate_up_bf16(fused, &self.gate_bf16, &self.up_bf16, inter, hidden);
+        }
+        if matches!(self.wq_q, Some(QuantWeight::Int8 { .. })) {
+            let (gu_d, gu_s) = quantize_gate_up_int8(&self.gate_bf16, &self.up_bf16, inter, hidden);
+            self.wq_q = Some(quantize_matrix_int8(&self.wq_bf16, q_dim, hidden));
+            self.wk_q = Some(quantize_matrix_int8(&self.wk_bf16, kv_dim, hidden));
+            self.wv_q = Some(quantize_matrix_int8(&self.wv_bf16, kv_dim, hidden));
+            self.wo_q = Some(quantize_matrix_int8(&self.wo_bf16, hidden, q_dim));
+            self.gate_up_q = Some(QuantWeight::Int8 {
+                data: gu_d,
+                scale: gu_s,
+            });
+            self.down_q = Some(quantize_matrix_int8(&self.down_bf16, hidden, inter));
+        }
+    }
 }
 
 pub struct TalkerWeights {
@@ -148,44 +380,9 @@ pub struct TalkerWeights {
     pub codec_embedding_bf16: Bf16Weight,
     pub codec_head_bf16: Bf16Weight,
     pub norm: F32Weight,
-    pub layers: Vec<TalkerLayerWeights>,
+    pub layers: Vec<TransformerLayerWeights>,
     pub rope_cos: AlignedBuf<f32>,
     pub rope_sin: AlignedBuf<f32>,
-    pub precision: TalkerPrecision,
-}
-
-pub struct CpLayerWeights {
-    pub wq_bf16: Bf16Weight,
-    pub wk_bf16: Bf16Weight,
-    pub wv_bf16: Bf16Weight,
-    pub wo_bf16: Bf16Weight,
-    pub q_norm: F32Weight,
-    pub k_norm: F32Weight,
-    pub input_norm: F32Weight,
-    pub post_attn_norm: F32Weight,
-    pub gate_bf16: Bf16Weight,
-    pub up_bf16: Bf16Weight,
-    pub down_bf16: Bf16Weight,
-    /// Matriz intercalada `[2*cp_inter, cp_hidden]`; solo presente cuando el Code Predictor corre en BF16.
-    pub gate_up_fused_bf16: Option<AlignedBuf<u16>>,
-    pub wq_q: Option<QuantWeight>,
-    pub wk_q: Option<QuantWeight>,
-    pub wv_q: Option<QuantWeight>,
-    pub wo_q: Option<QuantWeight>,
-    pub gate_up_q: Option<QuantWeight>,
-    pub down_q: Option<QuantWeight>,
-}
-
-impl CpLayerWeights {
-    #[inline]
-    pub fn all_quantized(&self) -> bool {
-        self.wq_q.is_some()
-            && self.wk_q.is_some()
-            && self.wv_q.is_some()
-            && self.wo_q.is_some()
-            && self.gate_up_q.is_some()
-            && self.down_q.is_some()
-    }
 }
 
 pub struct CpLmHead {
@@ -193,14 +390,30 @@ pub struct CpLmHead {
     pub quant: Option<QuantWeight>,
 }
 
+impl CpLmHead {
+    #[inline]
+    pub fn argmax(&self, runtime: &ComputeRuntime, normed: &[f32]) -> usize {
+        let d = runtime.dispatch;
+        let pool = &runtime.pool;
+        match &self.quant {
+            Some(QuantWeight::Q4_0(w)) => {
+                d.argmax_matvec_q4_0(pool, normed, w, CP_HIDDEN_SIZE, CODEBOOK_SIZE)
+            }
+            Some(QuantWeight::Int8 { data, scale }) => {
+                d.argmax_matvec_int8(pool, normed, data, scale, CP_HIDDEN_SIZE, CODEBOOK_SIZE)
+            }
+            None => d.argmax_matvec_bf16(normed, &self.bf16, CP_HIDDEN_SIZE, CODEBOOK_SIZE),
+        }
+    }
+}
+
 pub struct CodePredictorWeights {
     pub norm: F32Weight,
-    pub layers: Vec<CpLayerWeights>,
+    pub layers: Vec<TransformerLayerWeights>,
     pub codec_emb_bf16: Vec<Bf16Weight>,
     pub lm_heads: Vec<CpLmHead>,
     pub rope_cos: AlignedBuf<f32>,
     pub rope_sin: AlignedBuf<f32>,
-    pub precision: CpPrecision,
     pub all_quantized: bool,
 }
 
@@ -275,7 +488,6 @@ pub struct SdConvNeXtWeights {
 pub struct SdResBlockWeights {
     pub snake1_alpha: Option<F32Ref>,
     pub snake1_beta: Option<F32Ref>,
-    pub conv1_weight: F32Ref,
     pub conv1_bias: Option<F32Ref>,
     pub conv1_wk: AlignedBuf<f32>,
     pub snake2_alpha: Option<F32Ref>,
@@ -296,7 +508,6 @@ pub struct SpeechDecoderWeights {
     pub codebooks: Arc<[AlignedBuf<f32>; NUM_CODEBOOKS]>,
     pub rvq_first_output_proj: F32Ref,
     pub rvq_rest_output_proj: F32Ref,
-    pub pre_conv_weight: F32Ref,
     pub pre_conv_bias: Option<F32Ref>,
     pub pre_conv_wk: AlignedBuf<f32>,
     pub input_proj_weight: F32Ref,
@@ -308,7 +519,6 @@ pub struct SpeechDecoderWeights {
     pub rope_cos: AlignedBuf<f32>,
     pub rope_sin: AlignedBuf<f32>,
     pub convnext: [SdConvNeXtWeights; 2],
-    pub initial_conv_weight: F32Ref,
     pub initial_conv_bias: Option<F32Ref>,
     pub initial_conv_wk: AlignedBuf<f32>,
     pub upsample_blocks: [SdUpsampleBlockWeights; 4],
@@ -402,9 +612,15 @@ impl TalkerKvCache {
         if required <= self.max_pos {
             return;
         }
-        let mut new_max = self.max_pos;
+        let mut new_max = self.max_pos.max(1);
         while new_max < required {
-            new_max *= 2;
+            new_max = new_max
+                .checked_mul(2)
+                .unwrap_or(required)
+                .min(ROPE_MAX_POS.max(required));
+            if new_max >= required {
+                break;
+            }
         }
         let total = NUM_LAYERS * new_max * KV_DIM;
         let mut new_k = AlignedBuf::new_zeroed(total);
@@ -662,8 +878,6 @@ pub struct SdStreamState {
     pub cs_alloc: bool,
     pub cs_warm: bool,
     pub cs_tile: bool,
-    pub frames_decoded: usize,
-    pub samples_produced: usize,
     // Buffers scratch reutilizables por fragmento (cero asignaciones de heap durante streaming)
     pub tmp_vq_out: Vec<f32>,
     pub tmp_vq_cf: Vec<f32>,
@@ -705,8 +919,6 @@ impl SdStreamState {
             cs_alloc: false,
             cs_warm: false,
             cs_tile: false,
-            frames_decoded: 0,
-            samples_produced: 0,
             tmp_vq_out: Vec::new(),
             tmp_vq_cf: Vec::new(),
             tmp_pre_conv_out: Vec::new(),
@@ -732,8 +944,6 @@ impl SdStreamState {
         self.vq_pad_valid = false;
         self.cs_warm = false;
         self.cs_tile = false;
-        self.frames_decoded = 0;
-        self.samples_produced = 0;
         if self.cs_alloc {
             for t in &mut self.cs_cn_dw_tail {
                 t.fill_zero();
@@ -765,9 +975,9 @@ impl SdStreamState {
         self.cs_final_tail = AlignedBuf::new_zeroed(96 * 6);
         for b in 0..4 {
             self.cs_up_carry[b] = AlignedBuf::new_zeroed(DEC_UPSAMPLE_CHANNELS[b] * UP_RATE[b]);
-            for r in 0..3 {
+            for (r, &dil) in DILS.iter().enumerate() {
                 self.cs_res_tail[b][r] =
-                    AlignedBuf::new_zeroed(DEC_UPSAMPLE_CHANNELS[b] * 6 * DILS[r]);
+                    AlignedBuf::new_zeroed(DEC_UPSAMPLE_CHANNELS[b] * 6 * dil);
             }
         }
         self.cs_alloc = true;
@@ -1059,6 +1269,42 @@ fn conv_reorder_weight(
     wr
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_text_proj_token(
+    dispatch: &KernelDispatch,
+    pool: &qwen_kernels::ComputePool,
+    text_embedding_bf16: &[u16],
+    fc1_w: &[u16],
+    fc1_b: Option<&[f32]>,
+    fc2_w: &[u16],
+    fc2_b: Option<&[f32]>,
+    tid: i32,
+    tmp1: &mut [f32],
+    tmp2: &mut [f32],
+    out: &mut [f32],
+) {
+    let th = TEXT_HIDDEN_SIZE;
+    let h = HIDDEN_SIZE;
+    let idx = tid.max(0) as usize;
+    let emb_row = &text_embedding_bf16[idx * th..(idx + 1) * th];
+    dispatch.bf16_to_f32_vec(&mut tmp1[..th], emb_row);
+
+    dispatch.matvec_bf16(pool, &mut tmp2[..th], fc1_w, &tmp1[..th], th, th);
+    if let Some(b) = fc1_b {
+        for (slot, &bv) in tmp2[..th].iter_mut().zip(b[..th].iter()) {
+            *slot += bv;
+        }
+    }
+    dispatch.silu(&mut tmp2[..th]);
+    dispatch.matvec_bf16(pool, &mut out[..h], fc2_w, &tmp2[..th], h, th);
+    if let Some(b) = fc2_b {
+        for (slot, &bv) in out[..h].iter_mut().zip(b[..h].iter()) {
+            *slot += bv;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn embed_one_text_token_compute(
     dispatch: &KernelDispatch,
     pool: &qwen_kernels::ComputePool,
@@ -1069,12 +1315,6 @@ pub fn embed_one_text_token_compute(
     tmp2: &mut [f32],
     out: &mut [f32],
 ) {
-    let th = TEXT_HIDDEN_SIZE;
-    let h = HIDDEN_SIZE;
-    let idx = tid.max(0) as usize;
-    let emb_row = &model.talker.text_embedding_bf16[idx * th..(idx + 1) * th];
-    dispatch.bf16_to_f32_vec(&mut tmp1[..th], emb_row);
-
     let (fc1_w, fc1_b, fc2_w, fc2_b) = if let Some(wovr) = &voice.wovr {
         (
             wovr.fc1_bf16.as_slice(),
@@ -1090,20 +1330,19 @@ pub fn embed_one_text_token_compute(
             model.talker.text_proj_fc2_bias.as_deref(),
         )
     };
-
-    dispatch.matvec_bf16(pool, &mut tmp2[..th], fc1_w, &tmp1[..th], th, th);
-    if let Some(b) = fc1_b {
-        for j in 0..th {
-            tmp2[j] += b[j];
-        }
-    }
-    dispatch.silu(&mut tmp2[..th]);
-    dispatch.matvec_bf16(pool, &mut out[..h], fc2_w, &tmp2[..th], h, th);
-    if let Some(b) = fc2_b {
-        for j in 0..h {
-            out[j] += b[j];
-        }
-    }
+    compute_text_proj_token(
+        dispatch,
+        pool,
+        &model.talker.text_embedding_bf16,
+        fc1_w,
+        fc1_b,
+        fc2_w,
+        fc2_b,
+        tid,
+        tmp1,
+        tmp2,
+        out,
+    );
 }
 
 pub fn lookup_codec_embed(
@@ -1131,53 +1370,75 @@ pub fn lookup_codec_embed(
     dispatch.bf16_to_f32_vec(&mut out[..HIDDEN_SIZE], row);
 }
 
-fn resolve_talker_precision(opts: ModelLoadOptions) -> Result<TalkerPrecision, EngineError> {
-    if let Ok(val) = std::env::var("QWEN_TALKER_PREC") {
+fn resolve_precision_scheme(
+    env_var: &str,
+    allow_mixed: bool,
+    opts: ModelLoadOptions,
+) -> Result<LayerQuantScheme, EngineError> {
+    if let Ok(val) = std::env::var(env_var) {
         let v = val.trim();
         if !v.is_empty() {
             return match v {
-                "bf16" => Ok(TalkerPrecision::Bf16),
-                "int8" => Ok(TalkerPrecision::Int8),
-                "int4" => Ok(TalkerPrecision::Int4),
+                "bf16" => Ok(LayerQuantScheme::Bf16),
+                "int8" => Ok(LayerQuantScheme::Int8),
+                "int4" => Ok(LayerQuantScheme::Int4),
+                "mixed" if allow_mixed => Ok(LayerQuantScheme::Mixed),
                 _ => Err(EngineError::InvalidArg(format!(
-                    "error: QWEN_TALKER_PREC={v} no es válido; use bf16, int8 o int4"
-                ))),
-            };
-        }
-    }
-    if opts.quant_mixed || opts.use_int4 {
-        Ok(TalkerPrecision::Int4)
-    } else if opts.use_int8 {
-        Ok(TalkerPrecision::Int8)
-    } else {
-        Ok(TalkerPrecision::Bf16)
-    }
-}
-
-fn resolve_cp_precision(opts: ModelLoadOptions) -> Result<CpPrecision, EngineError> {
-    if let Ok(val) = std::env::var("QWEN_CP_PREC") {
-        let v = val.trim();
-        if !v.is_empty() {
-            return match v {
-                "bf16" => Ok(CpPrecision::Bf16),
-                "int8" => Ok(CpPrecision::Int8),
-                "int4" => Ok(CpPrecision::Int4),
-                "mixed" => Ok(CpPrecision::Mixed),
-                _ => Err(EngineError::InvalidArg(format!(
-                    "error: QWEN_CP_PREC={v} no es válido; use bf16, int8, int4 o mixed"
+                    "error: {env_var}={v} no es válido; use {}",
+                    if allow_mixed {
+                        "bf16, int8, int4 o mixed"
+                    } else {
+                        "bf16, int8 o int4"
+                    }
                 ))),
             };
         }
     }
     if opts.quant_mixed {
-        Ok(CpPrecision::Mixed)
+        Ok(if allow_mixed {
+            LayerQuantScheme::Mixed
+        } else {
+            LayerQuantScheme::Int4
+        })
     } else if opts.use_int4 {
-        Ok(CpPrecision::Int4)
+        Ok(LayerQuantScheme::Int4)
     } else if opts.use_int8 {
-        Ok(CpPrecision::Int8)
+        Ok(LayerQuantScheme::Int8)
     } else {
-        Ok(CpPrecision::Bf16)
+        Ok(LayerQuantScheme::Bf16)
     }
+}
+
+fn compute_special_text_embeds(
+    runtime: &ComputeRuntime,
+    talker: &TalkerWeights,
+) -> (AlignedBuf<f32>, AlignedBuf<f32>, AlignedBuf<f32>) {
+    let mut pad = AlignedBuf::new_zeroed(HIDDEN_SIZE);
+    let mut bos = AlignedBuf::new_zeroed(HIDDEN_SIZE);
+    let mut eos = AlignedBuf::new_zeroed(HIDDEN_SIZE);
+    let mut tmp1 = AlignedBuf::<f32>::new_zeroed(TEXT_HIDDEN_SIZE);
+    let mut tmp2 = AlignedBuf::<f32>::new_zeroed(TEXT_HIDDEN_SIZE);
+
+    for (tid, out) in [
+        (TOKEN_TTS_PAD, &mut pad),
+        (TOKEN_TTS_BOS, &mut bos),
+        (TOKEN_TTS_EOS, &mut eos),
+    ] {
+        compute_text_proj_token(
+            runtime.dispatch,
+            &runtime.pool,
+            &talker.text_embedding_bf16,
+            &talker.text_proj_fc1_bf16,
+            talker.text_proj_fc1_bias.as_deref(),
+            &talker.text_proj_fc2_bf16,
+            talker.text_proj_fc2_bias.as_deref(),
+            tid,
+            &mut tmp1,
+            &mut tmp2,
+            out,
+        );
+    }
+    (pad, bos, eos)
 }
 
 impl Model06B {
@@ -1203,8 +1464,8 @@ impl Model06B {
         let speech_dir = model_dir.join("speech_tokenizer");
         let speech_store = MmapStore::open_model(&speech_dir)?;
 
-        let tk_prec = resolve_talker_precision(opts)?;
-        let cp_prec = resolve_cp_precision(opts)?;
+        let tk_prec = resolve_precision_scheme("QWEN_TALKER_PREC", false, opts)?;
+        let cp_prec = resolve_precision_scheme("QWEN_CP_PREC", true, opts)?;
 
         if !opts.silent {
             eprintln!(
@@ -1232,51 +1493,8 @@ impl Model06B {
         )?
         .map(Arc::new);
 
-        let mut cached_tts_pad_embed = AlignedBuf::new_zeroed(HIDDEN_SIZE);
-        let mut cached_tts_bos_embed = AlignedBuf::new_zeroed(HIDDEN_SIZE);
-        let mut cached_tts_eos_embed = AlignedBuf::new_zeroed(HIDDEN_SIZE);
-        let mut tmp1 = AlignedBuf::<f32>::new_zeroed(TEXT_HIDDEN_SIZE);
-        let mut tmp2 = AlignedBuf::<f32>::new_zeroed(TEXT_HIDDEN_SIZE);
-
-        let compute_special = |tid: i32,
-                               out: &mut [f32],
-                               tmp1: &mut [f32],
-                               tmp2: &mut [f32]| {
-            let idx = tid as usize;
-            let row = &talker.text_embedding_bf16[idx * TEXT_HIDDEN_SIZE..(idx + 1) * TEXT_HIDDEN_SIZE];
-            runtime.dispatch.bf16_to_f32_vec(tmp1, row);
-            runtime.dispatch.matvec_bf16(
-                &runtime.pool,
-                tmp2,
-                &talker.text_proj_fc1_bf16,
-                tmp1,
-                TEXT_HIDDEN_SIZE,
-                TEXT_HIDDEN_SIZE,
-            );
-            if let Some(b) = talker.text_proj_fc1_bias.as_deref() {
-                for j in 0..TEXT_HIDDEN_SIZE {
-                    tmp2[j] += b[j];
-                }
-            }
-            runtime.dispatch.silu(tmp2);
-            runtime.dispatch.matvec_bf16(
-                &runtime.pool,
-                out,
-                &talker.text_proj_fc2_bf16,
-                tmp2,
-                HIDDEN_SIZE,
-                TEXT_HIDDEN_SIZE,
-            );
-            if let Some(b) = talker.text_proj_fc2_bias.as_deref() {
-                for j in 0..HIDDEN_SIZE {
-                    out[j] += b[j];
-                }
-            }
-        };
-
-        compute_special(TOKEN_TTS_PAD, &mut cached_tts_pad_embed, &mut tmp1, &mut tmp2);
-        compute_special(TOKEN_TTS_BOS, &mut cached_tts_bos_embed, &mut tmp1, &mut tmp2);
-        compute_special(TOKEN_TTS_EOS, &mut cached_tts_eos_embed, &mut tmp1, &mut tmp2);
+        let (cached_tts_pad_embed, cached_tts_bos_embed, cached_tts_eos_embed) =
+            compute_special_text_embeds(runtime, &talker);
 
         let mut ryan_tmp = [0.0f32; HIDDEN_SIZE];
         runtime.dispatch.bf16_to_f32_vec(
@@ -1319,6 +1537,11 @@ impl Model06B {
                 return true;
             }
         }
+        for h in &self.cp.lm_heads {
+            if matches!(h.quant, Some(QuantWeight::Q4_0(_))) {
+                return true;
+            }
+        }
         false
     }
 
@@ -1331,23 +1554,33 @@ impl Model06B {
         vs_l1: i32,
         silent: bool,
     ) -> Result<(), EngineError> {
+        if !weights.tensors.is_empty() && self.weights_have_q4() {
+            return Err(EngineError::InvalidArg(
+                "error: la voz .qvoice (WDELTA) sobrescribe pesos que están cuantizados en q4_0 y no se pueden recuantizar; use bf16 o --int8"
+                    .to_string(),
+            ));
+        }
+
         let mut loaded = 0usize;
         let mut total_bytes = 0usize;
 
-        let parse_f32_payload = |t: &qwen_core::QVoiceWeightTensor| -> Result<F32Weight, EngineError> {
-            if !t.payload.len().is_multiple_of(4) {
-                return Err(EngineError::Model(format!(
-                    "Invalid F32 payload length in .qvoice tensor '{}'",
-                    t.name
-                )));
-            }
-            let vals: Vec<f32> = t
-                .payload
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect();
-            Ok(F32Weight::Owned(Arc::new(vals)))
-        };
+        let parse_f32_payload =
+            |t: &qwen_core::QVoiceWeightTensor, expected_len: usize| -> Result<F32Weight, EngineError> {
+                if t.payload.len() != expected_len * 4 {
+                    return Err(EngineError::Model(format!(
+                        "Invalid F32 payload length in .qvoice tensor '{}': expected {} bytes, got {}",
+                        t.name,
+                        expected_len * 4,
+                        t.payload.len()
+                    )));
+                }
+                let vals: Vec<f32> = t
+                    .payload
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                Ok(F32Weight::Owned(Arc::new(vals)))
+            };
 
         for t in &weights.tensors {
             let name = t.name.as_str();
@@ -1404,24 +1637,8 @@ impl Model06B {
                     if let Some(rest) = name.strip_prefix("talker.code_predictor.model.layers.") {
                         if let Some((idx_s, suffix)) = rest.split_once('.') {
                             if let Ok(li) = idx_s.parse::<usize>() {
-                                if li < self.cp.layers.len() {
-                                    let cl = &mut self.cp.layers[li];
-                                    match suffix {
-                                        "self_attn.q_proj.weight" => matched_bf16 = Some(&mut cl.wq_bf16),
-                                        "self_attn.k_proj.weight" => matched_bf16 = Some(&mut cl.wk_bf16),
-                                        "self_attn.v_proj.weight" => matched_bf16 = Some(&mut cl.wv_bf16),
-                                        "self_attn.o_proj.weight" => matched_bf16 = Some(&mut cl.wo_bf16),
-                                        "self_attn.q_norm.weight" => matched_f32 = Some(&mut cl.q_norm),
-                                        "self_attn.k_norm.weight" => matched_f32 = Some(&mut cl.k_norm),
-                                        "input_layernorm.weight" => matched_f32 = Some(&mut cl.input_norm),
-                                        "post_attention_layernorm.weight" => {
-                                            matched_f32 = Some(&mut cl.post_attn_norm)
-                                        }
-                                        "mlp.gate_proj.weight" => matched_bf16 = Some(&mut cl.gate_bf16),
-                                        "mlp.up_proj.weight" => matched_bf16 = Some(&mut cl.up_bf16),
-                                        "mlp.down_proj.weight" => matched_bf16 = Some(&mut cl.down_bf16),
-                                        _ => {}
-                                    }
+                                if let Some(cl) = self.cp.layers.get_mut(li) {
+                                    (matched_bf16, matched_f32) = cl.match_wdelta_slot(suffix);
                                 }
                             }
                         }
@@ -1431,24 +1648,8 @@ impl Model06B {
                     if let Some(rest) = name.strip_prefix("talker.model.layers.") {
                         if let Some((idx_s, suffix)) = rest.split_once('.') {
                             if let Ok(li) = idx_s.parse::<usize>() {
-                                if li < self.talker.layers.len() {
-                                    let l = &mut self.talker.layers[li];
-                                    match suffix {
-                                        "self_attn.q_proj.weight" => matched_bf16 = Some(&mut l.wq_bf16),
-                                        "self_attn.k_proj.weight" => matched_bf16 = Some(&mut l.wk_bf16),
-                                        "self_attn.v_proj.weight" => matched_bf16 = Some(&mut l.wv_bf16),
-                                        "self_attn.o_proj.weight" => matched_bf16 = Some(&mut l.wo_bf16),
-                                        "self_attn.q_norm.weight" => matched_f32 = Some(&mut l.q_norm),
-                                        "self_attn.k_norm.weight" => matched_f32 = Some(&mut l.k_norm),
-                                        "input_layernorm.weight" => matched_f32 = Some(&mut l.input_norm),
-                                        "post_attention_layernorm.weight" => {
-                                            matched_f32 = Some(&mut l.post_attn_norm)
-                                        }
-                                        "mlp.gate_proj.weight" => matched_bf16 = Some(&mut l.gate_bf16),
-                                        "mlp.up_proj.weight" => matched_bf16 = Some(&mut l.up_bf16),
-                                        "mlp.down_proj.weight" => matched_bf16 = Some(&mut l.down_bf16),
-                                        _ => {}
-                                    }
+                                if let Some(l) = self.talker.layers.get_mut(li) {
+                                    (matched_bf16, matched_f32) = l.match_wdelta_slot(suffix);
                                 }
                             }
                         }
@@ -1463,77 +1664,23 @@ impl Model06B {
                 loaded += 1;
                 total_bytes += t.payload.len();
             } else if let Some(slot) = matched_f32 {
-                *slot = parse_f32_payload(t)?;
+                *slot = parse_f32_payload(t, slot.len())?;
                 loaded += 1;
                 total_bytes += t.payload.len();
             }
         }
 
-        if loaded > 0 && self.weights_have_q4() {
-            return Err(EngineError::InvalidArg(
-                "error: la voz .qvoice (WDELTA) sobrescribe pesos que están cuantizados en q4_0 y no se pueden recuantizar; use bf16 o --int8"
-                    .to_string(),
-            ));
-        }
-
         if loaded > 0 {
             for l in &mut self.talker.layers {
-                if let Some(ref mut fused) = l.gate_up_fused_bf16 {
-                    interleave_gate_up_bf16(
-                        fused,
-                        &l.gate_bf16,
-                        &l.up_bf16,
-                        INTERMEDIATE_SIZE,
-                        HIDDEN_SIZE,
-                    );
-                }
-                if matches!(l.wq_q, Some(QuantWeight::Int8 { .. })) {
-                    let (gu_d, gu_s) = quantize_gate_up_int8(
-                        &l.gate_bf16,
-                        &l.up_bf16,
-                        INTERMEDIATE_SIZE,
-                        HIDDEN_SIZE,
-                    );
-                    l.wq_q = Some(quantize_matrix_int8(&l.wq_bf16, Q_DIM, HIDDEN_SIZE));
-                    l.wk_q = Some(quantize_matrix_int8(&l.wk_bf16, KV_DIM, HIDDEN_SIZE));
-                    l.wv_q = Some(quantize_matrix_int8(&l.wv_bf16, KV_DIM, HIDDEN_SIZE));
-                    l.wo_q = Some(quantize_matrix_int8(&l.wo_bf16, HIDDEN_SIZE, Q_DIM));
-                    l.gate_up_q = Some(QuantWeight::Int8 { data: gu_d, scale: gu_s });
-                    l.down_q = Some(quantize_matrix_int8(
-                        &l.down_bf16,
-                        HIDDEN_SIZE,
-                        INTERMEDIATE_SIZE,
-                    ));
-                }
+                l.refresh_derived_weights(HIDDEN_SIZE, Q_DIM, KV_DIM, INTERMEDIATE_SIZE);
             }
             for cl in &mut self.cp.layers {
-                if let Some(ref mut fused) = cl.gate_up_fused_bf16 {
-                    interleave_gate_up_bf16(
-                        fused,
-                        &cl.gate_bf16,
-                        &cl.up_bf16,
-                        CP_INTERMEDIATE_SIZE,
-                        CP_HIDDEN_SIZE,
-                    );
-                }
-                if matches!(cl.wq_q, Some(QuantWeight::Int8 { .. })) {
-                    let (gu_d, gu_s) = quantize_gate_up_int8(
-                        &cl.gate_bf16,
-                        &cl.up_bf16,
-                        CP_INTERMEDIATE_SIZE,
-                        CP_HIDDEN_SIZE,
-                    );
-                    cl.wq_q = Some(quantize_matrix_int8(&cl.wq_bf16, CP_Q_DIM, CP_HIDDEN_SIZE));
-                    cl.wk_q = Some(quantize_matrix_int8(&cl.wk_bf16, CP_KV_DIM, CP_HIDDEN_SIZE));
-                    cl.wv_q = Some(quantize_matrix_int8(&cl.wv_bf16, CP_KV_DIM, CP_HIDDEN_SIZE));
-                    cl.wo_q = Some(quantize_matrix_int8(&cl.wo_bf16, CP_HIDDEN_SIZE, CP_Q_DIM));
-                    cl.gate_up_q = Some(QuantWeight::Int8 { data: gu_d, scale: gu_s });
-                    cl.down_q = Some(quantize_matrix_int8(
-                        &cl.down_bf16,
-                        CP_HIDDEN_SIZE,
-                        CP_INTERMEDIATE_SIZE,
-                    ));
-                }
+                cl.refresh_derived_weights(
+                    CP_HIDDEN_SIZE,
+                    CP_Q_DIM,
+                    CP_KV_DIM,
+                    CP_INTERMEDIATE_SIZE,
+                );
             }
             for head in &mut self.cp.lm_heads {
                 if matches!(head.quant, Some(QuantWeight::Int8 { .. })) {
@@ -1541,45 +1688,10 @@ impl Model06B {
                 }
             }
 
-            let mut tmp1 = AlignedBuf::<f32>::new_zeroed(TEXT_HIDDEN_SIZE);
-            let mut tmp2 = AlignedBuf::<f32>::new_zeroed(TEXT_HIDDEN_SIZE);
-            for (tid, out) in [
-                (TOKEN_TTS_PAD, &mut self.cached_tts_pad_embed),
-                (TOKEN_TTS_BOS, &mut self.cached_tts_bos_embed),
-                (TOKEN_TTS_EOS, &mut self.cached_tts_eos_embed),
-            ] {
-                let idx = tid as usize;
-                let row = &self.talker.text_embedding_bf16
-                    [idx * TEXT_HIDDEN_SIZE..(idx + 1) * TEXT_HIDDEN_SIZE];
-                runtime.dispatch.bf16_to_f32_vec(&mut tmp1, row);
-                runtime.dispatch.matvec_bf16(
-                    &runtime.pool,
-                    &mut tmp2,
-                    &self.talker.text_proj_fc1_bf16,
-                    &tmp1,
-                    TEXT_HIDDEN_SIZE,
-                    TEXT_HIDDEN_SIZE,
-                );
-                if let Some(b) = self.talker.text_proj_fc1_bias.as_deref() {
-                    for j in 0..TEXT_HIDDEN_SIZE {
-                        tmp2[j] += b[j];
-                    }
-                }
-                runtime.dispatch.silu(&mut tmp2);
-                runtime.dispatch.matvec_bf16(
-                    &runtime.pool,
-                    out,
-                    &self.talker.text_proj_fc2_bf16,
-                    &tmp2,
-                    HIDDEN_SIZE,
-                    TEXT_HIDDEN_SIZE,
-                );
-                if let Some(b) = self.talker.text_proj_fc2_bias.as_deref() {
-                    for j in 0..HIDDEN_SIZE {
-                        out[j] += b[j];
-                    }
-                }
-            }
+            let (pad, bos, eos) = compute_special_text_embeds(runtime, &self.talker);
+            self.cached_tts_pad_embed = pad;
+            self.cached_tts_bos_embed = bos;
+            self.cached_tts_eos_embed = eos;
 
             if !silent {
                 eprintln!(
@@ -1595,7 +1707,7 @@ impl Model06B {
 
     fn load_talker(
         store: &MmapStore,
-        prec: TalkerPrecision,
+        prec: LayerQuantScheme,
         silent: bool,
     ) -> Result<TalkerWeights, EngineError> {
         if !silent {
@@ -1616,83 +1728,15 @@ impl Model06B {
 
         let mut layers = Vec::with_capacity(NUM_LAYERS);
         for i in 0..NUM_LAYERS {
-            let wq_bf16 = req_bf16(store, &format!("talker.model.layers.{i}.self_attn.q_proj.weight"))?;
-            let wk_bf16 = req_bf16(store, &format!("talker.model.layers.{i}.self_attn.k_proj.weight"))?;
-            let wv_bf16 = req_bf16(store, &format!("talker.model.layers.{i}.self_attn.v_proj.weight"))?;
-            let wo_bf16 = req_bf16(store, &format!("talker.model.layers.{i}.self_attn.o_proj.weight"))?;
-            let q_norm = req_f32_w(store, &format!("talker.model.layers.{i}.self_attn.q_norm.weight"))?;
-            let k_norm = req_f32_w(store, &format!("talker.model.layers.{i}.self_attn.k_norm.weight"))?;
-            let input_norm = req_f32_w(store, &format!("talker.model.layers.{i}.input_layernorm.weight"))?;
-            let post_attn_norm = req_f32_w(
+            layers.push(TransformerLayerWeights::load(
                 store,
-                &format!("talker.model.layers.{i}.post_attention_layernorm.weight"),
-            )?;
-            let gate_bf16 = req_bf16(store, &format!("talker.model.layers.{i}.mlp.gate_proj.weight"))?;
-            let up_bf16 = req_bf16(store, &format!("talker.model.layers.{i}.mlp.up_proj.weight"))?;
-            let down_bf16 = req_bf16(store, &format!("talker.model.layers.{i}.mlp.down_proj.weight"))?;
-
-            let gate_up_fused_bf16 = if prec == TalkerPrecision::Bf16 {
-                let mut fused = AlignedBuf::new_zeroed(2 * INTERMEDIATE_SIZE * HIDDEN_SIZE);
-                interleave_gate_up_bf16(
-                    &mut fused,
-                    &gate_bf16,
-                    &up_bf16,
-                    INTERMEDIATE_SIZE,
-                    HIDDEN_SIZE,
-                );
-                Some(fused)
-            } else {
-                None
-            };
-
-            let (wq_q, wk_q, wv_q, wo_q, gate_up_q, down_q) = match prec {
-                TalkerPrecision::Bf16 => (None, None, None, None, None, None),
-                TalkerPrecision::Int8 => {
-                    let (gu_d, gu_s) =
-                        quantize_gate_up_int8(&gate_bf16, &up_bf16, INTERMEDIATE_SIZE, HIDDEN_SIZE);
-                    (
-                        Some(quantize_matrix_int8(&wq_bf16, Q_DIM, HIDDEN_SIZE)),
-                        Some(quantize_matrix_int8(&wk_bf16, KV_DIM, HIDDEN_SIZE)),
-                        Some(quantize_matrix_int8(&wv_bf16, KV_DIM, HIDDEN_SIZE)),
-                        Some(quantize_matrix_int8(&wo_bf16, HIDDEN_SIZE, Q_DIM)),
-                        Some(QuantWeight::Int8 { data: gu_d, scale: gu_s }),
-                        Some(quantize_matrix_int8(&down_bf16, HIDDEN_SIZE, INTERMEDIATE_SIZE)),
-                    )
-                }
-                TalkerPrecision::Int4 => {
-                    let gu_q4 =
-                        quantize_gate_up_q4_0(&gate_bf16, &up_bf16, INTERMEDIATE_SIZE, HIDDEN_SIZE);
-                    (
-                        Some(quantize_matrix_q4(&wq_bf16, Q_DIM, HIDDEN_SIZE)),
-                        Some(quantize_matrix_q4(&wk_bf16, KV_DIM, HIDDEN_SIZE)),
-                        Some(quantize_matrix_q4(&wv_bf16, KV_DIM, HIDDEN_SIZE)),
-                        Some(quantize_matrix_q4(&wo_bf16, HIDDEN_SIZE, Q_DIM)),
-                        Some(QuantWeight::Q4_0(gu_q4)),
-                        Some(quantize_matrix_q4(&down_bf16, HIDDEN_SIZE, INTERMEDIATE_SIZE)),
-                    )
-                }
-            };
-
-            layers.push(TalkerLayerWeights {
-                wq_bf16,
-                wk_bf16,
-                wv_bf16,
-                wo_bf16,
-                q_norm,
-                k_norm,
-                input_norm,
-                post_attn_norm,
-                gate_bf16,
-                up_bf16,
-                down_bf16,
-                gate_up_fused_bf16,
-                wq_q,
-                wk_q,
-                wv_q,
-                wo_q,
-                gate_up_q,
-                down_q,
-            });
+                &format!("talker.model.layers.{i}"),
+                HIDDEN_SIZE,
+                Q_DIM,
+                KV_DIM,
+                INTERMEDIATE_SIZE,
+                prec,
+            )?);
         }
 
         let (cos_v, sin_v) = KernelDispatch::compute_rope_neox_table(
@@ -1722,13 +1766,12 @@ impl Model06B {
             layers,
             rope_cos,
             rope_sin,
-            precision: prec,
         })
     }
 
     fn load_cp(
         store: &MmapStore,
-        prec: CpPrecision,
+        prec: LayerQuantScheme,
         silent: bool,
     ) -> Result<CodePredictorWeights, EngineError> {
         if !silent {
@@ -1741,149 +1784,15 @@ impl Model06B {
         let mut layers = Vec::with_capacity(CP_NUM_LAYERS);
 
         for i in 0..CP_NUM_LAYERS {
-            let wq_bf16 = req_bf16(
+            layers.push(TransformerLayerWeights::load(
                 store,
-                &format!("talker.code_predictor.model.layers.{i}.self_attn.q_proj.weight"),
-            )?;
-            let wk_bf16 = req_bf16(
-                store,
-                &format!("talker.code_predictor.model.layers.{i}.self_attn.k_proj.weight"),
-            )?;
-            let wv_bf16 = req_bf16(
-                store,
-                &format!("talker.code_predictor.model.layers.{i}.self_attn.v_proj.weight"),
-            )?;
-            let wo_bf16 = req_bf16(
-                store,
-                &format!("talker.code_predictor.model.layers.{i}.self_attn.o_proj.weight"),
-            )?;
-            let q_norm = req_f32_w(
-                store,
-                &format!("talker.code_predictor.model.layers.{i}.self_attn.q_norm.weight"),
-            )?;
-            let k_norm = req_f32_w(
-                store,
-                &format!("talker.code_predictor.model.layers.{i}.self_attn.k_norm.weight"),
-            )?;
-            let input_norm = req_f32_w(
-                store,
-                &format!("talker.code_predictor.model.layers.{i}.input_layernorm.weight"),
-            )?;
-            let post_attn_norm = req_f32_w(
-                store,
-                &format!("talker.code_predictor.model.layers.{i}.post_attention_layernorm.weight"),
-            )?;
-            let gate_bf16 = req_bf16(
-                store,
-                &format!("talker.code_predictor.model.layers.{i}.mlp.gate_proj.weight"),
-            )?;
-            let up_bf16 = req_bf16(
-                store,
-                &format!("talker.code_predictor.model.layers.{i}.mlp.up_proj.weight"),
-            )?;
-            let down_bf16 = req_bf16(
-                store,
-                &format!("talker.code_predictor.model.layers.{i}.mlp.down_proj.weight"),
-            )?;
-
-            let gate_up_fused_bf16 = if prec == CpPrecision::Bf16 {
-                let mut fused = AlignedBuf::new_zeroed(2 * CP_INTERMEDIATE_SIZE * CP_HIDDEN_SIZE);
-                interleave_gate_up_bf16(
-                    &mut fused,
-                    &gate_bf16,
-                    &up_bf16,
-                    CP_INTERMEDIATE_SIZE,
-                    CP_HIDDEN_SIZE,
-                );
-                Some(fused)
-            } else {
-                None
-            };
-
-            let (wq_q, wk_q, wv_q, wo_q, gate_up_q, down_q) = match prec {
-                CpPrecision::Bf16 => (None, None, None, None, None, None),
-                CpPrecision::Int8 => {
-                    let (gu_d, gu_s) = quantize_gate_up_int8(
-                        &gate_bf16,
-                        &up_bf16,
-                        CP_INTERMEDIATE_SIZE,
-                        CP_HIDDEN_SIZE,
-                    );
-                    (
-                        Some(quantize_matrix_int8(&wq_bf16, CP_Q_DIM, CP_HIDDEN_SIZE)),
-                        Some(quantize_matrix_int8(&wk_bf16, CP_KV_DIM, CP_HIDDEN_SIZE)),
-                        Some(quantize_matrix_int8(&wv_bf16, CP_KV_DIM, CP_HIDDEN_SIZE)),
-                        Some(quantize_matrix_int8(&wo_bf16, CP_HIDDEN_SIZE, CP_Q_DIM)),
-                        Some(QuantWeight::Int8 { data: gu_d, scale: gu_s }),
-                        Some(quantize_matrix_int8(
-                            &down_bf16,
-                            CP_HIDDEN_SIZE,
-                            CP_INTERMEDIATE_SIZE,
-                        )),
-                    )
-                }
-                CpPrecision::Int4 => {
-                    let gu_q4 = quantize_gate_up_q4_0(
-                        &gate_bf16,
-                        &up_bf16,
-                        CP_INTERMEDIATE_SIZE,
-                        CP_HIDDEN_SIZE,
-                    );
-                    (
-                        Some(quantize_matrix_q4(&wq_bf16, CP_Q_DIM, CP_HIDDEN_SIZE)),
-                        Some(quantize_matrix_q4(&wk_bf16, CP_KV_DIM, CP_HIDDEN_SIZE)),
-                        Some(quantize_matrix_q4(&wv_bf16, CP_KV_DIM, CP_HIDDEN_SIZE)),
-                        Some(quantize_matrix_q4(&wo_bf16, CP_HIDDEN_SIZE, CP_Q_DIM)),
-                        Some(QuantWeight::Q4_0(gu_q4)),
-                        Some(quantize_matrix_q4(
-                            &down_bf16,
-                            CP_HIDDEN_SIZE,
-                            CP_INTERMEDIATE_SIZE,
-                        )),
-                    )
-                }
-                CpPrecision::Mixed => {
-                    let gu_q4 = quantize_gate_up_q4_0(
-                        &gate_bf16,
-                        &up_bf16,
-                        CP_INTERMEDIATE_SIZE,
-                        CP_HIDDEN_SIZE,
-                    );
-                    (
-                        Some(quantize_matrix_int8(&wq_bf16, CP_Q_DIM, CP_HIDDEN_SIZE)),
-                        Some(quantize_matrix_int8(&wk_bf16, CP_KV_DIM, CP_HIDDEN_SIZE)),
-                        Some(quantize_matrix_int8(&wv_bf16, CP_KV_DIM, CP_HIDDEN_SIZE)),
-                        Some(quantize_matrix_int8(&wo_bf16, CP_HIDDEN_SIZE, CP_Q_DIM)),
-                        Some(QuantWeight::Q4_0(gu_q4)),
-                        Some(quantize_matrix_q4(
-                            &down_bf16,
-                            CP_HIDDEN_SIZE,
-                            CP_INTERMEDIATE_SIZE,
-                        )),
-                    )
-                }
-            };
-
-            layers.push(CpLayerWeights {
-                wq_bf16,
-                wk_bf16,
-                wv_bf16,
-                wo_bf16,
-                q_norm,
-                k_norm,
-                input_norm,
-                post_attn_norm,
-                gate_bf16,
-                up_bf16,
-                down_bf16,
-                gate_up_fused_bf16,
-                wq_q,
-                wk_q,
-                wv_q,
-                wo_q,
-                gate_up_q,
-                down_q,
-            });
+                &format!("talker.code_predictor.model.layers.{i}"),
+                CP_HIDDEN_SIZE,
+                CP_Q_DIM,
+                CP_KV_DIM,
+                CP_INTERMEDIATE_SIZE,
+                prec,
+            )?);
         }
 
         let mut codec_emb_bf16 = Vec::with_capacity(15);
@@ -1896,11 +1805,11 @@ impl Model06B {
             let head_bf16 =
                 req_bf16(store, &format!("talker.code_predictor.lm_head.{g}.weight"))?;
             let quant = match prec {
-                CpPrecision::Bf16 => None,
-                CpPrecision::Int8 | CpPrecision::Mixed => {
+                LayerQuantScheme::Bf16 => None,
+                LayerQuantScheme::Int8 | LayerQuantScheme::Mixed => {
                     Some(quantize_matrix_int8(&head_bf16, CODEBOOK_SIZE, CP_HIDDEN_SIZE))
                 }
-                CpPrecision::Int4 => {
+                LayerQuantScheme::Int4 => {
                     Some(quantize_matrix_q4(&head_bf16, CODEBOOK_SIZE, CP_HIDDEN_SIZE))
                 }
             };
@@ -1925,7 +1834,6 @@ impl Model06B {
             lm_heads,
             rope_cos: AlignedBuf::from_slice(&cos_v),
             rope_sin: AlignedBuf::from_slice(&sin_v),
-            precision: prec,
             all_quantized,
         };
 
@@ -2097,7 +2005,6 @@ impl Model06B {
                         store,
                         &format!("decoder.decoder.{bi}.block.{ri}.act1.beta"),
                     )?,
-                    conv1_weight,
                     conv1_bias: opt_f32(
                         store,
                         &format!("decoder.decoder.{bi}.block.{ri}.conv1.conv.bias"),
@@ -2147,7 +2054,6 @@ impl Model06B {
             codebooks: Arc::new(codebooks),
             rvq_first_output_proj,
             rvq_rest_output_proj,
-            pre_conv_weight,
             pre_conv_bias,
             pre_conv_wk,
             input_proj_weight,
@@ -2159,7 +2065,6 @@ impl Model06B {
             rope_cos: AlignedBuf::from_slice(&cos_v),
             rope_sin: AlignedBuf::from_slice(&sin_v),
             convnext,
-            initial_conv_weight,
             initial_conv_bias,
             initial_conv_wk,
             upsample_blocks,

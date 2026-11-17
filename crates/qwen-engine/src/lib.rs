@@ -4,7 +4,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #![forbid(unsafe_code)]
-#![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
 //! Motor de inferencia en CPU para **Qwen3-TTS 0.6B** (`CustomVoice` y `Base`)
 //! con soporte de streaming progresivo, clonación de voz, expresividad `0.6B` y *continuous batching*.
@@ -41,16 +40,14 @@ pub use emotion::{
 };
 pub use error::EngineError;
 pub use model::{
-    AbortHandle, Bf16Weight, CodePredictorWeights, CpPrecision, F32Weight, Model06B,
-    ModelLoadOptions, RequestConfig, RequestExecution, SessionScratch, SpeechDecoderWeights,
-    SynthesisTiming, TalkerPrecision, TalkerWeights, TextProjOverride, VoiceBindings,
-    VoiceIdentity,
+    AbortHandle, Bf16Weight, CodePredictorWeights, F32Weight, Model06B, ModelLoadOptions,
+    RequestConfig, RequestExecution, SessionScratch, SpeechDecoderWeights, SynthesisTiming,
+    TalkerWeights, TextProjOverride, VoiceBindings, VoiceIdentity,
 };
 pub use pipeline::{synthesize_to_samples, synthesize_to_sink};
 pub use speech_decoder::{speech_decoder_decode, speech_decoder_decode_streaming};
 pub use speech_encoder::{speech_encoder_encode, SpeechEncoderWeights};
 pub use voice_clone::{
-    build_voice_from_ref_audio, build_wovr_override, extract_speaker_embedding,
-    load_voice_from_file, mel_spectrogram, speaker_encoder_forward, SaveVoiceOptions,
-    SpeakerEncoderWeights, VoiceLoadOptions,
+    build_voice_from_ref_audio, build_wovr_override, load_voice_from_file, mel_spectrogram,
+    speaker_encoder_forward, SaveVoiceOptions, SpeakerEncoderWeights, VoiceLoadOptions,
 };

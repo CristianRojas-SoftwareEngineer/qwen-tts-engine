@@ -186,4 +186,17 @@ fn test_e2e_determinism_and_abort() {
     )
     .unwrap_err();
     assert!(matches!(err, EngineError::Aborted));
+
+    // Rechazo explícito de buffers de códigos truncados en SpeechDecoder
+    let bad_codes = vec![0i32; NUM_CODEBOOKS - 1];
+    assert!(matches!(
+        speech_decoder_decode(&runtime, &model.decoder, &bad_codes, 1),
+        Err(EngineError::InvalidArg(_))
+    ));
+    let mut bad_st = SdStreamState::new();
+    let mut bad_ws = DecoderWorkspace::new();
+    assert!(matches!(
+        speech_decoder_decode_streaming(&runtime, &model.decoder, &mut bad_st, &mut bad_ws, &bad_codes, 1),
+        Err(EngineError::InvalidArg(_))
+    ));
 }
