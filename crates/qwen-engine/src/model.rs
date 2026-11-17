@@ -30,7 +30,7 @@ use crate::error::EngineError;
 use crate::speech_encoder::SpeechEncoderWeights;
 use crate::voice_clone::SpeakerEncoderWeights;
 
-pub const KV_INITIAL_POSITIONS: usize = 1024;
+pub const KV_INITIAL_POSITIONS: usize = 256;
 pub const ROPE_MAX_POS: usize = 8192;
 pub const CP_KV_MAX_POS: usize = 64;
 pub const SD_ROPE_MAX_POS: usize = 8000;
