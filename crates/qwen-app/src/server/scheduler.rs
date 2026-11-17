@@ -11,17 +11,18 @@ use std::thread;
 use std::time::Instant;
 
 use qwen_core::config::SAMPLE_RATE;
+use qwen_engine::batch::MAX_BATCH_SLOTS;
 use qwen_engine::{
     encode_wav_bytes, prepare_markup_06b, run_continuous_batch, AbortHandle, BatchReq,
     ContinuousBatchSink, ContinuousSlotJob, EngineError, Model06B, SessionScratch, VoiceBindings,
-    VoiceIdentity,
 };
 use qwen_kernels::ComputeRuntime;
 
 use super::http::{
-    handle_connection, handle_health, handle_speakers, handle_tts_full, handle_tts_stream,
-    read_http_request, send_chunked_end, send_chunked_header, send_cors_options, send_error,
-    send_pcm_chunk, send_response, socket_disconnected,
+    default_voice_context, handle_connection, handle_health, handle_speakers, handle_tts_full,
+    handle_tts_stream, log_http_request, log_stream_sent, log_wav_sent, read_http_request,
+    send_chunked_end, send_chunked_header, send_cors_options, send_error, send_pcm_chunk,
+    send_response, socket_disconnected, ReadHttpResult,
 };
 use super::validation::ValidatedTtsRequest;
 
@@ -97,7 +98,7 @@ impl SynthesisScheduler for WorkerPoolScheduler {
                     let mut scratch = SessionScratch::new();
                     loop {
                         let item = {
-                            let guard = rx_c.lock().unwrap();
+                            let guard = rx_c.lock().unwrap_or_else(|e| e.into_inner());
                             guard.recv()
                         };
                         let Ok((stream, peer_ip)) = item else {
@@ -154,17 +155,21 @@ impl<T> JobQueue<T> {
         }
     }
 
-    fn push(&self, item: T) {
-        let mut q = self.items.lock().unwrap();
+    fn push(&self, item: T) -> Result<(), T> {
+        let mut q = self.items.lock().unwrap_or_else(|e| e.into_inner());
+        if self.shutdown.load(Ordering::Acquire) {
+            return Err(item);
+        }
         q.push_back(item);
         self.cv.notify_one();
+        Ok(())
     }
 
     fn pop(&self, block: bool) -> Option<T> {
-        let mut q = self.items.lock().unwrap();
+        let mut q = self.items.lock().unwrap_or_else(|e| e.into_inner());
         if block {
             while q.is_empty() && !self.shutdown.load(Ordering::Acquire) {
-                q = self.cv.wait(q).unwrap();
+                q = self.cv.wait(q).unwrap_or_else(|e| e.into_inner());
             }
         }
         q.pop_front()
@@ -241,15 +246,7 @@ impl ContinuousBatchSink<BatchHttpTag> for BatchSinkAdapter {
                     tag.header_sent = true;
                 }
                 let _ = send_chunked_end(&mut tag.stream);
-                let elapsed = tag.t0.elapsed().as_secs_f64();
-                let audio_secs = tag.samples_sent as f64 / SAMPLE_RATE as f64;
-                eprintln!(
-                    "[HTTP] Streamed {} samples ({:.2}s audio) in {:.1}s (RTF {:.2})",
-                    tag.samples_sent,
-                    audio_secs,
-                    elapsed,
-                    elapsed / audio_secs.max(1e-6)
-                );
+                log_stream_sent(tag.samples_sent, tag.t0.elapsed().as_secs_f64());
             } else if matches!(err, Some(EngineError::Aborted))
                 || socket_disconnected(&tag.stream)
             {
@@ -263,15 +260,7 @@ impl ContinuousBatchSink<BatchHttpTag> for BatchSinkAdapter {
         } else if let Some(aud) = samples.filter(|a| !a.is_empty()) {
             let wav = encode_wav_bytes(&aud, SAMPLE_RATE as u32);
             if send_response(&mut tag.stream, 200, "audio/wav", &wav).is_ok() {
-                let elapsed = tag.t0.elapsed().as_secs_f64();
-                let audio_secs = aud.len() as f64 / SAMPLE_RATE as f64;
-                eprintln!(
-                    "[HTTP] Sent {} bytes WAV ({:.2}s audio) in {:.1}s (RTF {:.2})",
-                    wav.len(),
-                    audio_secs,
-                    elapsed,
-                    elapsed / audio_secs.max(1e-6)
-                );
+                log_wav_sent(wav.len(), aud.len(), tag.t0.elapsed().as_secs_f64());
             }
         } else if !matches!(err, Some(EngineError::Aborted)) && !socket_disconnected(&tag.stream) {
             send_error(&mut tag.stream, 500, "generation failed");
@@ -306,11 +295,7 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
         let jq_single = Arc::new(JobQueue::<SingleHttpJob>::new());
         let running = Arc::new(AtomicBool::new(true));
 
-        let has_clone = !matches!(self.voice.identity, VoiceIdentity::Preset(_));
-        let (def_spk, def_lang) = match &self.voice.identity {
-            VoiceIdentity::Preset(id) => (*id, Some(2050)),
-            _ => (3061, None),
-        };
+        let (has_clone, def_spk, def_lang) = default_voice_context(&self.voice);
 
         let mut reader_handles = Vec::with_capacity(n_readers);
         for _ in 0..n_readers {
@@ -318,30 +303,30 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
             let jq_c = Arc::clone(&jq);
             let jqs_c = Arc::clone(&jq_single);
             let voice_c = Arc::clone(&self.voice);
+            let running_c = Arc::clone(&running);
             let h = thread::Builder::new()
                 .name("qwen-http-reader".to_string())
                 .spawn(move || loop {
                     let item = {
-                        let g = rx_c.lock().unwrap();
+                        let g = rx_c.lock().unwrap_or_else(|e| e.into_inner());
                         g.recv()
                     };
                     let Ok((mut stream, peer_ip)) = item else {
                         break;
                     };
-                    let Some(req) = read_http_request(&mut stream) else {
-                        continue;
+                    let req = match read_http_request(&mut stream) {
+                        ReadHttpResult::Ok(req) => req,
+                        ReadHttpResult::TooLarge => {
+                            send_error(&mut stream, 400, "request body exceeds 1 MiB limit");
+                            continue;
+                        }
+                        ReadHttpResult::InvalidContentLength => {
+                            send_error(&mut stream, 400, "invalid Content-Length header");
+                            continue;
+                        }
+                        ReadHttpResult::Empty => continue,
                     };
-                    eprintln!(
-                        "[HTTP] {} {} {} from {}",
-                        req.method,
-                        req.path,
-                        if req.method == "POST" && !req.body.is_empty() {
-                            "(has body)"
-                        } else {
-                            ""
-                        },
-                        peer_ip
-                    );
+                    log_http_request(&req, &peer_ip);
 
                     if req.method == "OPTIONS" {
                         send_cors_options(&mut stream);
@@ -392,12 +377,22 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
                         let needs_single =
                             prep.use_compose || (vreq.rate - 1.0).abs() > 1e-6;
                         if needs_single {
-                            jqs_c.push(SingleHttpJob {
+                            if let Err(mut job) = jqs_c.push(SingleHttpJob {
                                 stream,
                                 is_stream,
                                 vreq,
-                            });
+                            }) {
+                                send_error(&mut job.stream, 503, "server shutting down");
+                            }
                         } else {
+                            if !running_c.load(Ordering::Acquire) {
+                                send_error(
+                                    &mut stream,
+                                    503,
+                                    "batch scheduler unavailable (startup failure)",
+                                );
+                                continue;
+                            }
                             let effective_seed =
                                 if vreq.seed.is_none() && prep.did_para_substitute {
                                     prep.seed
@@ -433,11 +428,17 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
                                 samples_sent: 0,
                                 t0: Instant::now(),
                             };
-                            jq_c.push(ContinuousSlotJob {
+                            if let Err(mut job) = jq_c.push(ContinuousSlotJob {
                                 tag,
                                 req: breq,
                                 abort,
-                            });
+                            }) {
+                                send_error(
+                                    &mut job.tag.stream,
+                                    503,
+                                    "batch scheduler unavailable (startup failure)",
+                                );
+                            }
                         }
                     } else {
                         send_error(&mut stream, 404, "not found");
@@ -504,7 +505,9 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
                     &mut adapter,
                 ) {
                     eprintln!("[BATCH] FATAL: continuous scheduler failed ({e}) — draining with 503");
-                    while let Some(mut j) = jq_sched.pop(true) {
+                    running_sched.store(false, Ordering::Release);
+                    jq_sched.shutdown();
+                    while let Some(mut j) = jq_sched.pop(false) {
                         send_error(
                             &mut j.tag.stream,
                             503,
@@ -548,25 +551,37 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn serve(
-    runtime: Arc<ComputeRuntime>,
-    model: Arc<Model06B>,
-    voice: Arc<VoiceBindings>,
-    host: Ipv4Addr,
-    port: u16,
-    workers: usize,
-    batch_size: usize,
-    physical_cores: usize,
-) -> Result<(), String> {
+pub struct ServeConfig {
+    pub runtime: Arc<ComputeRuntime>,
+    pub model: Arc<Model06B>,
+    pub voice: Arc<VoiceBindings>,
+    pub host: Ipv4Addr,
+    pub port: u16,
+    pub workers: usize,
+    pub batch_size: usize,
+    pub physical_cores: usize,
+}
+
+pub fn serve(cfg: ServeConfig) -> Result<(), String> {
+    let ServeConfig {
+        runtime,
+        model,
+        voice,
+        host,
+        port,
+        workers,
+        batch_size,
+        physical_cores,
+    } = cfg;
     let addr = SocketAddr::from((host, port));
     let listener = TcpListener::bind(addr)
         .map_err(|e| format!("Failed to bind http://{host}:{port}: {e}"))?;
 
     if batch_size >= 2 {
-        let n_readers = batch_size.clamp(2, 16);
+        let max_batch = batch_size.min(MAX_BATCH_SLOTS);
+        let n_readers = max_batch.clamp(2, 16);
         eprintln!(
-            "Server listening on http://{host}:{port} (continuous request-batching: max_batch={batch_size}, {n_readers} readers, +1 single-job fallback)"
+            "Server listening on http://{host}:{port} (continuous request-batching: max_batch={max_batch}, {n_readers} readers, +1 single-job fallback)"
         );
         eprintln!("Endpoints:");
         eprintln!("  POST /v1/tts          — generate speech (returns WAV, BATCHED)");
@@ -580,7 +595,7 @@ pub fn serve(
             runtime,
             model,
             voice,
-            max_batch: batch_size,
+            max_batch,
         });
         sched.run(listener)
     } else {

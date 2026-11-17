@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 use qwen_core::config::{PRESET_SPEAKERS, SAMPLE_RATE};
 use qwen_core::MarkupPlanner;
 use qwen_engine::{
-    apply_gain, encode_wav_bytes, f32_to_s16le_clamped, prepare_markup_06b, render_spans_buffer,
-    render_spans_stream, synthesize_to_samples, synthesize_to_sink, time_stretch, AbortHandle,
-    AudioSink, EngineError, Model06B, RequestConfig, RequestExecution, SessionScratch,
-    SynthesisTiming, VoiceBindings, VoiceIdentity,
+    encode_wav_bytes, f32_to_s16le_clamped, prepare_markup_06b, render_spans_buffer,
+    render_spans_stream, synthesize_to_samples, synthesize_to_sink, AbortHandle, AudioSink,
+    EngineError, Model06B, RequestConfig, RequestExecution, SessionScratch, SynthesisTiming,
+    VoiceBindings, VoiceIdentity,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -78,18 +78,15 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
         .map(|p| p + 4)
 }
 
-fn parse_content_length(headers: &str) -> usize {
+fn parse_content_length(headers: &str) -> Result<usize, ()> {
     for line in headers.split("\r\n") {
         if let Some((k, v)) = line.split_once(':') {
             if k.trim().eq_ignore_ascii_case("content-length") {
-                if let Ok(len) = v.trim().parse::<isize>() {
-                    return len.max(0) as usize;
-                }
-                return 0;
+                return v.trim().parse::<usize>().map_err(|_| ());
             }
         }
     }
-    0
+    Ok(0)
 }
 
 pub struct ParsedHttpRequest {
@@ -98,7 +95,14 @@ pub struct ParsedHttpRequest {
     pub body: String,
 }
 
-pub fn read_http_request(stream: &mut TcpStream) -> Option<ParsedHttpRequest> {
+pub enum ReadHttpResult {
+    Ok(ParsedHttpRequest),
+    TooLarge,
+    InvalidContentLength,
+    Empty,
+}
+
+pub fn read_http_request(stream: &mut TcpStream) -> ReadHttpResult {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
     let mut tmp = [0u8; 8192];
@@ -107,7 +111,7 @@ pub fn read_http_request(stream: &mut TcpStream) -> Option<ParsedHttpRequest> {
 
     loop {
         if buf.len() >= MAX_HTTP_BODY {
-            break;
+            return ReadHttpResult::TooLarge;
         }
         let max_read = (MAX_HTTP_BODY - buf.len()).min(tmp.len());
         match stream.read(&mut tmp[..max_read]) {
@@ -118,7 +122,15 @@ pub fn read_http_request(stream: &mut TcpStream) -> Option<ParsedHttpRequest> {
                     if let Some(hend) = find_header_end(&buf) {
                         header_end = Some(hend);
                         let hdr_str = String::from_utf8_lossy(&buf[..hend]);
-                        content_length = parse_content_length(&hdr_str).min(MAX_HTTP_BODY - hend);
+                        match parse_content_length(&hdr_str) {
+                            Ok(len) => {
+                                if len > MAX_HTTP_BODY - hend {
+                                    return ReadHttpResult::TooLarge;
+                                }
+                                content_length = len;
+                            }
+                            Err(()) => return ReadHttpResult::InvalidContentLength,
+                        }
                     }
                 }
                 if let Some(hend) = header_end {
@@ -133,7 +145,7 @@ pub fn read_http_request(stream: &mut TcpStream) -> Option<ParsedHttpRequest> {
     }
 
     if buf.is_empty() {
-        return None;
+        return ReadHttpResult::Empty;
     }
 
     let hend = header_end.unwrap_or(buf.len());
@@ -154,7 +166,21 @@ pub fn read_http_request(stream: &mut TcpStream) -> Option<ParsedHttpRequest> {
     // Cambiar a modo no bloqueante para que AbortGuard sondee sin bloquear; send_all gestiona WouldBlock.
     let _ = stream.set_nonblocking(true);
 
-    Some(ParsedHttpRequest { method, path, body })
+    ReadHttpResult::Ok(ParsedHttpRequest { method, path, body })
+}
+
+pub fn log_http_request(req: &ParsedHttpRequest, peer_ip: &str) {
+    eprintln!(
+        "[HTTP] {} {} {} from {}",
+        req.method,
+        req.path,
+        if req.method == "POST" && !req.body.is_empty() {
+            "(has body)"
+        } else {
+            ""
+        },
+        peer_ip
+    );
 }
 
 pub fn send_response(
@@ -256,6 +282,37 @@ pub fn handle_speakers(stream: &mut TcpStream) {
     send_json(stream, 200, &out);
 }
 
+pub fn default_voice_context(base_voice: &VoiceBindings) -> (bool, i32, Option<i32>) {
+    let has_clone = !matches!(base_voice.identity, VoiceIdentity::Preset(_));
+    let (def_spk, def_lang) = match &base_voice.identity {
+        VoiceIdentity::Preset(id) => (*id, Some(2050)),
+        _ => (3061, None),
+    };
+    (has_clone, def_spk, def_lang)
+}
+
+pub fn log_wav_sent(bytes: usize, samples_len: usize, elapsed_s: f64) {
+    let audio_secs = samples_len as f64 / SAMPLE_RATE as f64;
+    eprintln!(
+        "[HTTP] Sent {} bytes WAV ({:.2}s audio) in {:.1}s (RTF {:.2})",
+        bytes,
+        audio_secs,
+        elapsed_s,
+        elapsed_s / audio_secs.max(1e-6)
+    );
+}
+
+pub fn log_stream_sent(samples_len: usize, elapsed_s: f64) {
+    let audio_secs = samples_len as f64 / SAMPLE_RATE as f64;
+    eprintln!(
+        "[HTTP] Streamed {} samples ({:.2}s audio) in {:.1}s (RTF {:.2})",
+        samples_len,
+        audio_secs,
+        elapsed_s,
+        elapsed_s / audio_secs.max(1e-6)
+    );
+}
+
 pub fn log_timing_breakdown(t: &SynthesisTiming) {
     if t.frames == 0 {
         return;
@@ -299,31 +356,26 @@ impl AudioSink for HttpAudioChunkSink<'_> {
     }
 }
 
-pub fn resolve_request_voice(base_voice: &VoiceBindings, speaker_id: i32) -> (Option<VoiceBindings>, &VoiceBindings) {
-    if matches!(base_voice.identity, VoiceIdentity::Preset(_)) {
-        // Las voces preset no tienen pesos WOVR; solo cambia la identidad del preset.
-        let v = VoiceBindings {
-            identity: VoiceIdentity::Preset(speaker_id),
-            ..base_voice.clone()
-        };
-        (Some(v), base_voice)
-    } else {
-        (None, base_voice)
-    }
+struct PreparedHttpTts<'a> {
+    voice_ref: &'a VoiceBindings,
+    prep: qwen_engine::PreparedMarkup,
+    effective_seed: u32,
 }
 
-pub fn handle_tts_full(
-    runtime: &ComputeRuntime,
-    model: &Model06B,
-    base_voice: &VoiceBindings,
-    scratch: &mut SessionScratch,
-    stream: &mut TcpStream,
+fn prepare_http_tts<'a>(
+    base_voice: &'a VoiceBindings,
     vreq: &ValidatedTtsRequest,
-) {
+    owned_voice: &'a mut Option<VoiceBindings>,
+) -> PreparedHttpTts<'a> {
     let seed = vreq.resolve_seed_or_time();
-    let (owned_voice, fallback_voice) = resolve_request_voice(base_voice, vreq.speaker_id);
-    let voice_ref = owned_voice.as_ref().unwrap_or(fallback_voice);
-
+    if matches!(base_voice.identity, VoiceIdentity::Preset(_)) {
+        // Las voces preset no tienen pesos WOVR; solo cambia la identidad del preset.
+        *owned_voice = Some(VoiceBindings {
+            identity: VoiceIdentity::Preset(vreq.speaker_id),
+            ..base_voice.clone()
+        });
+    }
+    let voice_ref = owned_voice.as_ref().unwrap_or(base_voice);
     let prep = prepare_markup_06b(
         &vreq.text,
         voice_ref,
@@ -336,12 +388,61 @@ pub fn handle_tts_full(
         },
         vreq.temperature,
     );
-
     let effective_seed = if vreq.seed.is_none() && prep.did_para_substitute {
         prep.seed
     } else {
         seed
     };
+    PreparedHttpTts {
+        voice_ref,
+        prep,
+        effective_seed,
+    }
+}
+
+fn build_http_exec(
+    vreq: &ValidatedTtsRequest,
+    prep: &qwen_engine::PreparedMarkup,
+    effective_seed: u32,
+    is_stream: bool,
+    abort: AbortHandle,
+) -> RequestExecution {
+    RequestExecution {
+        config: RequestConfig {
+            speaker_id: vreq.speaker_id,
+            language_id: vreq.language_id,
+            temperature: prep.temperature,
+            top_k: vreq.top_k,
+            top_p: vreq.top_p,
+            rep_penalty: vreq.rep_penalty,
+            max_tokens: 8192,
+            greedy_warmup: 0,
+            seed: effective_seed,
+            stream: is_stream,
+            stream_chunk_frames: if is_stream { vreq.chunk_frames } else { 10 },
+            volume: vreq.volume,
+            rate: if is_stream { 1.0 } else { vreq.rate },
+            silent: true,
+            debug: false,
+            cp_roughness: 0.0,
+        },
+        abort,
+    }
+}
+
+pub fn handle_tts_full(
+    runtime: &ComputeRuntime,
+    model: &Model06B,
+    base_voice: &VoiceBindings,
+    scratch: &mut SessionScratch,
+    stream: &mut TcpStream,
+    vreq: &ValidatedTtsRequest,
+) {
+    let mut owned_voice = None;
+    let ctx = prepare_http_tts(base_voice, vreq, &mut owned_voice);
+    let voice_ref = ctx.voice_ref;
+    let prep = ctx.prep;
+    let effective_seed = ctx.effective_seed;
 
     eprintln!(
         "[HTTP] TTS: \"{}\" (speaker={}, lang={}, seed={})",
@@ -358,27 +459,7 @@ pub fn handle_tts_full(
             return;
         }
     };
-    let exec = RequestExecution {
-        config: RequestConfig {
-            speaker_id: vreq.speaker_id,
-            language_id: vreq.language_id,
-            temperature: prep.temperature,
-            top_k: vreq.top_k,
-            top_p: vreq.top_p,
-            rep_penalty: vreq.rep_penalty,
-            max_tokens: 8192,
-            greedy_warmup: 0,
-            seed: effective_seed,
-            stream: false,
-            stream_chunk_frames: 10,
-            volume: vreq.volume,
-            rate: vreq.rate,
-            silent: true,
-            debug: false,
-            cp_roughness: 0.0,
-        },
-        abort: guard.abort.clone(),
-    };
+    let exec = build_http_exec(vreq, &prep, effective_seed, false, guard.abort.clone());
 
     let t0 = Instant::now();
     let mut timing_opt: Option<SynthesisTiming> = None;
@@ -403,7 +484,7 @@ pub fn handle_tts_full(
         )
     };
 
-    let mut samples = match res {
+    let samples = match res {
         Ok(s) if !s.is_empty() => s,
         Err(EngineError::Aborted) => {
             eprintln!(
@@ -425,27 +506,9 @@ pub fn handle_tts_full(
         }
     };
 
-    if (vreq.volume - 1.0).abs() > 1e-6 {
-        apply_gain(&mut samples, vreq.volume);
-    }
-    if (vreq.rate - 1.0).abs() > 1e-6 {
-        let stretched = time_stretch(&samples, vreq.rate);
-        if !stretched.is_empty() {
-            samples = stretched;
-        }
-    }
-
     let wav = encode_wav_bytes(&samples, SAMPLE_RATE as u32);
     if send_response(stream, 200, "audio/wav", &wav).is_ok() {
-        let elapsed = t0.elapsed().as_secs_f64();
-        let audio_secs = samples.len() as f64 / SAMPLE_RATE as f64;
-        eprintln!(
-            "[HTTP] Sent {} bytes WAV ({:.2}s audio) in {:.1}s (RTF {:.2})",
-            wav.len(),
-            audio_secs,
-            elapsed,
-            elapsed / audio_secs.max(1e-6)
-        );
+        log_wav_sent(wav.len(), samples.len(), t0.elapsed().as_secs_f64());
         if let Some(ref t) = timing_opt {
             log_timing_breakdown(t);
         }
@@ -460,28 +523,11 @@ pub fn handle_tts_stream(
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
-    let seed = vreq.resolve_seed_or_time();
-    let (owned_voice, fallback_voice) = resolve_request_voice(base_voice, vreq.speaker_id);
-    let voice_ref = owned_voice.as_ref().unwrap_or(fallback_voice);
-
-    let prep = prepare_markup_06b(
-        &vreq.text,
-        voice_ref,
-        false,
-        vreq.seed.or(Some(seed)),
-        if vreq.temp_set {
-            Some(vreq.temperature)
-        } else {
-            None
-        },
-        vreq.temperature,
-    );
-
-    let effective_seed = if vreq.seed.is_none() && prep.did_para_substitute {
-        prep.seed
-    } else {
-        seed
-    };
+    let mut owned_voice = None;
+    let ctx = prepare_http_tts(base_voice, vreq, &mut owned_voice);
+    let voice_ref = ctx.voice_ref;
+    let prep = ctx.prep;
+    let effective_seed = ctx.effective_seed;
 
     eprintln!(
         "[HTTP] TTS stream: \"{}\" (speaker={}, lang={}, seed={})",
@@ -504,27 +550,7 @@ pub fn handle_tts_stream(
     }
 
     let t0 = Instant::now();
-    let exec = RequestExecution {
-        config: RequestConfig {
-            speaker_id: vreq.speaker_id,
-            language_id: vreq.language_id,
-            temperature: prep.temperature,
-            top_k: vreq.top_k,
-            top_p: vreq.top_p,
-            rep_penalty: vreq.rep_penalty,
-            max_tokens: 8192,
-            greedy_warmup: 0,
-            seed: effective_seed,
-            stream: true,
-            stream_chunk_frames: vreq.chunk_frames,
-            volume: vreq.volume,
-            rate: 1.0,
-            silent: true,
-            debug: false,
-            cp_roughness: 0.0,
-        },
-        abort: guard.abort.clone(),
-    };
+    let exec = build_http_exec(vreq, &prep, effective_seed, true, guard.abort.clone());
 
     let mut chunk_sink = HttpAudioChunkSink {
         stream,
@@ -584,15 +610,7 @@ pub fn handle_tts_stream(
     }
 
     if send_chunked_end(stream).is_ok() {
-        let elapsed = t0.elapsed().as_secs_f64();
-        let audio_secs = total_samples as f64 / SAMPLE_RATE as f64;
-        eprintln!(
-            "[HTTP] Streamed {} samples ({:.2}s audio) in {:.1}s (RTF {:.2})",
-            total_samples,
-            audio_secs,
-            elapsed,
-            elapsed / audio_secs.max(1e-6)
-        );
+        log_stream_sent(total_samples, t0.elapsed().as_secs_f64());
         if let Some(ref t) = timing_opt {
             log_timing_breakdown(t);
         }
@@ -607,32 +625,27 @@ pub fn handle_connection(
     mut stream: TcpStream,
     peer_ip: &str,
 ) {
-    let Some(req) = read_http_request(&mut stream) else {
-        return;
+    let req = match read_http_request(&mut stream) {
+        ReadHttpResult::Ok(req) => req,
+        ReadHttpResult::TooLarge => {
+            send_error(&mut stream, 400, "request body exceeds 1 MiB limit");
+            return;
+        }
+        ReadHttpResult::InvalidContentLength => {
+            send_error(&mut stream, 400, "invalid Content-Length header");
+            return;
+        }
+        ReadHttpResult::Empty => return,
     };
 
-    eprintln!(
-        "[HTTP] {} {} {} from {}",
-        req.method,
-        req.path,
-        if req.method == "POST" && !req.body.is_empty() {
-            "(has body)"
-        } else {
-            ""
-        },
-        peer_ip
-    );
+    log_http_request(&req, peer_ip);
 
     if req.method == "OPTIONS" {
         send_cors_options(&mut stream);
         return;
     }
 
-    let has_clone = !matches!(base_voice.identity, VoiceIdentity::Preset(_));
-    let (def_spk, def_lang) = match &base_voice.identity {
-        VoiceIdentity::Preset(id) => (*id, Some(2050)),
-        _ => (3061, None),
-    };
+    let (has_clone, def_spk, def_lang) = default_voice_context(base_voice);
 
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/v1/health") => handle_health(&mut stream),
@@ -652,5 +665,37 @@ pub fn handle_connection(
             }
         }
         _ => send_error(&mut stream, 404, "not found"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn test_http_content_length_bounds_and_overflow() {
+        assert_eq!(parse_content_length("Content-Length: 42\r\n"), Ok(42));
+        assert_eq!(parse_content_length("Host: localhost\r\n"), Ok(0));
+        assert!(parse_content_length("Content-Length: -5\r\n").is_err());
+        assert!(parse_content_length("Content-Length: 99999999999999999999999\r\n").is_err());
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client_t = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(addr).unwrap();
+            let req = b"POST /v1/tts HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2000000\r\n\r\n{}";
+            c.write_all(req).unwrap();
+            let mut resp = String::new();
+            let _ = c.read_to_string(&mut resp);
+            resp
+        });
+        let (mut srv, _) = listener.accept().unwrap();
+        let res = read_http_request(&mut srv);
+        assert!(matches!(res, ReadHttpResult::TooLarge));
+        send_error(&mut srv, 400, "request body exceeds 1 MiB limit");
+        drop(srv);
+        let resp = client_t.join().unwrap();
+        assert!(resp.contains("400 Bad Request"));
     }
 }

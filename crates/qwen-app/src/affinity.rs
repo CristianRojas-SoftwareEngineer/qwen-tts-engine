@@ -89,9 +89,13 @@ mod win32 {
             let mut cores: usize = 0;
             let mut off: usize = 0;
             while off + std::mem::size_of::<SystemLogicalProcessorInformationEx>() <= len as usize {
-                let info = &*(buf.as_ptr().add(off)
-                    as *const SystemLogicalProcessorInformationEx);
-                if info.size == 0 {
+                let info = std::ptr::read_unaligned(
+                    buf.as_ptr().add(off) as *const SystemLogicalProcessorInformationEx
+                );
+                if (info.size as usize)
+                    < std::mem::size_of::<SystemLogicalProcessorInformationEx>()
+                    || off + (info.size as usize) > len as usize
+                {
                     break;
                 }
                 if info.relationship == RELATION_PROCESSOR_CORE && info.processor.group_count > 0 {

@@ -5,6 +5,8 @@
 
 use std::net::Ipv4Addr;
 
+use qwen_core::config::CODEC_VOCAB_SIZE;
+
 /// Argumentos CLI parseados para el binario `qwen_tts`.
 #[derive(Debug, Clone)]
 pub struct CliArgs {
@@ -255,6 +257,42 @@ fn take_val(
     Ok(args[*idx].clone())
 }
 
+fn parse_finite_f32(s: &str, flag_name: &str) -> Result<f32, String> {
+    s.parse::<f32>()
+        .ok()
+        .filter(|v| v.is_finite())
+        .ok_or_else(|| format!("Error: invalid {flag_name} '{s}'"))
+}
+
+fn take_bounded_f32(
+    args: &[String],
+    idx: &mut usize,
+    inline: Option<String>,
+    flag: &str,
+    name: &str,
+    min: f32,
+    max: f32,
+) -> Result<f32, String> {
+    let s = take_val(args, idx, inline, flag)?;
+    let v = parse_finite_f32(&s, name)?;
+    if !(min..=max).contains(&v) {
+        return Err(format!("Error: {name} {v} out of range [{min:.1}, {max:.1}]"));
+    }
+    Ok(v)
+}
+
+fn take_usize(
+    args: &[String],
+    idx: &mut usize,
+    inline: Option<String>,
+    flag: &str,
+    name: &str,
+) -> Result<usize, String> {
+    let s = take_val(args, idx, inline, flag)?;
+    s.parse::<usize>()
+        .map_err(|_| format!("Error: invalid {name} '{s}'"))
+}
+
 /// Parsea y valida los argumentos de línea de comandos en [`ParseOutcome`].
 pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
     let mut out = CliArgs::default();
@@ -293,41 +331,36 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                 out.language = Some(take_val(args, &mut i, inline_val, flag)?);
             }
             "-T" | "--temperature" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.temperature = s
-                    .parse::<f32>()
-                    .map_err(|_| format!("Error: invalid temperature '{s}'"))?;
+                out.temperature =
+                    take_bounded_f32(args, &mut i, inline_val, flag, "temperature", 0.0, 2.0)?;
                 out.temp_set = true;
             }
             "-k" | "--top-k" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
-                out.top_k = s
+                let v = s
                     .parse::<i32>()
                     .map_err(|_| format!("Error: invalid top-k '{s}'"))?;
+                if v < 0 || v > CODEC_VOCAB_SIZE as i32 {
+                    return Err(format!("Error: top-k {v} out of range [0, {CODEC_VOCAB_SIZE}]"));
+                }
+                out.top_k = v;
             }
             "-p" | "--top-p" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.top_p = s
-                    .parse::<f32>()
-                    .map_err(|_| format!("Error: invalid top-p '{s}'"))?;
+                out.top_p = take_bounded_f32(args, &mut i, inline_val, flag, "top-p", 0.0, 1.0)?;
             }
             "-r" | "--rep-penalty" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.rep_penalty = s
-                    .parse::<f32>()
-                    .map_err(|_| format!("Error: invalid rep-penalty '{s}'"))?;
+                out.rep_penalty =
+                    take_bounded_f32(args, &mut i, inline_val, flag, "rep-penalty", 0.5, 2.0)?;
             }
             "-m" | "--max-tokens" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.max_tokens = s
-                    .parse::<usize>()
-                    .map_err(|_| format!("Error: invalid max-tokens '{s}'"))?;
+                let m = take_usize(args, &mut i, inline_val, flag, "max-tokens")?;
+                if m == 0 {
+                    return Err("Error: max-tokens must be >= 1".to_string());
+                }
+                out.max_tokens = m;
             }
             "-j" | "--threads" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                let n = s
-                    .parse::<usize>()
-                    .map_err(|_| format!("Error: invalid threads '{s}'"))?;
+                let n = take_usize(args, &mut i, inline_val, flag, "threads")?;
                 if n > 0 {
                     out.threads = Some(n);
                 }
@@ -337,24 +370,20 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                 let val = s
                     .parse::<i64>()
                     .map_err(|_| format!("Error: invalid seed '{s}'"))?;
-                if val >= 0 {
+                if val < 0 {
+                    out.seed = None;
+                } else if val <= u32::MAX as i64 {
                     out.seed = Some(val as u32);
                 } else {
-                    out.seed = None;
+                    return Err(format!("Error: seed {val} exceeds u32::MAX"));
                 }
             }
             "--greedy-warmup" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.greedy_warmup = s
-                    .parse::<usize>()
-                    .map_err(|_| format!("Error: invalid greedy-warmup '{s}'"))?;
+                out.greedy_warmup = take_usize(args, &mut i, inline_val, flag, "greedy-warmup")?;
             }
             "--max-duration" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
-                let d = s
-                    .parse::<f32>()
-                    .map_err(|_| format!("Error: invalid max-duration '{s}'"))?;
-                out.max_duration = Some(d);
+                out.max_duration = Some(parse_finite_f32(&s, "max-duration")?);
             }
             "--int8" => out.use_int8 = true,
             "--int4" => out.use_int4 = true,
@@ -368,22 +397,13 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                 out.stream = true;
             }
             "--stream-chunk" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.stream_chunk = s
-                    .parse::<usize>()
-                    .map_err(|_| format!("Error: invalid stream-chunk '{s}'"))?;
+                out.stream_chunk = take_usize(args, &mut i, inline_val, flag, "stream-chunk")?;
             }
             "--volume" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.volume = s
-                    .parse::<f32>()
-                    .map_err(|_| format!("Error: invalid volume '{s}'"))?;
+                out.volume = take_bounded_f32(args, &mut i, inline_val, flag, "volume", 0.0, 10.0)?;
             }
             "--rate" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.rate = s
-                    .parse::<f32>()
-                    .map_err(|_| format!("Error: invalid rate '{s}'"))?;
+                out.rate = take_bounded_f32(args, &mut i, inline_val, flag, "rate", 0.25, 4.0)?;
             }
             "--ref-audio" => {
                 out.ref_audio = Some(take_val(args, &mut i, inline_val, flag)?);
@@ -414,23 +434,24 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
             }
             "--max-ref-duration" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
-                out.max_ref_duration = s
-                    .parse::<f32>()
-                    .map_err(|_| format!("Error: invalid max-ref-duration '{s}'"))?;
+                out.max_ref_duration = parse_finite_f32(&s, "max-ref-duration")?;
             }
             "--target-cv" => {
                 out.target_cv = Some(take_val(args, &mut i, inline_val, flag)?);
             }
             "--voice-strength" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
-                out.voice_strength = s
-                    .parse::<f32>()
-                    .map_err(|_| format!("Error: invalid voice-strength '{s}'"))?;
+                out.voice_strength = parse_finite_f32(&s, "voice-strength")?;
             }
             "--vs-layers" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
                 if let Some((a, b)) = s.split_once('-') {
                     if let (Ok(l0), Ok(l1)) = (a.parse::<i32>(), b.parse::<i32>()) {
+                        if l0 < 0 || l0 > l1 {
+                            return Err(format!(
+                                "Error: invalid --vs-layers '{s}' (expected 0 <= a <= b)"
+                            ));
+                        }
                         out.vs_l0 = l0;
                         out.vs_l1 = l1;
                     } else {
@@ -445,9 +466,7 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
             }
             "--emotion-strength" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
-                out.emotion_strength = s
-                    .parse::<f32>()
-                    .map_err(|_| format!("Error: invalid emotion-strength '{s}'"))?;
+                out.emotion_strength = parse_finite_f32(&s, "emotion-strength")?;
             }
             "--emo-ref" => {
                 out.emo_ref = Some(take_val(args, &mut i, inline_val, flag)?);
@@ -456,19 +475,15 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                 out.emo_ref_text = Some(take_val(args, &mut i, inline_val, flag)?);
             }
             "--roughness" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.roughness = s
-                    .parse::<f32>()
-                    .map_err(|_| format!("Error: invalid roughness '{s}'"))?;
+                out.roughness =
+                    take_bounded_f32(args, &mut i, inline_val, flag, "roughness", 0.0, 1.0)?;
             }
             "--compose" => {
                 out.compose_spec = Some(take_val(args, &mut i, inline_val, flag)?);
             }
             "--compose-pause" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
-                out.compose_pause = s
-                    .parse::<f32>()
-                    .map_err(|_| format!("Error: invalid compose-pause '{s}'"))?;
+                out.compose_pause = parse_finite_f32(&s, "compose-pause")?;
             }
             "--no-compose" => out.no_compose = true,
             "--serve" => {
@@ -587,6 +602,36 @@ mod tests {
             "not-an-ip".to_string(),
         ];
         assert!(parse_cli(&c).is_err());
+
+        let d = vec![
+            "qwen_tts".to_string(),
+            "--rate".to_string(),
+            "NaN".to_string(),
+        ];
+        assert!(parse_cli(&d).is_err());
+
+        let e = vec![
+            "qwen_tts".to_string(),
+            "--vs-layers".to_string(),
+            "20-10".to_string(),
+        ];
+        assert!(parse_cli(&e).is_err());
+
+        for bad in [
+            vec!["qwen_tts", "--temperature", "3.0"],
+            vec!["qwen_tts", "--top-k", "4000"],
+            vec!["qwen_tts", "--top-p", "1.5"],
+            vec!["qwen_tts", "--rep-penalty", "0.2"],
+            vec!["qwen_tts", "--volume", "-0.5"],
+            vec!["qwen_tts", "--rate", "0.1"],
+            vec!["qwen_tts", "--roughness", "1.2"],
+            vec!["qwen_tts", "--seed", "99999999999"],
+            vec!["qwen_tts", "--max-tokens", "0"],
+            vec!["qwen_tts", "--vs-layers", "-1-10"],
+        ] {
+            let args: Vec<String> = bad.into_iter().map(str::to_string).collect();
+            assert!(parse_cli(&args).is_err(), "expected error for {args:?}");
+        }
     }
 
     #[test]

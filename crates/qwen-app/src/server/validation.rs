@@ -27,7 +27,7 @@ pub struct ValidatedTtsRequest {
     pub chunk_frames: usize,
 }
 
-fn time_based_seed() -> u32 {
+pub fn time_based_seed() -> u32 {
     let d = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
@@ -111,7 +111,7 @@ impl ValidatedTtsRequest {
         if let Some(vd) = obj.get("voice_design") {
             let enabled = match vd {
                 Value::Bool(b) => *b,
-                Value::String(s) => s == "true" || s == "1",
+                Value::String(s) => s.eq_ignore_ascii_case("true") || s == "1",
                 Value::Number(n) => n.as_i64() == Some(1),
                 _ => false,
             };
@@ -212,16 +212,34 @@ impl ValidatedTtsRequest {
 
         // semilla
         let seed = match extract_opt_i64(obj, "seed")? {
-            Some(v) if v >= 0 => Some(v as u32),
-            _ => None,
+            Some(v) if v < 0 => None,
+            Some(v) if v <= u32::MAX as i64 => Some(v as u32),
+            Some(_) => return Err("'seed' exceeds u32::MAX".to_string()),
+            None => None,
         };
 
         // emotion (opcional, validado como string si está presente)
         let _emotion = extract_opt_str(obj, "emotion")?;
 
         // volumen / velocidad
-        let volume = extract_opt_f64(obj, "volume")?.unwrap_or(1.0) as f32;
-        let rate = extract_opt_f64(obj, "rate")?.unwrap_or(1.0) as f32;
+        let volume = match extract_opt_f64(obj, "volume")? {
+            Some(v) => {
+                if !(0.0..=10.0).contains(&v) {
+                    return Err("'volume' out of range [0, 10]".to_string());
+                }
+                v as f32
+            }
+            None => 1.0,
+        };
+        let rate = match extract_opt_f64(obj, "rate")? {
+            Some(v) => {
+                if !(0.25..=4.0).contains(&v) {
+                    return Err("'rate' out of range [0.25, 4.0]".to_string());
+                }
+                v as f32
+            }
+            None => 1.0,
+        };
         if is_stream && (rate - 1.0).abs() > 1e-6 {
             return Err("'rate' is not supported on /v1/tts/stream".to_string());
         }
@@ -272,6 +290,10 @@ mod tests {
         assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","rep_penalty":0.2}"#, false, false, 3061, Some(2050)).is_err());
         assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","voice_design":"true"}"#, false, false, 3061, Some(2050)).is_err());
         assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","speaker":"ryan","rate":1.2}"#, true, false, 3061, Some(2050)).is_err());
+        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","rate":0.01}"#, false, false, 3061, Some(2050)).is_err());
+        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","volume":-1.0}"#, false, false, 3061, Some(2050)).is_err());
+        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","seed":99999999999}"#, false, false, 3061, Some(2050)).is_err());
+        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","voice_design":"TRUE"}"#, false, false, 3061, Some(2050)).is_err());
 
         let ok = ValidatedTtsRequest::parse(r#"{"input":"Hello!","voice":"ryan","rate":1.2}"#, false, false, 3061, Some(2050)).unwrap();
         assert_eq!(ok.text, "Hello!");
