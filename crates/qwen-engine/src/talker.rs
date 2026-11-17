@@ -6,7 +6,7 @@
 use qwen_core::config::{
     HEAD_DIM, HIDDEN_SIZE, INTERMEDIATE_SIZE, KV_DIM, NUM_HEADS, NUM_KV_HEADS, NUM_LAYERS, Q_DIM,
 };
-use qwen_kernels::{ComputeRuntime, Transpose};
+use qwen_kernels::{AlignedBuf, ComputeRuntime, Transpose};
 
 use crate::error::EngineError;
 use crate::model::{Model06B, SessionScratch, TransformerLayerWeights};
@@ -51,12 +51,21 @@ pub fn talker_prefill(
     let pref_proj = &mut tb.pref_proj[..seq_len * HIDDEN_SIZE];
     let swiglu_tmp = &mut tb.swiglu_tmp[..INTERMEDIATE_SIZE];
 
-    let wq_f32 = &mut tb.pref_wq_f32[..Q_DIM * HIDDEN_SIZE];
-    let wk_f32 = &mut tb.pref_wk_f32[..KV_DIM * HIDDEN_SIZE];
-    let wv_f32 = &mut tb.pref_wv_f32[..KV_DIM * HIDDEN_SIZE];
-    let wo_f32 = &mut tb.pref_wo_f32[..HIDDEN_SIZE * Q_DIM];
-    let gate_up_f32 = &mut tb.pref_gate_up_f32[..2 * INTERMEDIATE_SIZE * HIDDEN_SIZE];
-    let down_f32 = &mut tb.pref_down_f32[..HIDDEN_SIZE * INTERMEDIATE_SIZE];
+    // Staging F32 de los pesos de una capa (BF16 -> F32 para `sgemm`), 60 MiB.
+    // Es transitorio: vive solo durante el prefill y se libera al salir, de modo
+    // que no forma parte de la huella residente de `SessionScratch` (O10b).
+    let mut wq_buf = AlignedBuf::<f32>::new_zeroed(Q_DIM * HIDDEN_SIZE);
+    let mut wk_buf = AlignedBuf::<f32>::new_zeroed(KV_DIM * HIDDEN_SIZE);
+    let mut wv_buf = AlignedBuf::<f32>::new_zeroed(KV_DIM * HIDDEN_SIZE);
+    let mut wo_buf = AlignedBuf::<f32>::new_zeroed(HIDDEN_SIZE * Q_DIM);
+    let mut gate_up_buf = AlignedBuf::<f32>::new_zeroed(2 * INTERMEDIATE_SIZE * HIDDEN_SIZE);
+    let mut down_buf = AlignedBuf::<f32>::new_zeroed(HIDDEN_SIZE * INTERMEDIATE_SIZE);
+    let wq_f32 = &mut wq_buf[..];
+    let wk_f32 = &mut wk_buf[..];
+    let wv_f32 = &mut wv_buf[..];
+    let wo_f32 = &mut wo_buf[..];
+    let gate_up_f32 = &mut gate_up_buf[..];
+    let down_f32 = &mut down_buf[..];
 
     let scale = 1.0f32 / (HEAD_DIM as f32).sqrt();
     let kv_max = scratch.talker_kv.max_pos;

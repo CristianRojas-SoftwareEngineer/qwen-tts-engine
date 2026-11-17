@@ -105,11 +105,11 @@ Dimensiones verificadas en `crates/qwen-core/src/config.rs` y `crates/qwen-engin
 
 | Estructura | Cálculo exacto | RAM reservada al crear |
 |---|---|---|
-| `TalkerKvCache::new()` | `28 × 1024 × 1024 × 2 (K,V) × 2 B` | **`112.0 MiB`** |
-| `TalkerBuffers::new()` (`pref_*_f32` + dec) | `(2048+1024+1024+2048+6144+3072)×1024 × 4 B` + dec | **`60.1 MiB`** |
+| `TalkerKvCache::new()` | `28 × 256 × 1024 × 2 (K,V) × 2 B` (`KV_INITIAL_POSITIONS = 256` desde `O10a`; antes 1024 = `112.0 MiB`) | **`28.0 MiB`** |
+| `TalkerBuffers::new()` (dec + `pref_*` de activación diferidos) | sin staging de pesos desde `O10b` (antes `(2048+1024+1024+2048+6144+3072)×1024 × 4 B` = `60.0 MiB` residentes) | **`~0.1 MiB`** *(staging F32 de `60.0 MiB` solo durante el prefill)* |
 | `EmbLruCache::new()` | `2048 × 1024 × 4 B` | **`8.0 MiB`** |
 | `CpKvCache` + `CpBuffers` + otros | `5 × 64 × 1024 × 2 × 2 B` + bufs | **`~1.5 MiB`** |
-| **Total base por `SessionScratch`** | Antes de `ensure_prefill_capacity` / `ensure_conv_state` | **`~181.6 MiB`** *(~726 MiB con 4 workers)* |
+| **Total base por `SessionScratch`** | Antes de `ensure_prefill_capacity` / `ensure_conv_state` | **`~37.6 MiB`** tras `O10a`+`O10b` *(antes `~181.6 MiB`, ~726 MiB con 4 workers)* |
 | `BatchWorkspace` KV (`kv_max = 1116`) | `B × 28 × 1116 × 1024 × 2 × 2 B` | **`122.08 MiB / slot`** *(`976.6 MiB` para B=8)* |
 
 ### 3.3 Tráfico y sincronización por fotograma generado (`80 ms` de audio)
@@ -225,10 +225,10 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Problema**: `TalkerKvCache::new()` asigna `1024` posiciones (`112.0 MiB`); `TalkerBuffers::new()` asigna `pref_*_f32` (`60.0 MiB`) de inmediato; `SdStreamState` retiene 14 `Vec<f32>` temporales (`tmp_*`) por cada `ContinuousSlot` aunque decodifiquen secuencialmente con un único `sd_ws`.
 - **Propuesta**:
   - Cambiar `KV_INITIAL_POSITIONS` a `256` (`28.0 MiB`, ahorro de **`84.0 MiB`/sesión**, creciendo dinámicamente vía `ensure_capacity`).
-  - Asignar `pref_*_f32` bajo demanda en `ensure_prefill_capacity` (ahorro de **`60.0 MiB`/worker** sin prefill activo).
+  - Sacar el staging `pref_*_f32` de `TalkerBuffers`: transitorio y local de `talker_prefill` (se asigna al entrar y se libera al salir). Asignarlo «bajo demanda y retenerlo» no ahorraría nada en el pico, porque toda síntesis prefila (ahorro de **`60.0 MiB`/sesión** fuera del prefill).
   - Mover los 14 `tmp_*` de `SdStreamState` a `DecoderWorkspace`, bajando la huella base de `SessionScratch::new()` de `~181.6 MiB` a **`~37.6 MiB`**.
 - **Contrato numérico**: **Bit-idéntico**.
-- **Estado**: `O10a` `condicionado`; `O10b` y `O10c` `vigente`. **Efecto medido**: `O10a` ahorra `84 MiB`/sesión solo si no hay crecimiento. `256` cubre 211 frames de audio + prompt; un texto de 450 caracteres usa ~319. El gemelo C probó `512`, creció a `1024` en textos largos y lo descartó; su valor validado es `1024`, que este motor ya tiene. **Prueba obligatoria**: medir el pico *durante* `ensure_capacity`. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`. **Si se pierde**: reasignación del KV en frases largas.
+- **Estado**: `O10a` `implementado` (Paso 1.1); `O10b` `implementado` (Paso 1.3); `O10c` `vigente`. **Efecto medido `O10b`** (A/B intercalado, pico exacto de commit `PeakPagefileUsage`, paridad 12/12 con la referencia): CLI **−60,3 / −60,1 MiB** (corta / larga; WS pico −60 MiB, porque el pico ocurre en el decoder, cuando el staging ya se liberó); servidor `--workers 4` **−241 MiB** de pico de commit (1 878→1 637) y de reposo; `--batch-size 4` **−120 MiB** (3 003→2 883). `prefill_ms` sin cambio. RTF por petición en workers4 **+1,9 %** de mediana pareada (ABBA, 4 repeticiones, rango +0,4…+3,5 %, sin calma plena), dentro de la compuerta ±3 %; CLI y batch4 neutros. **Efecto medido `O10a`**: ahorra `84 MiB`/sesión solo si no hay crecimiento. `256` cubre 211 frames de audio + prompt; un texto de 450 caracteres usa ~319. El gemelo C probó `512`, creció a `1024` en textos largos y lo descartó; su valor validado es `1024`, que este motor ya tiene. **Prueba obligatoria**: medir el pico *durante* `ensure_capacity`. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`. **Si se pierde**: reasignación del KV en frases largas.
 
 #### O11. Snapshot compacto de KV en `generate_batch_multi`
 - **Ubicación**: `crates/qwen-engine/src/batch.rs:163, 200-219, 1144-1181` (y `run_continuous_batch` en `1485`, ruta directa sin snapshot).
@@ -253,7 +253,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 | **1** | **O5** | `vigente` | `causal_attention_windowed` en `SpeechDecoder` streaming | **CPU** | Ninguna | Ninguno (`SNR >= 100 dB`) | Bajo |
 | **2** | **O1** | `vigente` | Microkernels `matmat_int8` / `matmat_q4_0` reales (sin `bf16`) | **Ancho de banda + CPU** | Ninguna | Ninguno (bit-idéntico) | Medio |
 | **3** | **O2** | `pendiente` | Eliminar doble transposición en `batch_proj_q` | **Ancho de banda + CPU** | Depende de **O1** | Ninguno (bit-idéntico) | Bajo–Medio |
-| **4** | **O10** | `condicionado` | `KV_INITIAL_POSITIONS`, `pref_*_f32` diferido, `tmp_*` a `DecoderWorkspace` | **RAM** | Ninguna | Ninguno (bit-idéntico) | Bajo |
+| **4** | **O10** | `O10a`/`O10b` `implementado`; `O10c` `vigente` | `KV_INITIAL_POSITIONS`, `pref_*_f32` diferido, `tmp_*` a `DecoderWorkspace` | **RAM** | Ninguna | Ninguno (bit-idéntico) | Bajo |
 | **5** | **O11** | `implementado` | Snapshot compacto de KV en `generate_batch_multi` (CLI batch) | **RAM** | Ninguna | Ninguno (bit-idéntico) | Bajo |
 | **6** | **O7** | `vigente` | Quitar `ftz_on()` hot path, compactar batch y barrera única atención | **CPU + Ancho de banda** | Ninguna (mejor tras **O1**) | Ninguno (bit-idéntico) | Bajo–Medio |
 | **7** | **O9** | `vigente` | Fijar `OMP_NUM_THREADS = -j` en el lanzador y `openblas_set_num_threads` una sola vez | **CPU (servidor)** | Ninguna | Ninguno | Bajo |
@@ -298,7 +298,7 @@ Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar a
 - **Pasos (ordenados de menor a mayor riesgo de borde)**:
   - **Paso 1.1 (`O10a`)**: **Qué cambia**: `KV_INITIAL_POSITIONS` de `1024` a `256` (`crates/qwen-engine/src/model.rs:33`). **Por qué**: −84.0 MiB/sesión. **Riesgo a vigilar**: `256` cubre 211 frames de audio + prompt; un texto de 450 caracteres usa ~319 → prueba de crecimiento obligatoria y medición del pico durante `ensure_capacity`. **Compuerta**: RSS sin subir durante el crecimiento. **Decisión**: conservar solo si no aparece ese pico.
   - **Paso 1.2 (`O11`)**: **Qué cambia**: sustituir el snapshot completo de `generate_batch_multi` por un snapshot compacto `(layer × pl) × KV_DIM` cargado por la ruta única `load_slot_kv(b, sk, sv, pl, pl)` (`crates/qwen-engine/src/batch.rs`); `run_continuous_batch` (servidor `--batch-size`) no usa snapshots y no se modifica. **Por qué**: reducir el pico de privados del modo batch del CLI (el pico del servidor lo gobierna `BatchWorkspace`, ~488 MiB committed con `kv_max=1116`). **Riesgo a vigilar**: offsets de capa/stride (`layer * src_stride * KV_DIM` en origen). **Compuerta**: hashes bit-idénticos y Δ de pico privado pareado en banda (medido: −206,0 MiB corto pl=21, −169,5 MiB largo pl=44; servidor ± commit exacto). **Decisión**: conservado (implementado).
-  - **Paso 1.3 (`O10b`)**: **Qué cambia**: asignar `pref_*_f32` (`60.0 MiB`) bajo demanda en `TalkerBuffers::ensure_prefill_capacity`. **Por qué**: −60 MiB/worker. **Compuerta**: RSS CLI y servidor. **Decisión**: conservar sin regresión de `prefill_ms`.
+  - **Paso 1.3 (`O10b`)**: **Qué cambia**: el staging F32 de pesos del prefill (`60.0 MiB`) sale de `TalkerBuffers` y pasa a ser local y transitorio de `talker_prefill` (`crates/qwen-engine/src/talker.rs`). **Por qué**: el pico de commit ocurre en el decoder, después del prefill; liberar el staging lo baja (CLI −60 MiB, workers4 −241 MiB, batch4 −120 MiB). **Compuerta**: pico de commit CLI y servidor; `prefill_ms` y RTF ±3 %. **Decisión**: `implementado`.
   - **Paso 1.4 (`O10c`)**: **Qué cambia**: mover los `14` vectores `tmp_*` de `SdStreamState` a `DecoderWorkspace`. **Por qué**: menos duplicación por `ContinuousSlot`. **Compuerta**: RSS del modo `batch`. **Decisión**: conservar sin regresión de `decoder_ms`.
   - **Paso 1.5 (`O5`)**: **Qué cambia**: reemplazar la atención escalar de `speech_decoder_decode_streaming` (`crates/qwen-engine/src/speech_decoder.rs:1679-1723`) por `d.causal_attention_windowed` con `q_offset = st.kv_len - st.kv_base` y `seq_k = st.kv_len + new_frames - st.kv_base`. **Por qué**: el decoder gobierna el wall cuando mejora el productor. **Riesgo a vigilar**: compactación con `st.kv_base > 0`. **Compuerta**: `decoder_ms` ≤9 150 ms y `drain` ≤350 ms. **Decisión**: conservar con `SNR >= 100 dB`.
   - **Paso 1.6 (`O7` parcial)**: **Qué cambia**: garantizar `ftz_on()` al nacer cada hilo y retirar las llamadas repetidas en `matvec_*`/`matmat_*` (`crates/qwen-kernels/src/dispatch.rs`). **Por qué**: eliminar trabajo muerto en el *hot path*. **Riesgo a vigilar**: hilos HTTP/externos sin `FTZ/DAZ`. **Compuerta**: mediana no peor. **Decisión**: conservar si es neutro o mejor.
