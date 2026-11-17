@@ -190,7 +190,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Propuestas**:
   - Dejar `ftz_on()` solo al inicializar hilos/runtimes (`ComputeRuntime`, `worker_main`, consumidor de `pipeline.rs`).
   - En `batch_talker_step_impl`, compactar slots activos (`n_act`) antes de `batch_proj_q` y paralelizar `(slot activo, cabeza)` en una sola barrera por capa.
-  - Ajustar umbral de paralelización y fusionar `swiglu + quantize_act_int8` en `down_proj` para reducir salidas del pool en `CodePredictor`.
+  - Ajustar el umbral de paralelización en `CodePredictor` para reducir salidas del pool (y combinar la fusión `swiglu + quantize_act_int8` en `down_proj` junto con `O6` en la Oleada 3).
 - **Contrato numérico**: **Bit-idéntico**.
 
 #### O8. Eliminar spin-wait simultáneo en `sd_pool` y vectorizar convoluciones del `SpeechDecoder`
@@ -255,7 +255,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 
 Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar ajustes de memoria, microkernels SIMD y cambios de precisión numérica dificultaría aislar regresiones de determinismo o concurrencia. Se propone ejecutarlas en **4 oleadas progresivas**, cada una con su propio criterio de aceptación.
 
-### Oleada 1 — *Quick wins* bit-idénticos de CPU y RAM (bajo riesgo)
+### Oleada 1 — *Quick wins* de bajo riesgo en CPU y RAM
 - **Alcance**: `O5`, `O8 (parcial: spin_budget=0 en sd_pool)`, `O7 (parcial: retirar ftz_on() de matvec_*)`, `O10` y `O11`.
 - **Archivos objetivo**:
   - `crates/qwen-engine/src/speech_decoder.rs` (reemplazar atención escalar streaming por `d.causal_attention_windowed`)
@@ -265,32 +265,32 @@ Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar a
 - **Prerequisitos**: ninguno.
 - **Criterio de aceptación**:
   1. `cargo test --workspace --release` y `qwen_tts --self-test` verdes.
-  2. Salida PCM/WAV E2E **bit-idéntica** respecto al baseline para frases de referencia con semilla fija.
+  2. **Códigos códec** (`Talker + CodePredictor`) **bit-idénticos** frente al baseline previo con semilla fija; **audio PCM** del `SpeechDecoder` con **`SNR >= 100 dB`** frente al baseline previo (debido al paso de *softmax* 2-pasadas escalar a *online softmax* + FMA en `O5`) y **bit-idéntico entre corridas independientes** del nuevo binario.
   3. Reducción verificada de RSS base (`~144 MiB` menos por `SessionScratch`, `~850 MiB` menos de pico en `generate_batch_multi`) y mejora de TTFA/CPU en streaming.
 
 ### Oleada 2 — Microkernels `matmat` reales y escalado del servidor
-- **Alcance**: `O1`, `O2`, `O7 (resto: compactación de slots activos + barrera única de atención batch)` y `O9`.
+- **Alcance**: `O1`, `O2`, `O7 (compactación de slots activos + barrera única de atención batch + umbral en CP)` y `O9`.
 - **Archivos objetivo**:
-  - `crates/qwen-kernels/src/simd/avx2.rs` (nuevos microkernels `int8_matmat_slice` y `q4_0_matmat_slice` para `B=2,4,8`)
+  - `crates/qwen-kernels/src/simd/avx2.rs` (nuevos microkernels `int8_matmat_slice` y `q4_0_matmat_slice` para `B=2,4,8`) y `simd/scalar.rs`
   - `crates/qwen-kernels/src/dispatch.rs` (cuantización directa sobre layout `[B, cols]` sin doble transposición)
   - `crates/qwen-engine/src/batch.rs` (`batch_proj_q`, `batch_talker_step_impl`, `batch_cp_transformer_step`)
   - `crates/qwen-app/src/server/scheduler.rs` / `crates/qwen-kernels/src/blas.rs` (fijar OpenBLAS sin carreras en `WorkerPoolScheduler`)
 - **Prerequisitos**: Oleada 1 completada.
 - **Criterio de aceptación**:
   1. `qwen_tts --self-test` con `L2_rel == 0.0` (`INT8`) y `L2_rel <= 1e-6` (`Q4_0`) entre `matmat(B=8)` y `8 × matvec`.
-  2. `qwen_tts --batch-test` aprobado.
-  3. `qwen_tts --matmat-bench` (`QWEN_BATCH_B=2,4,8`) mostrando *speedup* claro (>1.5×–4× según `B` y tamaño de matriz) frente al baseline, y caída de `cp_ms` en `cp_prefill2`.
+  2. `qwen_tts --batch-test` aprobado y salida E2E **bit-idéntica** respecto a la Oleada 1.
+  3. `qwen_tts --matmat-bench` (`QWEN_BATCH_B=2,4,8`) y `--batch-bench` mostrando *speedup* claro (>1.5×–4× según `B` y tamaño de matriz) frente al baseline, y caída medible de `cp_ms` en `cp_prefill2`.
 
 ### Oleada 3 — Vectorización SIMD de activaciones, convoluciones y carga paralela
-- **Alcance**: `O6`, `O8 (resto: cs_dwconv, final_conv, add_residual_scaled en AVX2)` y `O12`.
+- **Alcance**: `O6`, `O7 (fusión swiglu + quantize_act_int8 en down_proj)`, `O8 (resto: cs_dwconv, final_conv, add_residual_scaled en AVX2)` y `O12`.
 - **Archivos objetivo**:
-  - `crates/qwen-kernels/src/simd/avx2.rs` y `dispatch.rs` (`swiglu_inplace`, `silu`, convoluciones/residuales AVX2)
+  - `crates/qwen-kernels/src/simd/avx2.rs` y `dispatch.rs` (`swiglu_inplace`, `silu`, fusión opcional `swiglu + quantize_act_int8`, convoluciones/residuales AVX2)
   - `crates/qwen-engine/src/speech_decoder.rs` (`convnext_mlp` GELU, `cs_dwconv`, `final_conv`)
   - `crates/qwen-engine/src/model.rs` / `crates/qwen-kernels/src/quant.rs` (cuantización paralela en `load_talker` / `load_cp`)
-- **Prerequisitos**: Oleadas 1–2 estabilizadas (para aislar cualquier variación ULP introducida por `O6`).
+- **Prerequisitos**: Oleadas 1–2 estabilizadas (para aislar cualquier variación ULP introducida por `O6` sin tocar `swiglu` en oleadas previas).
 - **Criterio de aceptación**:
-  1. Medición de error máximo relativo de `swiglu_inplace` / `silu` / GELU AVX2 frente a `libm` (`< 1e-6`).
-  2. `SNR >= 100 dB` en `SpeechDecoder` streaming vs full y validación auditiva/métrica en frases cortas, medias y largas.
+  1. Error máximo relativo de `swiglu_inplace` / `silu` / GELU AVX2 frente a `libm` `< 1e-6`.
+  2. `SNR >= 100 dB` en `SpeechDecoder` streaming vs full, determinismo E2E **bit-idéntico** entre corridas del mismo binario, y validación auditiva/métrica en frases cortas, medias y largas frente a la Oleada 2.
   3. Reducción medible de `talker_ms`, `cp_ms`, `decoder_ms` y tiempo de carga de modelo.
 
 ### Oleada 4 — Cambios con impacto en `NUMERIC_CONTRACT.md` (Ancho de banda Talker / Prefill)
