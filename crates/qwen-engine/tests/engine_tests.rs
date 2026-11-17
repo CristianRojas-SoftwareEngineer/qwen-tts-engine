@@ -5,7 +5,9 @@
 
 use std::path::PathBuf;
 
-use qwen_core::config::{lookup_language, lookup_speaker, NUM_CODEBOOKS, SAMPLE_RATE};
+use qwen_core::config::{
+    lookup_language, lookup_speaker, DEFAULT_TEMPERATURE, NUM_CODEBOOKS, SAMPLE_RATE,
+};
 use qwen_engine::model::{DecoderWorkspace, SdStreamState};
 use qwen_engine::{
     encode_wav_bytes, speech_decoder_decode, speech_decoder_decode_streaming,
@@ -141,6 +143,7 @@ fn test_e2e_determinism_and_abort() {
         silent: true,
         ..Default::default()
     };
+    assert_eq!(req.temperature, DEFAULT_TEMPERATURE);
 
     let mut scratch1 = SessionScratch::new();
     let (s1, t1) = synthesize_to_samples(

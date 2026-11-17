@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use qwen_core::config::{ENC_DIM, NUM_CODEBOOKS, SAMPLE_RATE};
+use qwen_core::config::{DEFAULT_TEMPERATURE, ENC_DIM, NUM_CODEBOOKS, SAMPLE_RATE};
 use qwen_core::{write_bin_embedding, MarkupPlanner, QVoiceFile};
 use qwen_engine::{
     apply_emotion_direction, attach_emo_ref, build_voice_from_ref_audio, encode_wav_bytes,
@@ -326,7 +326,7 @@ fn test_clone_wdelta_q4_error_and_e2e() {
         false,
         Some(42),
         None,
-        0.9,
+        DEFAULT_TEMPERATURE,
     );
     assert!(prep.did_para_substitute);
     assert!(prep.use_compose);

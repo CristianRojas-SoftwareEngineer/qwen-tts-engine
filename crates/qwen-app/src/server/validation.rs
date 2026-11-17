@@ -5,7 +5,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use qwen_core::config::{lookup_language, lookup_speaker, CODEC_VOCAB_SIZE};
+use qwen_core::config::{lookup_language, lookup_speaker, CODEC_VOCAB_SIZE, DEFAULT_TEMPERATURE};
 use serde_json::Value;
 
 pub const MAX_TTS_TEXT: usize = 8192;
@@ -165,7 +165,7 @@ impl ValidatedTtsRequest {
             3061
         };
 
-        // temperature en [0.0, 2.0], default del servidor = 0.5
+        // temperature en [0.0, 2.0], default = 0.325 (DEFAULT_TEMPERATURE)
         let temp_opt = extract_opt_f64(obj, "temperature")?;
         let (temperature, temp_set) = match temp_opt {
             Some(v) => {
@@ -174,7 +174,7 @@ impl ValidatedTtsRequest {
                 }
                 (v as f32, true)
             }
-            None => (0.5, false),
+            None => (DEFAULT_TEMPERATURE, false),
         };
 
         // top_k en [0, codec_vocab_size (3072)], default = 50
@@ -298,7 +298,7 @@ mod tests {
         let ok = ValidatedTtsRequest::parse(r#"{"input":"Hello!","voice":"ryan","rate":1.2}"#, false, false, 3061, Some(2050)).unwrap();
         assert_eq!(ok.text, "Hello!");
         assert_eq!(ok.speaker_id, 3061);
-        assert_eq!(ok.temperature, 0.5);
+        assert_eq!(ok.temperature, DEFAULT_TEMPERATURE);
         assert!((ok.rate - 1.2).abs() < 1e-6);
 
         // Con voz clonada, si se omite `language` se mantiene `None` (no fuerza `English` ni `META`).

@@ -5,7 +5,7 @@
 
 use std::net::Ipv4Addr;
 
-use qwen_core::config::CODEC_VOCAB_SIZE;
+use qwen_core::config::{CODEC_VOCAB_SIZE, DEFAULT_TEMPERATURE};
 
 /// Argumentos CLI parseados para el binario `qwen_tts`.
 #[derive(Debug, Clone)]
@@ -15,6 +15,7 @@ pub struct CliArgs {
     pub output: String,
     pub speaker_name: Option<String>,
     pub language: Option<String>,
+    /// Temperatura de muestreo (por defecto `DEFAULT_TEMPERATURE = 0.325`).
     pub temperature: f32,
     pub temp_set: bool,
     pub top_k: i32,
@@ -97,7 +98,7 @@ impl Default for CliArgs {
             output: "output.wav".to_string(),
             speaker_name: None,
             language: None,
-            temperature: 0.9,
+            temperature: DEFAULT_TEMPERATURE,
             temp_set: false,
             top_k: 50,
             top_p: 1.0,
@@ -178,7 +179,7 @@ pub fn print_usage(prog: &str) {
     eprintln!("  -o, --output <path>        Output WAV file (default: output.wav)");
     eprintln!("  -s, --speaker <name>       Speaker preset (ryan, vivian, serena, aiden, eric, dylan, uncle_fu, ono_anna, sohee)");
     eprintln!("  -l, --language <name>      Language (default: English)");
-    eprintln!("  -T, --temperature <float>  Sampling temperature (default: 0.9 CLI / 0.5 server)");
+    eprintln!("  -T, --temperature <float>  Sampling temperature (default: 0.325)");
     eprintln!("  -k, --top-k <int>          Top-k sampling (default: 50)");
     eprintln!("  -p, --top-p <float>        Top-p sampling (default: 1.0)");
     eprintln!("  -r, --rep-penalty <float>  Repetition penalty (default: 1.05)");
@@ -651,5 +652,6 @@ mod tests {
         assert!(cfg.stdout_pcm);
         assert!(cfg.stream);
         assert_eq!(cfg.batch_words, 4);
+        assert_eq!(cfg.temperature, DEFAULT_TEMPERATURE);
     }
 }

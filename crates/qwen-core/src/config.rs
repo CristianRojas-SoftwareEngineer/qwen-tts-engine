@@ -14,6 +14,8 @@ use crate::error::CoreError;
 pub const SAMPLE_RATE: usize = 24000;
 pub const FRAME_RATE: f32 = 12.5;
 pub const HOP_SAMPLES: usize = 1920;
+/// Temperatura de muestreo por defecto aplicada cuando no se especifica explícitamente en CLI, HTTP o Rust API.
+pub const DEFAULT_TEMPERATURE: f32 = 0.325;
 
 pub const TEXT_VOCAB_SIZE: usize = 151_936;
 pub const CODEC_VOCAB_SIZE: usize = 3072;
