@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MPL-2.0
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Win32 SMT thread-pinning: restricts the process to one logical thread per
 //! physical core on single-processor-group systems to avoid Windows scheduler
 //! SMT contention (`INTERFACE_CONTRACT.md` §3).

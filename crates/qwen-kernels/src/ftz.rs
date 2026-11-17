@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MPL-2.0
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 /// Enables Flush-to-Zero (FTZ) and Denormals-Are-Zero (DAZ) on the current thread.
 /// INT8 dequantized activations frequently enter the subnormal range (~100x penalty
 /// without FTZ/DAZ). Must be called once on the main thread and on every pool worker.

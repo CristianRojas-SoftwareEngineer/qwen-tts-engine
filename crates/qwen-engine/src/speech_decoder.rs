@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MPL-2.0
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 use qwen_core::config::{
     CODEBOOK_DIM, CODEBOOK_SIZE, DEC_HEAD_DIM, DEC_HIDDEN_SIZE, DEC_INTERMEDIATE_SIZE,
     DEC_LATENT_DIM, DEC_NUM_HEADS, DEC_NUM_LAYERS, DEC_RMS_NORM_EPS, DEC_SLIDING_WINDOW,

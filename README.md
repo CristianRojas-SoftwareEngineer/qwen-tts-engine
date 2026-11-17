@@ -64,3 +64,7 @@ cargo build -p qwen-app --release
 ./target/release/qwen_tts --self-test
 ./target/release/qwen_tts -d models/qwen3-tts-0.6b -j 4 --seed 42 -s ryan -l English --quant-mixed --text "Hello, world!" -o output.wav
 ```
+
+## Licencia
+
+Este proyecto está licenciado bajo **Mozilla Public License Version 2.0 (`MPL-2.0`)**. Consulta [`LICENSE`](LICENSE) para el texto completo de la licencia y [`NOTICE`](NOTICE) para la atribución upstream.
