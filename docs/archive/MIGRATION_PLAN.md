@@ -1,6 +1,6 @@
 # Plan Maestro de Migración y Trazabilidad (`MIGRATION_PLAN.md`)
 
-Registro histórico cerrado de la migración del motor `Qwen3-TTS 0.6B` hacia `crates/` (originalmente anidado en `qwen3-tts-rs/` antes de su promoción a la raíz del repositorio; Gates **G0–G6** completados). Para el diseño y contrato vivos actuales, véanse [ARCHITECTURE.md](../ARCHITECTURE.md), [INTERFACE_CONTRACT.md](../INTERFACE_CONTRACT.md), [SPEC_06B.md](../SPEC_06B.md), [NUMERIC_CONTRACT.md](../NUMERIC_CONTRACT.md) y [VERIFICATION_PLAN.md](../VERIFICATION_PLAN.md).
+Registro histórico cerrado de la migración del motor `Qwen3-TTS 0.6B` hacia `crates/` dentro de **Qwen TTS Engine** (`qwen-tts-engine`; originalmente anidado en `qwen3-tts-rs/` antes de su promoción a la raíz del repositorio; Gates **G0–G6** completados). Para el diseño y contrato vivos actuales, véanse [ARCHITECTURE.md](../ARCHITECTURE.md), [INTERFACE_CONTRACT.md](../INTERFACE_CONTRACT.md), [SPEC_06B.md](../SPEC_06B.md), [NUMERIC_CONTRACT.md](../NUMERIC_CONTRACT.md) y [VERIFICATION_PLAN.md](../VERIFICATION_PLAN.md).
 
 ---
 

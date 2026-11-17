@@ -1,4 +1,4 @@
-name: CI (qwen-tts-rs)
+name: CI (qwen-tts-engine)
 
 on:
   push:

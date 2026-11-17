@@ -37,7 +37,7 @@ pub fn run_kernel_selftest(rt: &ComputeRuntime) -> (usize, String) {
     ];
     let mut failures = 0usize;
 
-    let _ = writeln!(out, "qwen-tts-rs kernel self-test (matvec correctness vs f32 reference)");
+    let _ = writeln!(out, "qwen-tts-engine kernel self-test (matvec correctness vs f32 reference)");
     out.push_str(&rt.caps_report());
     let _ = writeln!(out);
 

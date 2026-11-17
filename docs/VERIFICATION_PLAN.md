@@ -1,6 +1,6 @@
 # Plan de Verificación y Gates (`VERIFICATION_PLAN.md`)
 
-Define los criterios objetivos de validación del motor `qwen-tts-rs` (actualmente `0.6B`) en Rust estable. Todos los Gates de migración (**G0–G6**) fueron superados y el código C histórico (`qwen3-tts/` y `parity/`) fue retirado al cerrar el Gate **G6**.
+Define los criterios objetivos de validación de **Qwen TTS Engine** (`qwen-tts-engine`, actualmente `0.6B`) en Rust estable. Todos los Gates de migración (**G0–G6**) fueron superados y el código C histórico (`qwen3-tts/` y `parity/`) fue retirado al cerrar el Gate **G6**.
 
 ---
 

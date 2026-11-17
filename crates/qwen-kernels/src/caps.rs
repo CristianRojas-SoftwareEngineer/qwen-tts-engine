@@ -63,7 +63,7 @@ impl CpuCaps {
 
     pub fn format_report(&self, threads: usize, blas_name: &str) -> String {
         let mut s = String::new();
-        let _ = writeln!(s, "qwen-tts-rs runtime capabilities:");
+        let _ = writeln!(s, "qwen-tts-engine runtime capabilities:");
         let _ = writeln!(s, "  arch:             {}", self.arch);
         if self.has_avx2_fma() {
             let _ = writeln!(s, "  matvec + attn:    AVX2 (2-row fused, FMA)");
