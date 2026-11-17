@@ -9,7 +9,7 @@ use std::path::Path;
 
 use qwen_kernels::quant::{bf16_to_f32, f32_to_bf16_round};
 
-use crate::config::{ENC_DIM, HIDDEN_SIZE, NUM_CODEBOOKS, TEXT_HIDDEN_SIZE};
+use crate::config::{CODEC_VOCAB_SIZE, ENC_DIM, HIDDEN_SIZE, NUM_CODEBOOKS, TEXT_HIDDEN_SIZE};
 use crate::error::CoreError;
 
 pub const QVCE_MAGIC: &[u8; 4] = b"QVCE";
@@ -97,30 +97,23 @@ fn read_f32<R: Read>(r: &mut R) -> Result<f32, CoreError> {
     Ok(f32::from_le_bytes(b))
 }
 
-fn read_f32_vec<R: Read>(r: &mut R, n: usize) -> Result<Vec<f32>, CoreError> {
-    let mut raw = vec![0u8; n * 4];
+fn read_le_vec<R: Read, T, const N: usize>(
+    r: &mut R,
+    n: usize,
+    decode: fn([u8; N]) -> T,
+) -> Result<Vec<T>, CoreError> {
+    let bytes = n
+        .checked_mul(N)
+        .ok_or_else(|| CoreError::QVoice("Vector byte size overflow".to_string()))?;
+    let mut raw = vec![0u8; bytes];
     r.read_exact(&mut raw)?;
     Ok(raw
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect())
-}
-
-fn read_u16_vec<R: Read>(r: &mut R, n: usize) -> Result<Vec<u16>, CoreError> {
-    let mut raw = vec![0u8; n * 2];
-    r.read_exact(&mut raw)?;
-    Ok(raw
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect())
-}
-
-fn read_i32_vec<R: Read>(r: &mut R, n: usize) -> Result<Vec<i32>, CoreError> {
-    let mut raw = vec![0u8; n * 4];
-    r.read_exact(&mut raw)?;
-    Ok(raw
-        .chunks_exact(4)
-        .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .chunks_exact(N)
+        .map(|c| {
+            let mut arr = [0u8; N];
+            arr.copy_from_slice(c);
+            decode(arr)
+        })
         .collect())
 }
 
@@ -134,6 +127,18 @@ fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<usize, CoreEr
         total += n;
     }
     Ok(total)
+}
+
+fn read_next_tag<R: Read>(
+    r: &mut R,
+    pending: &mut Option<[u8; 4]>,
+) -> Result<Option<[u8; 4]>, CoreError> {
+    if let Some(p) = pending.take() {
+        return Ok(Some(p));
+    }
+    let mut tag4 = [0u8; 4];
+    let n = read_exact_or_eof(r, &mut tag4)?;
+    Ok(if n == 4 { Some(tag4) } else { None })
 }
 
 fn fixed_cstr(bytes: &[u8]) -> String {
@@ -153,6 +158,7 @@ fn write_fixed_cstr<W: Write>(w: &mut W, s: &str, len: usize) -> Result<(), Core
 impl QVoiceFile {
     pub fn read_from_file(path: &Path, icl_only: bool) -> Result<Self, CoreError> {
         let f = File::open(path)?;
+        let file_len = f.metadata().map(|m| m.len()).unwrap_or(u64::MAX);
         let mut r = BufReader::new(f);
 
         let mut magic = [0u8; 4];
@@ -175,9 +181,9 @@ impl QVoiceFile {
                 "Incompatible .qvoice enc_dim={enc_dim} (expected {ENC_DIM} for 0.6B)"
             )));
         }
-        let speaker_embedding = read_f32_vec(&mut r, enc_dim as usize)?;
+        let speaker_embedding = read_le_vec(&mut r, enc_dim as usize, f32::from_le_bytes)?;
         let ref_text_len = read_u32(&mut r)? as usize;
-        if ref_text_len > 1_000_000 {
+        if ref_text_len > 1_000_000 || (ref_text_len as u64) > file_len {
             return Err(CoreError::QVoice("Corrupt ref_text_len".to_string()));
         }
         let mut ref_text_bytes = vec![0u8; ref_text_len];
@@ -187,11 +193,14 @@ impl QVoiceFile {
         let ref_text = String::from_utf8_lossy(&ref_text_bytes).into_owned();
 
         let n_ref_frames = read_u32(&mut r)? as usize;
-        if n_ref_frames > 1_000_000 {
+        let ref_codes_bytes = (n_ref_frames as u64)
+            .saturating_mul(NUM_CODEBOOKS as u64)
+            .saturating_mul(4);
+        if n_ref_frames > 1_000_000 || ref_codes_bytes > file_len {
             return Err(CoreError::QVoice("Corrupt n_ref_frames".to_string()));
         }
         let ref_codes = if n_ref_frames > 0 {
-            read_i32_vec(&mut r, n_ref_frames * NUM_CODEBOOKS)?
+            read_le_vec(&mut r, n_ref_frames * NUM_CODEBOOKS, i32::from_le_bytes)?
         } else {
             Vec::new()
         };
@@ -200,13 +209,10 @@ impl QVoiceFile {
         let mut tpad = None;
         let mut wovr = None;
         let mut weights = None;
-
-        let mut tag4 = [0u8; 4];
         let mut pending: Option<[u8; 4]> = None;
 
-        let n = read_exact_or_eof(&mut r, &mut tag4)?;
-        if n == 4 {
-            if &tag4 == b"META" {
+        if let Some(t4) = read_next_tag(&mut r, &mut pending)? {
+            if &t4 == b"META" {
                 let lang_id = read_u32(&mut r)?;
                 let mut lang_raw = [0u8; 16];
                 r.read_exact(&mut lang_raw)?;
@@ -226,18 +232,11 @@ impl QVoiceFile {
                     flags,
                 });
             } else {
-                pending = Some(tag4);
+                pending = Some(t4);
             }
         }
 
-        let next4 = if let Some(p) = pending.take() {
-            Some(p)
-        } else {
-            let n = read_exact_or_eof(&mut r, &mut tag4)?;
-            if n == 4 { Some(tag4) } else { None }
-        };
-
-        if let Some(t4) = next4 {
+        if let Some(t4) = read_next_tag(&mut r, &mut pending)? {
             if &t4 == b"TPAD" {
                 let hidden = read_u32(&mut r)?;
                 if hidden as usize != HIDDEN_SIZE {
@@ -245,9 +244,9 @@ impl QVoiceFile {
                         "Incompatible TPAD hidden={hidden} (expected {HIDDEN_SIZE})"
                     )));
                 }
-                let tts_pad_embed = read_f32_vec(&mut r, HIDDEN_SIZE)?;
-                let tts_bos_embed = read_f32_vec(&mut r, HIDDEN_SIZE)?;
-                let tts_eos_embed = read_f32_vec(&mut r, HIDDEN_SIZE)?;
+                let tts_pad_embed = read_le_vec(&mut r, HIDDEN_SIZE, f32::from_le_bytes)?;
+                let tts_bos_embed = read_le_vec(&mut r, HIDDEN_SIZE, f32::from_le_bytes)?;
+                let tts_eos_embed = read_le_vec(&mut r, HIDDEN_SIZE, f32::from_le_bytes)?;
                 tpad = Some(QVoiceTpad {
                     hidden,
                     tts_pad_embed,
@@ -259,14 +258,7 @@ impl QVoiceFile {
             }
         }
 
-        let next4 = if let Some(p) = pending.take() {
-            Some(p)
-        } else {
-            let n = read_exact_or_eof(&mut r, &mut tag4)?;
-            if n == 4 { Some(tag4) } else { None }
-        };
-
-        if let Some(t4) = next4 {
+        if let Some(t4) = read_next_tag(&mut r, &mut pending)? {
             if &t4 == b"WOVR" {
                 let wh = read_u32(&mut r)?;
                 let wth = read_u32(&mut r)?;
@@ -276,11 +268,17 @@ impl QVoiceFile {
                         "Incompatible WOVR dimensions wh={wh} wth={wth} (expected {HIDDEN_SIZE}/{TEXT_HIDDEN_SIZE})"
                     )));
                 }
-                let fc1_bf16 = read_u16_vec(&mut r, wth as usize * wth as usize)?;
-                let fc1_bias = read_f32_vec(&mut r, wth as usize)?;
-                let fc2_bf16 = read_u16_vec(&mut r, wh as usize * wth as usize)?;
-                let fc2_bias = read_f32_vec(&mut r, wh as usize)?;
-                let codec_emb_bf16 = read_u16_vec(&mut r, wcv as usize * wh as usize)?;
+                if wcv == 0 || (wcv as usize) > CODEC_VOCAB_SIZE * 2 {
+                    return Err(CoreError::QVoice(format!(
+                        "Invalid WOVR wcv={wcv} (expected 1..={})",
+                        CODEC_VOCAB_SIZE * 2
+                    )));
+                }
+                let fc1_bf16 = read_le_vec(&mut r, wth as usize * wth as usize, u16::from_le_bytes)?;
+                let fc1_bias = read_le_vec(&mut r, wth as usize, f32::from_le_bytes)?;
+                let fc2_bf16 = read_le_vec(&mut r, wh as usize * wth as usize, u16::from_le_bytes)?;
+                let fc2_bias = read_le_vec(&mut r, wh as usize, f32::from_le_bytes)?;
+                let codec_emb_bf16 = read_le_vec(&mut r, wcv as usize * wh as usize, u16::from_le_bytes)?;
                 wovr = Some(QVoiceWovr {
                     wh,
                     wth,
@@ -297,14 +295,7 @@ impl QVoiceFile {
         }
 
         if !icl_only {
-            let next4 = if let Some(p) = pending.take() {
-                Some(p)
-            } else {
-                let n = read_exact_or_eof(&mut r, &mut tag4)?;
-                if n == 4 { Some(tag4) } else { None }
-            };
-
-            if let Some(t4) = next4 {
+            if let Some(t4) = read_next_tag(&mut r, &mut pending)? {
                 if &t4 == b"WDLT" {
                     let target_hidden = read_u32(&mut r)?;
                     if target_hidden as usize != HIDDEN_SIZE {
@@ -313,15 +304,30 @@ impl QVoiceFile {
                         )));
                     }
                     let n_tensors = read_u32(&mut r)?;
+                    if n_tensors > 4096 {
+                        return Err(CoreError::QVoice(format!(
+                            "Corrupt WDELTA n_tensors={n_tensors}"
+                        )));
+                    }
                     let mut tensors = Vec::with_capacity(n_tensors as usize);
                     for _ in 0..n_tensors {
                         let name_len = read_u16(&mut r)? as usize;
+                        if name_len > 4096 {
+                            return Err(CoreError::QVoice(format!(
+                                "Corrupt WDELTA tensor name_len={name_len}"
+                            )));
+                        }
                         let mut name_buf = vec![0u8; name_len];
                         r.read_exact(&mut name_buf)?;
                         let name = String::from_utf8_lossy(&name_buf).into_owned();
                         let data_bytes = read_u32(&mut r)?;
                         let dtype_flag = read_u8(&mut r)?;
                         let compressed_size = read_u32(&mut r)? as usize;
+                        if (compressed_size as u64) > file_len || compressed_size > 1024 * 1024 * 1024 {
+                            return Err(CoreError::QVoice(format!(
+                                "Corrupt WDELTA payload size {compressed_size} for '{name}'"
+                            )));
+                        }
                         let mut payload = vec![0u8; compressed_size];
                         r.read_exact(&mut payload)?;
                         tensors.push(QVoiceWeightTensor {
@@ -363,10 +369,13 @@ impl QVoiceFile {
             w.write_all(&v.to_le_bytes())?;
         }
         let rt_bytes = self.ref_text.as_bytes();
-        w.write_all(&(rt_bytes.len() as u32).to_le_bytes())?;
+        let rt_len_u32 = u32::try_from(rt_bytes.len())
+            .map_err(|_| CoreError::QVoice("ref_text exceeds u32 length".to_string()))?;
+        w.write_all(&rt_len_u32.to_le_bytes())?;
         w.write_all(rt_bytes)?;
 
-        let n_ref_frames = (self.ref_codes.len() / NUM_CODEBOOKS) as u32;
+        let n_ref_frames = u32::try_from(self.ref_codes.len() / NUM_CODEBOOKS)
+            .map_err(|_| CoreError::QVoice("ref_codes frame count exceeds u32".to_string()))?;
         w.write_all(&n_ref_frames.to_le_bytes())?;
         for &c in &self.ref_codes {
             w.write_all(&c.to_le_bytes())?;
@@ -419,14 +428,22 @@ impl QVoiceFile {
         if let Some(wo) = &self.weights {
             w.write_all(b"WDLT")?;
             w.write_all(&wo.target_hidden.to_le_bytes())?;
-            w.write_all(&(wo.tensors.len() as u32).to_le_bytes())?;
+            let n_tensors = u32::try_from(wo.tensors.len())
+                .map_err(|_| CoreError::QVoice("WDELTA tensor count exceeds u32".to_string()))?;
+            w.write_all(&n_tensors.to_le_bytes())?;
             for t in &wo.tensors {
                 let nb = t.name.as_bytes();
-                w.write_all(&(nb.len() as u16).to_le_bytes())?;
+                let nb_len = u16::try_from(nb.len()).map_err(|_| {
+                    CoreError::QVoice(format!("WDELTA tensor name '{}' exceeds u16", t.name))
+                })?;
+                let payload_len = u32::try_from(t.payload.len()).map_err(|_| {
+                    CoreError::QVoice(format!("WDELTA payload '{}' exceeds u32", t.name))
+                })?;
+                w.write_all(&nb_len.to_le_bytes())?;
                 w.write_all(nb)?;
                 w.write_all(&t.data_bytes.to_le_bytes())?;
                 w.write_all(&[t.dtype_flag])?;
-                w.write_all(&(t.payload.len() as u32).to_le_bytes())?;
+                w.write_all(&payload_len.to_le_bytes())?;
                 w.write_all(&t.payload)?;
             }
         }
@@ -436,8 +453,8 @@ impl QVoiceFile {
     }
 }
 
-pub fn qvoice_tensor_alpha(tname: &str, voice_strength: f32, vs_l0: i32, vs_l1: i32) -> f32 {
-    if voice_strength >= 0.9999 {
+fn qvoice_tensor_alpha(tname: &str, voice_strength: f32, vs_l0: i32, vs_l1: i32) -> f32 {
+    if !voice_strength.is_finite() || voice_strength >= 0.9999 {
         return 1.0;
     }
     if let Some(rest) = tname.strip_prefix("talker.model.layers.") {
@@ -464,19 +481,27 @@ pub fn decode_wdelta_bf16(
 ) -> Result<Vec<u16>, CoreError> {
     match tensor.dtype_flag {
         4 => {
-            let n16 = (tensor.data_bytes as usize) / 2;
-            if cv_orig.len() != n16 {
+            let expected_bytes = cv_orig.len() * 2;
+            if tensor.data_bytes as usize != expected_bytes {
                 return Err(CoreError::QVoice(format!(
-                    "WDELTA tensor '{}' length mismatch: cv={} delta={}",
+                    "WDELTA tensor '{}' byte length mismatch: cv={} delta_bytes={}",
                     tensor.name,
-                    cv_orig.len(),
-                    n16
+                    expected_bytes,
+                    tensor.data_bytes
                 )));
             }
-            let raw = lz4_flex::block::decompress(&tensor.payload, tensor.data_bytes as usize)
+            let raw = lz4_flex::block::decompress(&tensor.payload, expected_bytes)
                 .map_err(|e| CoreError::QVoice(format!("LZ4 decompress '{}': {e}", tensor.name)))?;
+            if raw.len() != expected_bytes {
+                return Err(CoreError::QVoice(format!(
+                    "WDELTA tensor '{}' decompressed {} bytes, expected {}",
+                    tensor.name,
+                    raw.len(),
+                    expected_bytes
+                )));
+            }
             let alpha = qvoice_tensor_alpha(&tensor.name, voice_strength, vs_l0, vs_l1);
-            let mut out = Vec::with_capacity(n16);
+            let mut out = Vec::with_capacity(cv_orig.len());
             if (alpha - 1.0).abs() < f32::EPSILON {
                 for (i, c) in raw.chunks_exact(2).enumerate() {
                     let d = i16::from_le_bytes([c[0], c[1]]) as i32;
@@ -493,10 +518,13 @@ pub fn decode_wdelta_bf16(
             Ok(out)
         }
         0 => {
-            if !tensor.payload.len().is_multiple_of(2) {
+            let expected_bytes = cv_orig.len() * 2;
+            if tensor.payload.len() != expected_bytes {
                 return Err(CoreError::QVoice(format!(
-                    "Raw .qvoice tensor '{}' odd byte count",
-                    tensor.name
+                    "Raw .qvoice tensor '{}' byte length mismatch: expected {}, got {}",
+                    tensor.name,
+                    expected_bytes,
+                    tensor.payload.len()
                 )));
             }
             Ok(tensor
@@ -527,10 +555,12 @@ pub fn encode_wdelta_bf16(
         let d = (b as i32 - c as i32) as i16;
         delta_bytes.extend_from_slice(&d.to_le_bytes());
     }
+    let data_bytes = u32::try_from(delta_bytes.len())
+        .map_err(|_| CoreError::QVoice(format!("WDELTA encode '{name}' exceeds u32 bytes")))?;
     let payload = lz4_flex::block::compress(&delta_bytes);
     Ok(QVoiceWeightTensor {
         name: name.to_string(),
-        data_bytes: delta_bytes.len() as u32,
+        data_bytes,
         dtype_flag: 4,
         payload,
     })

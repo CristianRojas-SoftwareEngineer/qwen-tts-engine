@@ -39,7 +39,7 @@ fn test_config_load_06b_and_reject_17b_voicedesign() {
 
         std::fs::read_to_string(cv_dir.join("config.json")).unwrap()
     } else {
-        r#"{"model_type":"qwen3_tts","tts_model_size":"0.6b","tts_model_type":"custom_voice","talker_config":{"hidden_size":1024,"intermediate_size":3072,"num_hidden_layers":28,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"text_hidden_size":2048,"text_vocab_size":151936,"vocab_size":3072,"rms_norm_eps":1e-6,"rope_theta":1000000.0,"code_predictor_config":{"hidden_size":1024,"intermediate_size":3072,"num_hidden_layers":5,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"vocab_size":2048,"num_code_groups":16,"rms_norm_eps":1e-6}}}"#.to_string()
+        r#"{"model_type":"qwen3_tts","tts_model_size":"0b6","tts_model_type":"custom_voice","talker_config":{"hidden_size":1024,"intermediate_size":3072,"num_hidden_layers":28,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"text_hidden_size":2048,"text_vocab_size":151936,"vocab_size":3072,"rms_norm_eps":1e-6,"rope_theta":1000000.0,"code_predictor_config":{"hidden_size":1024,"intermediate_size":3072,"num_hidden_layers":5,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"vocab_size":2048,"num_code_groups":16,"rms_norm_eps":1e-6}}}"#.to_string()
     };
 
     // Validación negativa: rechaza 1.7B y VoiceDesign
@@ -196,6 +196,15 @@ fn test_qvoice_and_bin_roundtrip() {
     let decoded = decode_wdelta_bf16(&cv, &wt, 1.0, 14, 27).unwrap();
     assert_eq!(decoded, base);
 
+    // Rechaza payload raw (dtype_flag == 0) con longitud incompatible
+    let bad_raw = qwen_core::QVoiceWeightTensor {
+        name: "talker.model.norm.weight".to_string(),
+        data_bytes: 4,
+        dtype_flag: 0,
+        payload: vec![0u8; 4],
+    };
+    assert!(decode_wdelta_bf16(&cv, &bad_raw, 1.0, 14, 27).is_err());
+
     // Rechaza cabecera .qvoice v2 (versión no soportada)
     let tmp_v2 = std::env::temp_dir().join("qwen_core_legacy_v2.qvoice");
     let mut v2_bytes = Vec::new();
@@ -241,4 +250,75 @@ fn test_markup_sampling_and_lookups() {
     let s2 = sampler.sample(&mut l2, 0.9, 50, 1.0, 1.05, &[1], &mut rng2);
     assert_eq!(s1, s2);
     assert_eq!(rng1.seed, rng2.seed);
+
+    // Muestreo nucleus (top_p < 1.0) determinista y sin bloqueo O(N^2)
+    let mut lp1 = vec![0.1f32, 3.0, 2.5, -1.0, 0.2];
+    let mut lp2 = lp1.clone();
+    let mut rng_p1 = LcgRng::new(123);
+    let mut rng_p2 = LcgRng::new(123);
+    let sp1 = sampler.sample(&mut lp1, 0.8, 3, 0.6, 1.0, &[], &mut rng_p1);
+    let sp2 = sampler.sample(&mut lp2, 0.8, 3, 0.6, 1.0, &[], &mut rng_p2);
+    assert_eq!(sp1, sp2);
+    assert!(sp1 == 1 || sp1 == 2);
+
+    // Manejo seguro de NaN en logits sin devolver índice inválido ni propagar NaN
+    let mut nan_logits = vec![f32::NAN, 1.0, 2.0, -3.0];
+    let g_idx = sampler.sample(&mut nan_logits, 0.0, 1, 1.0, 1.0, &[], &mut rng1);
+    assert_eq!(g_idx, 2);
+    let mut nan_softmax = vec![f32::NAN; 4];
+    let s_idx = sampler.sample(&mut nan_softmax, 0.9, 50, 1.0, 1.0, &[], &mut rng1);
+    assert!(s_idx < 4);
+}
+
+#[test]
+fn test_qvoice_rejects_oversized_wovr_and_wdlt() {
+    let tmp_bad = std::env::temp_dir().join("qwen_core_bad_wovr.qvoice");
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"QVCE");
+    bytes.extend_from_slice(&3u32.to_le_bytes());
+    bytes.extend_from_slice(&1024u32.to_le_bytes());
+    for _ in 0..1024 {
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // ref_text_len
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // n_ref_frames
+    bytes.extend_from_slice(b"WOVR");
+    bytes.extend_from_slice(&1024u32.to_le_bytes());
+    bytes.extend_from_slice(&2048u32.to_le_bytes());
+    bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // wcv corrupto
+    std::fs::write(&tmp_bad, bytes).unwrap();
+    assert!(QVoiceFile::read_from_file(&tmp_bad, false).is_err());
+    let _ = std::fs::remove_file(&tmp_bad);
+
+    // Rechaza n_ref_frames sobredimensionado en archivo truncado sin intentar reservar 64 MB
+    let tmp_trunc = std::env::temp_dir().join("qwen_core_trunc_frames.qvoice");
+    let mut tbytes = Vec::new();
+    tbytes.extend_from_slice(b"QVCE");
+    tbytes.extend_from_slice(&3u32.to_le_bytes());
+    tbytes.extend_from_slice(&1024u32.to_le_bytes());
+    for _ in 0..1024 {
+        tbytes.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+    tbytes.extend_from_slice(&0u32.to_le_bytes());
+    tbytes.extend_from_slice(&1_000_000u32.to_le_bytes());
+    std::fs::write(&tmp_trunc, tbytes).unwrap();
+    assert!(QVoiceFile::read_from_file(&tmp_trunc, false).is_err());
+    let _ = std::fs::remove_file(&tmp_trunc);
+
+    // voice_strength=NaN no propaga NaN en decode_wdelta_bf16
+    let cv: Vec<u16> = vec![0x3F80; 64];
+    let base: Vec<u16> = vec![0x3F00; 64];
+    let wt = encode_wdelta_bf16("talker.model.layers.14.self_attn.q_proj.weight", &base, &cv).unwrap();
+    let decoded = decode_wdelta_bf16(&cv, &wt, f32::NAN, 14, 27).unwrap();
+    assert_eq!(decoded, base);
+
+    // Pausas negativas o no finitas se sanean a 0.0
+    let p_spans = MarkupPlanner::parse_spans("A [pause:-5] [pause:NaN] B");
+    assert_eq!(p_spans[1], SpanSpec::Pause { seconds: 0.0 });
+    assert_eq!(p_spans[2], SpanSpec::Pause { seconds: 0.0 });
+
+    // Separador '|' detectado por has_markup y dividido en spans
+    assert!(MarkupPlanner::has_markup("Hola. | Adiós."));
+    let pipe_spans = MarkupPlanner::parse_spans("Hola. | Adiós.");
+    assert_eq!(pipe_spans.len(), 2);
 }

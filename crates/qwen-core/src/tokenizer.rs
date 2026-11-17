@@ -83,6 +83,32 @@ fn utf8_char_len(c: u8) -> usize {
     }
 }
 
+#[inline]
+fn scan_utf8_letters(bytes: &[u8], mut i: usize) -> usize {
+    let len = bytes.len();
+    while i < len {
+        let cc = bytes[i];
+        if is_letter(cc) {
+            i += 1;
+        } else if is_utf8_start(cc) {
+            let clen = utf8_char_len(cc);
+            if i + clen > len {
+                i += 1;
+                break;
+            }
+            let valid = (1..clen).all(|k| (0x80..=0xBF).contains(&bytes[i + k]));
+            if !valid {
+                i += 1;
+                break;
+            }
+            i += clen;
+        } else {
+            break;
+        }
+    }
+    i
+}
+
 /// Pre-tokenizador a nivel de bytes compatible con BPE de Qwen2/Qwen3,
 /// incluyendo validación de continuaciones UTF-8 y guardia de avance.
 fn pre_tokenize(bytes: &[u8]) -> Vec<&[u8]> {
@@ -102,26 +128,7 @@ fn pre_tokenize(bytes: &[u8]) -> Vec<&[u8]> {
                     i += 1;
                     let nc = bytes[i];
                     if is_letter(nc) || is_utf8_start(nc) {
-                        while i < len {
-                            let cc = bytes[i];
-                            if is_letter(cc) {
-                                i += 1;
-                            } else if is_utf8_start(cc) {
-                                let clen = utf8_char_len(cc);
-                                if i + clen > len {
-                                    i += 1;
-                                    break;
-                                }
-                                let valid = (1..clen).all(|k| (0x80..=0xBF).contains(&bytes[i + k]));
-                                if !valid {
-                                    i += 1;
-                                    break;
-                                }
-                                i += clen;
-                            } else {
-                                break;
-                            }
-                        }
+                        i = scan_utf8_letters(bytes, i);
                     } else if nc.is_ascii_digit() {
                         let mut dcount = 0;
                         while i < len && bytes[i].is_ascii_digit() && dcount < 3 {
@@ -201,26 +208,7 @@ fn pre_tokenize(bytes: &[u8]) -> Vec<&[u8]> {
                 lookahead += 1;
             }
             let loop_start = lookahead;
-            while lookahead < len {
-                let cc = bytes[lookahead];
-                if is_letter(cc) {
-                    lookahead += 1;
-                } else if is_utf8_start(cc) {
-                    let clen = utf8_char_len(cc);
-                    if lookahead + clen > len {
-                        lookahead += 1;
-                        break;
-                    }
-                    let valid = (1..clen).all(|k| (0x80..=0xBF).contains(&bytes[lookahead + k]));
-                    if !valid {
-                        lookahead += 1;
-                        break;
-                    }
-                    lookahead += clen;
-                } else {
-                    break;
-                }
-            }
+            lookahead = scan_utf8_letters(bytes, lookahead);
             if lookahead == loop_start {
                 lookahead += 1;
             }
@@ -287,7 +275,11 @@ impl BpeTokenizer {
         })?;
         let vocab: HashMap<String, i32> = serde_json::from_str(&vocab_str)?;
         let max_id = vocab.values().copied().max().unwrap_or(0).max(0);
-        let mut id_to_token = vec![None; (max_id + 1) as usize];
+        let table_len = (max_id as usize)
+            .checked_add(1)
+            .filter(|&n| n <= 16_777_216)
+            .ok_or_else(|| CoreError::Tokenizer(format!("Vocab max_id={max_id} out of bounds")))?;
+        let mut id_to_token = vec![None; table_len];
         for (k, &id) in &vocab {
             if id >= 0 && (id as usize) < id_to_token.len() {
                 id_to_token[id as usize] = Some(k.clone());

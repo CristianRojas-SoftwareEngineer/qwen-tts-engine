@@ -82,7 +82,23 @@ impl Deref for F32Ref {
 
 struct ShardEntry {
     mmap: Arc<Mmap>,
-    tensor_names: Vec<String>,
+}
+
+struct TensorLoc {
+    shard_id: usize,
+    dtype: Dtype,
+    byte_offset: usize,
+    byte_len: usize,
+}
+
+enum F32DataView<'a> {
+    AlignedMmap {
+        shard: &'a Arc<Mmap>,
+        byte_offset: usize,
+        len: usize,
+        data: &'a [u8],
+    },
+    Owned(Vec<f32>),
 }
 
 /// Almacén `safetensors` de solo lectura mapeado en memoria, compatible con
@@ -92,7 +108,7 @@ struct ShardEntry {
 /// y vistas alineadas verificadas sobre bytes inmutables mapeados).
 pub struct MmapStore {
     shards: Vec<ShardEntry>,
-    index: HashMap<String, usize>,
+    index: HashMap<String, TensorLoc>,
 }
 
 impl MmapStore {
@@ -132,14 +148,34 @@ impl MmapStore {
                     p.as_ref().display()
                 ))
             })?;
-            let names: Vec<String> = st.names().into_iter().map(|s| (*s).to_string()).collect();
-            for name in &names {
-                index.insert(name.clone(), shard_id);
+            let base_ptr = mmap.as_ptr() as usize;
+            for (name, view) in st.tensors() {
+                let data = view.data();
+                let byte_offset = if data.is_empty() {
+                    0
+                } else {
+                    (data.as_ptr() as usize)
+                        .checked_sub(base_ptr)
+                        .ok_or_else(|| {
+                            CoreError::Safetensors(format!("Tensor '{name}' pointer outside shard"))
+                        })?
+                };
+                if byte_offset.saturating_add(data.len()) > mmap.len() {
+                    return Err(CoreError::Safetensors(format!(
+                        "Tensor '{name}' range exceeds shard length"
+                    )));
+                }
+                index.insert(
+                    name,
+                    TensorLoc {
+                        shard_id,
+                        dtype: view.dtype(),
+                        byte_offset,
+                        byte_len: data.len(),
+                    },
+                );
             }
-            shards.push(ShardEntry {
-                mmap,
-                tensor_names: names,
-            });
+            shards.push(ShardEntry { mmap });
         }
 
         Ok(Self { shards, index })
@@ -149,104 +185,53 @@ impl MmapStore {
         self.index.contains_key(name)
     }
 
-    pub fn tensor_names(&self) -> impl Iterator<Item = &str> {
-        self.shards
-            .iter()
-            .flat_map(|s| s.tensor_names.iter().map(|n| n.as_str()))
-    }
-
-    pub fn mmaps_len(&self) -> usize {
-        self.shards.len()
-    }
-
-    pub fn tensor_shape(&self, name: &str) -> Result<Vec<usize>, CoreError> {
-        let shard_id = *self
+    fn locate_bf16(&self, name: &str) -> Result<(&Arc<Mmap>, usize, usize), CoreError> {
+        let loc = self
             .index
             .get(name)
             .ok_or_else(|| CoreError::Safetensors(format!("Missing tensor '{name}'")))?;
-        let st = SafeTensors::deserialize(&self.shards[shard_id].mmap)
-            .map_err(|e| CoreError::Safetensors(e.to_string()))?;
-        let view = st
-            .tensor(name)
-            .map_err(|e| CoreError::Safetensors(format!("Tensor '{name}': {e}")))?;
-        Ok(view.shape().to_vec())
+        if loc.dtype != Dtype::BF16 {
+            return Err(CoreError::Safetensors(format!(
+                "Tensor '{name}' dtype is {:?}, expected BF16",
+                loc.dtype
+            )));
+        }
+        let shard = &self.shards[loc.shard_id].mmap;
+        let data = &shard[loc.byte_offset..loc.byte_offset + loc.byte_len];
+        if !data.len().is_multiple_of(2) || !(data.as_ptr() as usize).is_multiple_of(2) {
+            return Err(CoreError::Safetensors(format!(
+                "Tensor '{name}' BF16 data is not 2-byte aligned"
+            )));
+        }
+        Ok((shard, loc.byte_offset, loc.byte_len / 2))
     }
 
     /// Vista sin copias de un tensor BF16 como `&[u16]` (host little-endian).
     /// Exige offset alineado a 2 bytes dentro del archivo safetensors (garantizado en exports estándar de HF).
     pub fn tensor_bf16(&self, name: &str) -> Result<&[u16], CoreError> {
-        let shard_id = *self
-            .index
-            .get(name)
-            .ok_or_else(|| CoreError::Safetensors(format!("Missing tensor '{name}'")))?;
-        let mmap_bytes: &[u8] = &self.shards[shard_id].mmap;
-        let st = SafeTensors::deserialize(mmap_bytes)
-            .map_err(|e| CoreError::Safetensors(e.to_string()))?;
-        let view = st
-            .tensor(name)
-            .map_err(|e| CoreError::Safetensors(format!("Tensor '{name}': {e}")))?;
-        if view.dtype() != Dtype::BF16 {
-            return Err(CoreError::Safetensors(format!(
-                "Tensor '{name}' dtype is {:?}, expected BF16",
-                view.dtype()
-            )));
-        }
-        let data = view.data();
-        if !data.len().is_multiple_of(2) || !(data.as_ptr() as usize).is_multiple_of(2) {
-            return Err(CoreError::Safetensors(format!(
-                "Tensor '{name}' BF16 data is not 2-byte aligned"
-            )));
-        }
-        let slice = unsafe {
-            std::slice::from_raw_parts(data.as_ptr() as *const u16, data.len() / 2)
-        };
+        let (shard, byte_offset, len) = self.locate_bf16(name)?;
+        let data = &shard[byte_offset..byte_offset + len * 2];
+        let slice = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u16, len) };
         Ok(slice)
     }
 
     pub fn tensor_bf16_ref(&self, name: &str) -> Result<Bf16Ref, CoreError> {
-        let shard_id = *self
-            .index
-            .get(name)
-            .ok_or_else(|| CoreError::Safetensors(format!("Missing tensor '{name}'")))?;
-        let shard = &self.shards[shard_id].mmap;
-        let st = SafeTensors::deserialize(shard)
-            .map_err(|e| CoreError::Safetensors(e.to_string()))?;
-        let view = st
-            .tensor(name)
-            .map_err(|e| CoreError::Safetensors(format!("Tensor '{name}': {e}")))?;
-        if view.dtype() != Dtype::BF16 {
-            return Err(CoreError::Safetensors(format!(
-                "Tensor '{name}' dtype is {:?}, expected BF16",
-                view.dtype()
-            )));
-        }
-        let data = view.data();
-        if !data.len().is_multiple_of(2) || !(data.as_ptr() as usize).is_multiple_of(2) {
-            return Err(CoreError::Safetensors(format!(
-                "Tensor '{name}' BF16 data is not 2-byte aligned"
-            )));
-        }
-        let byte_offset = (data.as_ptr() as usize) - (shard.as_ptr() as usize);
+        let (shard, byte_offset, len) = self.locate_bf16(name)?;
         Ok(Bf16Ref {
             shard: Arc::clone(shard),
             byte_offset,
-            len: data.len() / 2,
+            len,
         })
     }
 
-    pub fn tensor_f32_ref(&self, name: &str) -> Result<F32Ref, CoreError> {
-        let shard_id = *self
+    fn locate_f32(&self, name: &str) -> Result<F32DataView<'_>, CoreError> {
+        let loc = self
             .index
             .get(name)
             .ok_or_else(|| CoreError::Safetensors(format!("Missing tensor '{name}'")))?;
-        let shard = &self.shards[shard_id].mmap;
-        let st = SafeTensors::deserialize(shard)
-            .map_err(|e| CoreError::Safetensors(e.to_string()))?;
-        let view = st
-            .tensor(name)
-            .map_err(|e| CoreError::Safetensors(format!("Tensor '{name}': {e}")))?;
-        let data = view.data();
-        match view.dtype() {
+        let shard = &self.shards[loc.shard_id].mmap;
+        let data = &shard[loc.byte_offset..loc.byte_offset + loc.byte_len];
+        match loc.dtype {
             Dtype::F32 => {
                 if !data.len().is_multiple_of(4) {
                     return Err(CoreError::Safetensors(format!(
@@ -254,21 +239,26 @@ impl MmapStore {
                     )));
                 }
                 if (data.as_ptr() as usize).is_multiple_of(4) {
-                    let byte_offset = (data.as_ptr() as usize) - (shard.as_ptr() as usize);
-                    Ok(F32Ref::Mmap {
-                        shard: Arc::clone(shard),
-                        byte_offset,
+                    Ok(F32DataView::AlignedMmap {
+                        shard,
+                        byte_offset: loc.byte_offset,
                         len: data.len() / 4,
+                        data,
                     })
                 } else {
                     let out: Vec<f32> = data
                         .chunks_exact(4)
                         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                         .collect();
-                    Ok(F32Ref::Owned(Arc::new(out)))
+                    Ok(F32DataView::Owned(out))
                 }
             }
             Dtype::BF16 => {
+                if !data.len().is_multiple_of(2) {
+                    return Err(CoreError::Safetensors(format!(
+                        "Tensor '{name}' BF16 byte length invalid"
+                    )));
+                }
                 let out: Vec<f32> = data
                     .chunks_exact(2)
                     .map(|c| {
@@ -276,7 +266,7 @@ impl MmapStore {
                         f32::from_bits((u as u32) << 16)
                     })
                     .collect();
-                Ok(F32Ref::Owned(Arc::new(out)))
+                Ok(F32DataView::Owned(out))
             }
             other => Err(CoreError::Safetensors(format!(
                 "Tensor '{name}' dtype {other:?} cannot be read as F32"
@@ -284,50 +274,30 @@ impl MmapStore {
         }
     }
 
+    pub fn tensor_f32_ref(&self, name: &str) -> Result<F32Ref, CoreError> {
+        match self.locate_f32(name)? {
+            F32DataView::AlignedMmap {
+                shard,
+                byte_offset,
+                len,
+                ..
+            } => Ok(F32Ref::Mmap {
+                shard: Arc::clone(shard),
+                byte_offset,
+                len,
+            }),
+            F32DataView::Owned(out) => Ok(F32Ref::Owned(Arc::new(out))),
+        }
+    }
+
     /// Lee un tensor F32 (o BF16 convertido a F32) como `std::borrow::Cow<[f32]>`. Toma referencia sin copias cuando es F32 alineado a 4 bytes.
     pub fn tensor_f32(&self, name: &str) -> Result<std::borrow::Cow<'_, [f32]>, CoreError> {
-        let shard_id = *self
-            .index
-            .get(name)
-            .ok_or_else(|| CoreError::Safetensors(format!("Missing tensor '{name}'")))?;
-        let mmap_bytes: &[u8] = &self.shards[shard_id].mmap;
-        let st = SafeTensors::deserialize(mmap_bytes)
-            .map_err(|e| CoreError::Safetensors(e.to_string()))?;
-        let view = st
-            .tensor(name)
-            .map_err(|e| CoreError::Safetensors(format!("Tensor '{name}': {e}")))?;
-        let data = view.data();
-        match view.dtype() {
-            Dtype::F32 => {
-                if !data.len().is_multiple_of(4) {
-                    return Err(CoreError::Safetensors(format!(
-                        "Tensor '{name}' F32 byte length invalid"
-                    )));
-                }
-                if (data.as_ptr() as usize).is_multiple_of(4) {
-                    let slice = unsafe {
-                        std::slice::from_raw_parts(data.as_ptr() as *const f32, data.len() / 4)
-                    };
-                    Ok(std::borrow::Cow::Borrowed(slice))
-                } else {
-                    let mut out = Vec::with_capacity(data.len() / 4);
-                    for chunk in data.chunks_exact(4) {
-                        out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-                    }
-                    Ok(std::borrow::Cow::Owned(out))
-                }
+        match self.locate_f32(name)? {
+            F32DataView::AlignedMmap { data, len, .. } => {
+                let slice = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const f32, len) };
+                Ok(std::borrow::Cow::Borrowed(slice))
             }
-            Dtype::BF16 => {
-                let mut out = Vec::with_capacity(data.len() / 2);
-                for chunk in data.chunks_exact(2) {
-                    let u = u16::from_le_bytes([chunk[0], chunk[1]]);
-                    out.push(f32::from_bits((u as u32) << 16));
-                }
-                Ok(std::borrow::Cow::Owned(out))
-            }
-            other => Err(CoreError::Safetensors(format!(
-                "Tensor '{name}' dtype {other:?} cannot be read as F32"
-            ))),
+            F32DataView::Owned(out) => Ok(std::borrow::Cow::Owned(out)),
         }
     }
 
@@ -336,13 +306,6 @@ impl MmapStore {
             return Ok(None);
         }
         self.tensor_bf16(name).map(Some)
-    }
-
-    pub fn tensor_f32_opt(&self, name: &str) -> Result<Option<std::borrow::Cow<'_, [f32]>>, CoreError> {
-        if !self.contains(name) {
-            return Ok(None);
-        }
-        self.tensor_f32(name).map(Some)
     }
 
     pub fn tensor_f32_ref_opt(&self, name: &str) -> Result<Option<F32Ref>, CoreError> {

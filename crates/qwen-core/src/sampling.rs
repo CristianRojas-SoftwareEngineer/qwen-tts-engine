@@ -48,20 +48,37 @@ impl Sampler {
     }
 
     fn softmax(logits: &mut [f32], temp: f32) {
-        let mut max_val = logits[0];
-        for &v in &logits[1..] {
-            if v > max_val {
+        let mut max_val = f32::NEG_INFINITY;
+        for &v in logits.iter() {
+            if v.is_finite() && v > max_val {
                 max_val = v;
             }
+        }
+        if !max_val.is_finite() {
+            let uniform = 1.0f32 / (logits.len() as f32);
+            logits.fill(uniform);
+            return;
         }
         let mut sum = 0.0f32;
         let inv_temp = 1.0f32 / temp;
         for v in logits.iter_mut() {
-            *v = ((*v - max_val) * inv_temp).exp();
-            sum += *v;
+            let p = if v.is_finite() {
+                ((*v - max_val) * inv_temp).exp()
+            } else if *v > 0.0 {
+                1.0f32
+            } else {
+                0.0f32
+            };
+            *v = p;
+            sum += p;
         }
-        for v in logits.iter_mut() {
-            *v /= sum;
+        if sum > 0.0 && sum.is_finite() {
+            for v in logits.iter_mut() {
+                *v /= sum;
+            }
+        } else {
+            let uniform = 1.0f32 / (logits.len() as f32);
+            logits.fill(uniform);
         }
     }
 
@@ -117,26 +134,26 @@ impl Sampler {
             return;
         }
         let idx = &mut self.topp_idx[..n];
-        for (i, slot) in idx.iter_mut().enumerate() {
-            *slot = i;
-        }
-        let mut cumsum = 0.0f32;
-        let mut cutoff = n;
-        for i in 0..n {
-            let mut max_idx = i;
-            for j in (i + 1)..n {
-                if logits[idx[j]] > logits[idx[max_idx]] {
-                    max_idx = j;
-                }
+        let mut nz = 0usize;
+        for (i, &val) in logits.iter().enumerate() {
+            if val > 0.0 {
+                idx[nz] = i;
+                nz += 1;
             }
-            idx.swap(i, max_idx);
-            cumsum += logits[idx[i]];
+        }
+        idx[..nz].sort_unstable_by(|&a, &b| {
+            logits[b].total_cmp(&logits[a]).then_with(|| a.cmp(&b))
+        });
+        let mut cumsum = 0.0f32;
+        let mut cutoff = nz;
+        for (i, &k) in idx[..nz].iter().enumerate() {
+            cumsum += logits[k];
             if cumsum > p {
                 cutoff = i + 1;
                 break;
             }
         }
-        for &k in &idx[cutoff..n] {
+        for &k in &idx[cutoff..nz] {
             logits[k] = 0.0;
         }
     }
@@ -153,6 +170,9 @@ impl Sampler {
         rng: &mut LcgRng,
     ) -> usize {
         let vocab_size = logits.len();
+        if vocab_size == 0 {
+            return 0;
+        }
         self.ensure_buffers(vocab_size);
 
         if rep_penalty != 1.0 && !prev_tokens.is_empty() {
@@ -170,9 +190,9 @@ impl Sampler {
 
         if temp < 1e-6 {
             let mut best = 0usize;
-            let mut best_v = logits[0];
-            for (i, &v) in logits.iter().enumerate().skip(1) {
-                if v > best_v {
+            let mut best_v = f32::NEG_INFINITY;
+            for (i, &v) in logits.iter().enumerate() {
+                if !v.is_nan() && v > best_v {
                     best_v = v;
                     best = i;
                 }

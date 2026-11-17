@@ -155,7 +155,9 @@ impl MarkupPlanner {
                     }
                 }
             }
-            let ch = text[p..].chars().next().unwrap();
+            let Some(ch) = text[p..].chars().next() else {
+                break;
+            };
             out.push(ch);
             p += ch.len_utf8();
         }
@@ -169,6 +171,9 @@ impl MarkupPlanner {
     }
 
     pub fn has_markup(text: &str) -> bool {
+        if text.contains('|') {
+            return true;
+        }
         let mut search = text;
         while let Some(open) = search.find('[') {
             let after = &search[open + 1..];
@@ -212,6 +217,9 @@ impl MarkupPlanner {
             }
         }
         let v = s[..end].parse::<f32>().unwrap_or(0.0);
+        if !v.is_finite() || v <= 0.0 {
+            return 0.0;
+        }
         let unit = s[end..].trim_start();
         if unit.len() >= 2 && unit[..2].eq_ignore_ascii_case("ms") {
             v / 1000.0
@@ -264,7 +272,7 @@ impl MarkupPlanner {
                                 } else if let Some(idx) = t.find('=') {
                                     &t[idx + 1..]
                                 } else {
-                                    &t[5..]
+                                    t.get(5..).unwrap_or("")
                                 };
                                 flush(&mut seg, &cur_mood, &mut spans);
                                 spans.push(SpanSpec::Pause {
@@ -304,7 +312,9 @@ impl MarkupPlanner {
                     }
                 }
             }
-            let ch = input[p..].chars().next().unwrap();
+            let Some(ch) = input[p..].chars().next() else {
+                break;
+            };
             seg.push(ch);
             p += ch.len_utf8();
         }
