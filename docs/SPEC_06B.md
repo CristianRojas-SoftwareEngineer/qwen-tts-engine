@@ -140,12 +140,12 @@ Secuencia binaria en `qwen-core/src/qvoice.rs`:
    - **Sección 4 (1 pos)**: `tts_pad + codec_bos`.
 4. **Modo ICL (`--ref-text` + `ref_codes`, o `--emo-ref`)**:
    - **Sección 3' (`N_ref + N + 1` pos)**: `text_proj(BPE(ref_text) + BPE(text)) + tts_eos` + `codec_pad`.
-   - **Sección 4' (`n_ref_frames + 1` pos)**: `tts_pad` + `codec_bos` seguido de `talker.codec_embedding(ref_codes[f][0]) + sum_{g=1..15} cp_codec_emb[g-1](ref_codes[f][g])`. *(En modo ICL se recortan los primeros `QWEN_ICL_TRIM_FRAMES = 2` fotogramas = `3840` muestras al inicio del audio generado.)*
+   - **Sección 4' (`n_ref_frames + 1` pos)**: cada posición lleva `tts_pad` sumado con `codec_bos` en `pos 0` y, en `pos 1..n_ref_frames`, con `talker.codec_embedding(ref_codes[f][0]) + sum_{g=1..15} cp_codec_emb[g-1](ref_codes[f][g])`. *(En modo ICL se recortan los primeros `QWEN_ICL_TRIM_FRAMES = 2` fotogramas = `3840` muestras al inicio del audio generado.)*
 
 ### 4.3 Recorte, EOS boosting, muestreo y marcado
 
 - **Recorte de silencio final (`trim_trailing_silence`)**: activo si `n_samples >= 3 * 24000` y no existe `QWEN_NO_REF_TRIM`. Escanea ventanas de `20 ms` desde el final con umbral `max(0.18 * global_rms, 0.004)`, deja `+50 ms` de margen y limita el recorte al `40 %` de la duración conservando al menos `2 s`.
-- **EOS boosting (`pipeline.rs`)**: `expected = text_content_len * 3`. Si `text_content_len <= 11`: `start = expected * 3 / 2`, `+1.0/frame` (tope `+15.0`). Si `> 11`: `start = expected * 2`, `+0.5/frame` (tope `+10.0`). Suprime tokens `>= 2048` excepto `CODEC_EOS`, y suprime `CODEC_EOS` para `frame < 2`.
+- **EOS boosting (`pipeline.rs`)**: `expected = text_content_len * 3`. Si `0 < text_content_len <= 11`: `start = expected * 3 / 2`, aplica `+1.0/frame` (tope `+15.0`) cuando `frame > start`. Si `> 11`: `start = expected * 2`, aplica `+0.5/frame` (tope `+10.0`) cuando `frame > start`. Suprime tokens `>= 2048` excepto `CODEC_EOS`, y suprime `CODEC_EOS` para `frame < 2`.
 - **Muestreo (`qwen-core/src/sampling.rs`)**: penalización de repetición sobre `prev_tokens` → si `T < 1e-6`, argmax greedy; si no, `softmax(logits / T)` → *top-k* → *top-p* → renormalización → LCG `seed = seed.wrapping_mul(1103515245).wrapping_add(12345)`, `r = ((seed >> 16) & 0x7FFF) / 32768.0`.
 - **Paralingüística inline y `--compose` (`markup.rs`, `compose.rs`)**:
   - Paso 1 (`para_substitute`): sustituye `[laugh]`/`[laughs]` (`"哈哈哈"`, `seed=2024, T=1.1`), `[sigh]`/`[sighs]` (`"唉"`, `seed=42, T=1.1` o `"ahh"`, `seed=7` para `vivian`), `[yawn]`/`[yawns]` (`"哈啊"`, `seed=42, T=1.1`), `[wow]` (`"哇"`, `seed=2024, T=1.1`), `[giggle]`/`[giggles]` (`"嘿嘿"`, `seed=42, T=1.1`) y `[scoff]` (`"切"`, `seed=42, T=1.0`).

@@ -6,13 +6,13 @@
 
 ## 1. Suites automatizadas (`cargo test`)
 
-Ejecuta todas las pruebas unitarias y de integración del workspace con `cargo test --workspace --release` (en Windows GNU añade `--target x86_64-pc-windows-gnu`, `OMP_NUM_THREADS=4` y sin `OPENBLAS_NUM_THREADS`).
+Ejecuta todas las pruebas unitarias y de integración del workspace con `cargo test --workspace --release` (en Windows GNU añade `--target x86_64-pc-windows-gnu`, `OMP_NUM_THREADS=4` y sin `OPENBLAS_NUM_THREADS`). Como higiene previa a cualquier PR, valida además `cargo clippy --workspace --all-targets -- -D warnings`.
 
 | Suite | Qué valida |
 |---|---|
 | `qwen-kernels/tests/kernels_tests.rs` | `AlignedBuf<64>`, batería `--self-test` (`0` fallos en `int8`/`q4_0`/`bf16`), estrés concurrente de múltiples `ComputePool` independientes, `BlasBackend::sgemm`, `quantize_bf16_to_q2_0` y conversión `f16`. |
 | `qwen-core/tests/core_tests.rs` | Carga `0.6B` (`CustomVoice`/`Base`), rechazo de `1.7B` y `VoiceDesign`, `MmapStore`, tokenización BPE, roundtrip `.bin` y `.qvoice` v3 (`META`/`TPAD`/`WOVR` + `WDLT` LZ4), rechazo de `.qvoice` v2, `MarkupPlanner` y determinismo `Sampler`/`LcgRng`. |
-| `qwen-engine/tests/engine_tests.rs` | Equivalencia de `SpeechDecoder` en *streaming* (`2, 4×8, 6×8, 8×8, 10` con tiling de 256 KB) frente a decodificación completa (`SNR >= 100 dB`), determinismo E2E bit-idéntico y cancelación cooperativa vía `AbortHandle`. |
+| `qwen-engine/tests/engine_tests.rs` | Equivalencia de `SpeechDecoder` en *streaming* (`2`, luego `min(10, 4 + 2 * (k / 8))` con tiling de 256 KB) frente a decodificación completa (`SNR >= 100 dB`), determinismo E2E bit-idéntico y cancelación cooperativa vía `AbortHandle`. |
 | `qwen-engine/tests/voice_clone_emotion_tests.rs` | Validación temprana de WAV 24 kHz y guías `ffmpeg`, `trim_trailing_silence`, `mel_spectrogram`, resolución `emovoice` + norma L2 `dir_*.bin`, flujo `0.6B-Base` → `.qvoice` (`WDLT`), rechazo de `WDLT` sobre `Q4_0` sin `--icl-only`, `--emo-ref`, `--roughness` (`Q2_0`) y composición multi-span. |
 | `qwen-app` (`cli.rs`, `server/validation.rs`) | Rechazo de flags no soportadas (`--voice-design`, `--instruct`), `--host` inválido, implicaciones `--graft`/`--stdout`, mínimo de `--batch-words` y validación HTTP `400` en `ValidatedTtsRequest`. |
 

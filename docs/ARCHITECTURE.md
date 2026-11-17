@@ -80,7 +80,7 @@ RequestExecution  [Efímero por petición — se destruye al finalizar]
    - **Paso de generación**: fija `blas.set_threads(gen_blas)` antes de iniciar el hilo decodificador y lo mantiene constante hasta terminar el drenaje final.
    - **Paralelismo productor-consumidor (`std::thread::scope`)**:
      - **Hilo productor (`Talker + CodePredictor`)**: genera `[i32; 16]` por fotograma, comprueba `exec.abort.is_cancelled()` antes de cada paso y empuja los códigos a `DecoderQueue`.
-     - **Hilo consumidor (`SpeechDecoder`)**: agrupa tramos según el calendario creciente (`2`, luego `4×8, 6×8, 8×8, 10...` hasta `chunk_frames`), ejecuta `speech_decoder_decode_streaming` con `DecoderWorkspace` + tiling en `up2`/`up3` (`256 KB`) y entrega PCM a `AudioSink`.
+     - **Hilo consumidor (`SpeechDecoder`)**: agrupa tramos según el calendario creciente (`2` en el primer fragmento y `min(chunk_frames, 4 + 2 * (k / 8))` para `k = 0, 1, 2, ...` en los siguientes), ejecuta `speech_decoder_decode_streaming` con `DecoderWorkspace` + tiling en `up2`/`up3` (`256 KB`) y entrega PCM a `AudioSink`.
      - Cualquier error de escritura en `AudioSink` activa `queue.aborted` de inmediato y `thread::scope` garantiza *join* limpio sin hilos huérfanos.
 
 ---
