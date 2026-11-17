@@ -62,7 +62,7 @@ Define la superficie pública que el binario Rust (`qwen-app`, ejecutable `qwen_
 | **Sistema / Diagnóstico** | `-j, --threads <n>` | `0` (auto: `min(ncpus, 4)`) | Hilos de cómputo del pool. |
 | | `-S, --silent`, `-D, --debug` | off | `--silent` suprime logs en `stderr`, **nunca** el WAV de salida. |
 | | `--batch`, `--batch-words <n>`, `--batch-dry` | `words=16` (`min 4`) | Síntesis long-form por lotes de texto concatenados (`--batch-dry` imprime partición y sale). |
-| | `--batch-test`, `--batch-bench`, `--batch-multi-test <N>` | — | Diagnóstico de paridad/throughput del motor por lotes. |
+| | `--batch-test`, `--batch-bench`, `--batch-multi-test <N>` | — | Diagnóstico de equivalencia y rendimiento del motor por lotes. |
 | | `--onset-fade <ms>`, `--tail-trim`, `--seed-audition <N>`, `--audition-keep` | `0`, off, `0`, off | Post-procesado de ataque/cola y audición secuencial de hasta `64` semillas (no streaming). |
 
 ---

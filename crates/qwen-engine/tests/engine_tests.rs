@@ -41,11 +41,11 @@ fn snr_db_f32(ref_s: &[f32], test_s: &[f32]) -> f64 {
 }
 
 #[test]
-fn test_decoder_streaming_parity() {
+fn test_decoder_streaming_equivalence() {
     let root = repo_root();
     let model_dir = root.join("models/qwen3-tts-0.6b");
     if !model_dir.exists() {
-        eprintln!("Skipping test_decoder_streaming_parity (model absent)");
+        eprintln!("Skipping test_decoder_streaming_equivalence (model absent)");
         return;
     }
 

@@ -28,7 +28,9 @@ fn repo_root() -> PathBuf {
 }
 
 fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("qwen_engine_f4_tests").join(name);
+    let dir = std::env::temp_dir()
+        .join("qwen_engine_voice_clone_emotion_tests")
+        .join(name);
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -151,16 +153,16 @@ fn test_emovoice_resolution_and_l2_norm_direction() {
 }
 
 #[test]
-fn test_clone_wdelta_q4_error_and_e2e_f4() {
+fn test_clone_wdelta_q4_error_and_e2e() {
     let root = repo_root();
     let cv_dir = root.join("models/qwen3-tts-0.6b");
     let base_dir = root.join("models/qwen3-tts-0.6b-base");
     if !cv_dir.exists() || !base_dir.exists() {
-        eprintln!("Skipping test_clone_wdelta_q4_error_and_e2e_f4 (models absent)");
+        eprintln!("Skipping test_clone_wdelta_q4_error_and_e2e (models absent)");
         return;
     }
 
-    let dir = temp_dir("e2e_f4");
+    let dir = temp_dir("e2e_clone_emotion");
     let runtime = ComputeRuntime::new(Some(4));
 
     // 1. Generate a 24 kHz reference WAV using 0.6B-CustomVoice

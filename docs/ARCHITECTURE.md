@@ -1,6 +1,6 @@
 # Arquitectura de Qwen TTS Engine (`qwen-tts-engine`, actualmente `0.6B`)
 
-Define la estructura del workspace Cargo, la separación de responsabilidades y el modelo de concurrencia del nuevo motor en Rust, diseñado para cumplir [INTERFACE_CONTRACT.md](INTERFACE_CONTRACT.md), [SPEC_06B.md](SPEC_06B.md) y [NUMERIC_CONTRACT.md](NUMERIC_CONTRACT.md).
+Define la estructura del workspace Cargo, la separación de responsabilidades y el modelo de concurrencia del motor en Rust, diseñado para cumplir [INTERFACE_CONTRACT.md](INTERFACE_CONTRACT.md), [SPEC_06B.md](SPEC_06B.md) y [NUMERIC_CONTRACT.md](NUMERIC_CONTRACT.md).
 
 ---
 

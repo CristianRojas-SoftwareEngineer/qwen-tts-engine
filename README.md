@@ -9,7 +9,7 @@ Motor de inferencia TTS en CPU escrito en Rust estable (actualmente con soporte 
   - `crates/qwen-core` — Constantes `0.6B`, `MmapStore`, `BpeTokenizer`, `Sampler`/`LcgRng`, `.qvoice`/`.bin`, `MarkupPlanner`.
   - `crates/qwen-engine` (`#![forbid(unsafe_code)]`) — `Model06B`, `VoiceBindings`, `SessionScratch`, `Talker`, `CodePredictor`, `SpeechDecoder`, `SpeechEncoder`, `ECAPA-TDNN`, `emotion`, `compose`, `batch`, `audio`, `pipeline`.
   - `crates/qwen-app` — Binario `qwen_tts`: CLI completa, afinidad SMT Win32, manifiesto UTF-8, `--watch-stdin`, servidor HTTP y schedulers (`--workers`, `--batch-size`).
-- `docs/` — Contratos y arquitectura ([INTERFACE_CONTRACT.md](docs/INTERFACE_CONTRACT.md), [SPEC_06B.md](docs/SPEC_06B.md), [NUMERIC_CONTRACT.md](docs/NUMERIC_CONTRACT.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [VERIFICATION_PLAN.md](docs/VERIFICATION_PLAN.md)), [docs/adr/](docs/adr/001-only-06b.md) y registro histórico en [docs/archive/MIGRATION_PLAN.md](docs/archive/MIGRATION_PLAN.md).
+- `docs/` — Contratos y arquitectura ([INTERFACE_CONTRACT.md](docs/INTERFACE_CONTRACT.md), [SPEC_06B.md](docs/SPEC_06B.md), [NUMERIC_CONTRACT.md](docs/NUMERIC_CONTRACT.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [VERIFICATION_PLAN.md](docs/VERIFICATION_PLAN.md)) y [docs/adr/](docs/adr/001-only-06b.md).
 - `.github/workflows/ci.yml` — CI multiplataforma (Windows `x86_64-pc-windows-gnu`, Linux `x86_64`/`aarch64`, macOS `arm64`).
 - `models/` — *(Opcional, ignorado en Git)* Pesos locales `0.6B` (`models/qwen3-tts-0.6b` y `models/qwen3-tts-0.6b-base`).
 - `LICENSE` — Licencia Mozilla Public License 2.0 (`MPL-2.0`; ver `NOTICE` para atribución upstream).
