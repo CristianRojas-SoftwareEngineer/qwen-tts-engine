@@ -57,6 +57,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "qwen-app"
+version = "0.1.0"
+dependencies = [
+ "qwen-core",
+ "qwen-engine",
+ "qwen-kernels",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "qwen-core"
 version = "0.1.0"
 dependencies = [

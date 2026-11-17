@@ -4,6 +4,7 @@ members = [
     "crates/qwen-kernels",
     "crates/qwen-core",
     "crates/qwen-engine",
+    "crates/qwen-app",
 ]
 
 [workspace.package]

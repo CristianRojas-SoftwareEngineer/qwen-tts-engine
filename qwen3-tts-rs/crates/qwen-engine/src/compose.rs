@@ -124,6 +124,9 @@ pub fn render_spans_buffer(
     let mut prev_filler = false;
 
     for span in spans {
+        if exec.abort.is_cancelled() {
+            return Err(EngineError::Aborted);
+        }
         match span {
             SpanSpec::Pause { seconds } => {
                 if *seconds > 0.0 {

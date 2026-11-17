@@ -925,14 +925,27 @@ impl Default for RequestConfig {
     }
 }
 
+type AbortPollFn = Arc<dyn Fn() -> bool + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct AbortHandle {
     cancelled: Arc<AtomicBool>,
+    poll: Option<AbortPollFn>,
 }
 
 impl AbortHandle {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_poll<F>(poll: F) -> Self
+    where
+        F: Fn() -> bool + Send + Sync + 'static,
+    {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            poll: Some(Arc::new(poll)),
+        }
     }
 
     #[inline]
@@ -942,7 +955,16 @@ impl AbortHandle {
 
     #[inline]
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        if self.cancelled.load(Ordering::Acquire) {
+            return true;
+        }
+        if let Some(poll) = &self.poll {
+            if poll() {
+                self.cancelled.store(true, Ordering::Release);
+                return true;
+            }
+        }
+        false
     }
 }
 

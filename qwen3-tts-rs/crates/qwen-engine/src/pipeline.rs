@@ -119,7 +119,7 @@ fn embed_text_cached(
     });
 }
 
-fn build_prefill_embeds(
+pub fn build_prefill_embeds(
     runtime: &ComputeRuntime,
     model: &Model06B,
     voice: &VoiceBindings,

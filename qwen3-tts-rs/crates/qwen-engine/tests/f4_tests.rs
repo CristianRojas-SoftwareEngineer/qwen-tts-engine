@@ -26,6 +26,7 @@ fn repo_root() -> PathBuf {
 
 fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join("qwen_engine_f4_tests").join(name);
+    let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -89,8 +90,6 @@ fn test_trim_trailing_silence_and_mel_shape() {
 
 #[test]
 fn test_emovoice_resolution_and_l2_norm_direction() {
-    let dir = temp_dir("emovoice");
-    let _ = fs::remove_dir_all(&dir);
     let dir = temp_dir("emovoice");
     let preset_dir = dir.join("presets");
     fs::create_dir_all(&preset_dir).unwrap();
