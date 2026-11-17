@@ -1,6 +1,6 @@
 # Especificación Técnica de Qwen3-TTS `0.6B` (`SPEC_06B.md`)
 
-Consolida la geometría exacta, tensores, formatos binarios propios y construcción de secuencias del modelo **Qwen3-TTS 0.6B** (`CustomVoice` y `Base`) implementados en `qwen3-tts-rs/`.
+Consolida la geometría exacta, tensores, formatos binarios propios y construcción de secuencias del modelo **Qwen3-TTS 0.6B** (`CustomVoice` y `Base`) implementados en `crates/`.
 
 ---
 

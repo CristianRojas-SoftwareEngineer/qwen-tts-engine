@@ -1,5 +1,6 @@
 # Rust / Cargo
-/qwen3-tts-rs/target/
+/target/
+/.cargo/config.toml
 **/*.rs.bk
 
 # Audio & local test outputs

@@ -1,6 +1,6 @@
 # Plan Maestro de Migración y Trazabilidad (`MIGRATION_PLAN.md`)
 
-Registro histórico cerrado de la migración del motor `Qwen3-TTS 0.6B` hacia `qwen3-tts-rs/` (Gates **G0–G6** completados). Para el diseño y contrato vivos actuales, véanse [ARCHITECTURE.md](ARCHITECTURE.md), [INTERFACE_CONTRACT.md](INTERFACE_CONTRACT.md), [SPEC_06B.md](SPEC_06B.md) y [NUMERIC_CONTRACT.md](NUMERIC_CONTRACT.md).
+Registro histórico cerrado de la migración del motor `Qwen3-TTS 0.6B` hacia `crates/` (originalmente anidado en `qwen3-tts-rs/` antes de su promoción a la raíz del repositorio; Gates **G0–G6** completados). Para el diseño y contrato vivos actuales, véanse [ARCHITECTURE.md](../ARCHITECTURE.md), [INTERFACE_CONTRACT.md](../INTERFACE_CONTRACT.md), [SPEC_06B.md](../SPEC_06B.md), [NUMERIC_CONTRACT.md](../NUMERIC_CONTRACT.md) y [VERIFICATION_PLAN.md](../VERIFICATION_PLAN.md).
 
 ---
 
@@ -24,7 +24,7 @@ Registro histórico cerrado de la migración del motor `Qwen3-TTS 0.6B` hacia `q
 
 ## 2. Matriz de Trazabilidad: Archivos C → Crates Rust
 
-| Archivo(s) C en `qwen3-tts/` *(retirado en G6)* | Destino en `qwen3-tts-rs/` | Estado |
+| Archivo(s) C en `qwen3-tts/` *(retirado en G6)* | Destino en `crates/` | Estado |
 |---|---|---|
 | `main.c` (CLI, `.qvoice`, `emovoice`, Win32 affinity, `--watch-stdin`) | `qwen-app/src/{main.rs,cli.rs,affinity.rs}` + `qwen-core/src/qvoice.rs` + `qwen-engine/src/{voice_clone.rs,emotion.rs}` | **Completado (G2/G4/G5)** |
 | `qwen_tts.h`, `qwen_tts.c` (contexto, prompt, bucle gen, batching, clone) | `qwen-engine/src/{model.rs,pipeline.rs,batch.rs}` | **Completado (G3/G5)** |

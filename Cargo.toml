@@ -11,6 +11,8 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+description = "Standalone Rust CPU inference engine and OpenAI-compatible HTTP server for Qwen3-TTS 0.6B"
+readme = "README.md"
 
 [profile.release]
 opt-level = 3

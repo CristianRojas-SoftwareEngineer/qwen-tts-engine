@@ -43,22 +43,18 @@ jobs:
           sudo apt-get install -y libopenblas-dev
 
       - name: Run workspace unit & kernel tests
-        working-directory: qwen3-tts-rs
         run: cargo test --workspace --release
 
       - name: Build qwen_tts release binary
-        working-directory: qwen3-tts-rs
         run: cargo build -p qwen-app --release
 
       - name: Verify --caps and --self-test
-        working-directory: qwen3-tts-rs
         run: |
           ./target/release/qwen_tts --caps
           ./target/release/qwen_tts --self-test
 
       - name: Check optional pure-Rust faer-blas feature (Linux x86_64)
         if: matrix.name == 'linux-x86_64'
-        working-directory: qwen3-tts-rs
         run: cargo check -p qwen-app --features faer-blas
 
   test-windows-gnu:
@@ -85,7 +81,6 @@ jobs:
 
       - name: Run workspace unit & kernel tests
         shell: pwsh
-        working-directory: qwen3-tts-rs
         env:
           OMP_NUM_THREADS: "4"
         run: |
@@ -95,7 +90,6 @@ jobs:
 
       - name: Build qwen_tts.exe and verify --caps / --self-test / UTF-8 manifest
         shell: pwsh
-        working-directory: qwen3-tts-rs
         env:
           OMP_NUM_THREADS: "4"
         run: |

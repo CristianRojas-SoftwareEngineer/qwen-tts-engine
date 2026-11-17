@@ -15,8 +15,6 @@ fn repo_root() -> PathBuf {
         .unwrap()
         .parent()
         .unwrap()
-        .parent()
-        .unwrap()
         .to_path_buf()
 }
 
