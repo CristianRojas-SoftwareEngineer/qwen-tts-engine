@@ -43,6 +43,7 @@ Tras compilar `qwen_tts`, verifica el runtime y las rutas *batched* según [`INT
 - **Capacidades y kernels**: `qwen_tts --caps`, `qwen_tts --self-test` (`0` fallos) y `qwen_tts --matmat-bench`.
 - **Equivalencia *batching***: `qwen_tts -d models/qwen3-tts-0.6b --quant-mixed --batch-test` y `--batch-bench`.
 - **Decodificación aislada**: `qwen_tts decode-dump <codes.txt> <model_dir> <out.wav>`.
+- **Carga sintética para medir RTF**: [`scripts/SyntheticLoad.ps1`](../scripts/SyntheticLoad.ps1) crea 0–2 procesos `pwsh` que copian 256 MB en bucle (`-Action Start -Threads 1 -ChunkMB 256 -Tag rtf`), los inspecciona con `Status` y los detiene con `Stop -Handle $load` en un `finally`. Es una herramienta de medición, no parte del binario.
 
 ---
 
