@@ -1294,6 +1294,19 @@ pub struct ComputeRuntime {
     pub blas: Arc<dyn BlasBackend>,
 }
 
+fn select_blas_backend() -> Arc<dyn BlasBackend> {
+    #[cfg(feature = "faer-blas")]
+    {
+        if std::env::var("QWEN_BLAS")
+            .ok()
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case("faer"))
+        {
+            return Arc::new(crate::blas::PureRustBlas::default());
+        }
+    }
+    Arc::new(FfiBlas)
+}
+
 impl ComputeRuntime {
     pub fn new(threads: Option<usize>) -> Self {
         ftz_on();
@@ -1307,7 +1320,7 @@ impl ComputeRuntime {
             .unwrap_or(nt);
         let pool = Arc::new(ComputePool::new(nt));
         let sd_pool = Arc::new(ComputePool::new(sd_nt));
-        let blas: Arc<dyn BlasBackend> = Arc::new(FfiBlas);
+        let blas = select_blas_backend();
         blas.set_threads(nt);
         Self {
             caps,
@@ -1330,7 +1343,7 @@ impl ComputeRuntime {
         let sd_nt = sd_threads.unwrap_or(nt).max(1);
         let pool = Arc::new(ComputePool::with_spin_budget(nt, spin_budget));
         let sd_pool = Arc::new(ComputePool::with_spin_budget(sd_nt, spin_budget));
-        let blas: Arc<dyn BlasBackend> = Arc::new(FfiBlas);
+        let blas = select_blas_backend();
         blas.set_threads(nt);
         Self {
             caps,

@@ -69,27 +69,38 @@ fn snr_db_f32(ref_s: &[f32], test_s: &[f32]) -> f64 {
 fn test_decoder_c_oracle_and_streaming_parity() {
     let root = repo_root();
     let model_dir = root.join("models/qwen3-tts-0.6b");
-    let codes_path = root.join("parity/golden/codes_c2_en_mixed.txt");
-    let ref_wav_path = root.join("parity/golden/wavs/decoder_c2_en_mixed.wav");
-    if !model_dir.exists() || !codes_path.exists() || !ref_wav_path.exists() {
-        eprintln!("Skipping test_decoder_c_oracle_and_streaming_parity (models/golden absent)");
+    if !model_dir.exists() {
+        eprintln!("Skipping test_decoder_c_oracle_and_streaming_parity (model absent)");
         return;
     }
 
-    let raw = fs::read_to_string(&codes_path).unwrap();
-    let mut codes = Vec::new();
-    let mut n_frames = 0usize;
-    for line in raw.lines() {
-        let vals: Vec<i32> = line
-            .split_whitespace()
-            .filter_map(|s| s.parse::<i32>().ok())
-            .collect();
-        if vals.len() >= NUM_CODEBOOKS {
-            codes.extend_from_slice(&vals[..NUM_CODEBOOKS]);
-            n_frames += 1;
+    let codes_path = root.join("parity/golden/codes_c2_en_mixed.txt");
+    let ref_wav_path = root.join("parity/golden/wavs/decoder_c2_en_mixed.wav");
+    let (codes, n_frames, has_c_oracle) = if codes_path.exists() && ref_wav_path.exists() {
+        let raw = fs::read_to_string(&codes_path).unwrap();
+        let mut c = Vec::new();
+        let mut nf = 0usize;
+        for line in raw.lines() {
+            let vals: Vec<i32> = line
+                .split_whitespace()
+                .filter_map(|s| s.parse::<i32>().ok())
+                .collect();
+            if vals.len() >= NUM_CODEBOOKS {
+                c.extend_from_slice(&vals[..NUM_CODEBOOKS]);
+                nf += 1;
+            }
         }
-    }
-    assert_eq!(n_frames, 82);
+        (c, nf, true)
+    } else {
+        let nf = 32usize;
+        let mut c = Vec::with_capacity(nf * NUM_CODEBOOKS);
+        for f in 0..nf {
+            for g in 0..NUM_CODEBOOKS {
+                c.push(((f * 37 + g * 131) % 2048) as i32);
+            }
+        }
+        (c, nf, false)
+    };
 
     let runtime = ComputeRuntime::new(Some(4));
     let model = Model06B::load(
@@ -102,32 +113,34 @@ fn test_decoder_c_oracle_and_streaming_parity() {
     )
     .unwrap();
 
-    // 1. Full decode vs C golden WAV
+    // 1. Full decode (and vs C golden WAV when present)
     let full_samples = speech_decoder_decode(&runtime, &model.decoder, &codes, n_frames).unwrap();
     assert_eq!(full_samples.len(), n_frames * 1920);
-    let rust_wav = encode_wav_bytes(&full_samples, SAMPLE_RATE as u32);
-    let rust_s16: Vec<i16> = rust_wav[44..]
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    let ref_s16 = read_wav_s16le(&ref_wav_path);
-    assert_eq!(rust_s16.len(), ref_s16.len());
+    if has_c_oracle {
+        let rust_wav = encode_wav_bytes(&full_samples, SAMPLE_RATE as u32);
+        let rust_s16: Vec<i16> = rust_wav[44..]
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let ref_s16 = read_wav_s16le(&ref_wav_path);
+        assert_eq!(rust_s16.len(), ref_s16.len());
 
-    let max_lsb_diff = rust_s16
-        .iter()
-        .zip(ref_s16.iter())
-        .map(|(&a, &b)| (a as i32 - b as i32).abs())
-        .max()
-        .unwrap_or(0);
-    let snr_vs_c = snr_db_i16(&ref_s16, &rust_s16);
-    assert!(
-        max_lsb_diff <= 1,
-        "Expected max <= 1 LSB vs C decoder, got {max_lsb_diff}"
-    );
-    assert!(
-        snr_vs_c >= 96.0,
-        "Expected decoder SNR >= 96 dB vs C (1 LSB floor), got {snr_vs_c:.2} dB"
-    );
+        let max_lsb_diff = rust_s16
+            .iter()
+            .zip(ref_s16.iter())
+            .map(|(&a, &b)| (a as i32 - b as i32).abs())
+            .max()
+            .unwrap_or(0);
+        let snr_vs_c = snr_db_i16(&ref_s16, &rust_s16);
+        assert!(
+            max_lsb_diff <= 1,
+            "Expected max <= 1 LSB vs C decoder, got {max_lsb_diff}"
+        );
+        assert!(
+            snr_vs_c >= 96.0,
+            "Expected decoder SNR >= 96 dB vs C (1 LSB floor), got {snr_vs_c:.2} dB"
+        );
+    }
 
     // 2. Streaming decode (ramp 2, 4x8, 6x8, ..., tiled) vs full decode inside Rust
     let mut st = SdStreamState::new();

@@ -3,5 +3,10 @@ name = "qwen-kernels"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+faer-blas = ["dep:faer"]
+
 [dependencies]
 libc = "0.2"
+faer = { version = "0.24", optional = true }

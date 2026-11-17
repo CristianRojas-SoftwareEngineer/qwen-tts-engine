@@ -3,6 +3,10 @@ name = "qwen-app"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+faer-blas = ["qwen-kernels/faer-blas"]
+
 [[bin]]
 name = "qwen_tts"
 path = "src/main.rs"

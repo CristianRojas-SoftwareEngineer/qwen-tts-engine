@@ -915,8 +915,54 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
     Ok(0)
 }
 
+fn run_decode_dump(codes_path: &str, model_dir: &str, out_wav: &str) -> Result<i32, String> {
+    let raw = fs::read_to_string(codes_path)
+        .map_err(|e| format!("Failed to read codes file {codes_path}: {e}"))?;
+    let mut codes = Vec::new();
+    for tok in raw.split_whitespace() {
+        let v = tok
+            .parse::<i32>()
+            .map_err(|_| format!("Invalid integer token '{tok}' in {codes_path}"))?;
+        codes.push(v);
+    }
+    if codes.is_empty() || codes.len() % 16 != 0 {
+        return Err(format!(
+            "Invalid code count {} in {codes_path} (expected multiple of 16)",
+            codes.len()
+        ));
+    }
+    let n_frames = codes.len() / 16;
+    let rt = ComputeRuntime::new(None);
+    let opts = ModelLoadOptions {
+        silent: true,
+        ..Default::default()
+    };
+    let model = Model06B::load(Path::new(model_dir), &rt, opts).map_err(|e| e.to_string())?;
+    let audio = qwen_engine::speech_decoder_decode(&rt, &model.decoder, &codes, n_frames)
+        .map_err(|e| e.to_string())?;
+    write_wav(Path::new(out_wav), &audio, SAMPLE_RATE as u32).map_err(|e| e.to_string())?;
+    eprintln!(
+        "decode-dump: {n_frames} frames -> {} samples -> {out_wav}",
+        audio.len()
+    );
+    Ok(0)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("decode-dump") {
+        if args.len() != 5 {
+            eprintln!("Usage: {} decode-dump <codes.txt> <model_dir> <out.wav>", args[0]);
+            process::exit(1);
+        }
+        match run_decode_dump(&args[2], &args[3], &args[4]) {
+            Ok(code) => process::exit(code),
+            Err(msg) => {
+                eprintln!("{msg}");
+                process::exit(1);
+            }
+        }
+    }
     let prog = args.first().map(String::as_str).unwrap_or("qwen_tts");
     let cfg = match parse_cli(&args) {
         Ok(ParseOutcome::Help) => {
