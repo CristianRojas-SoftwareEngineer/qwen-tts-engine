@@ -29,7 +29,7 @@
 | | `-o, --output <path>` | `output.wav` | Ruta de salida WAV (24 kHz, PCM s16le mono). |
 | **Voz e idioma** | `-s, --speaker <name>` | `ryan` (`3061`) | Presets: `ryan`, `vivian`, `serena`, `aiden`, `eric`, `dylan`, `uncle_fu`, `ono_anna`, `sohee`. Nombre desconocido → `exit 1`. |
 | | `-l, --language <name>` | `English` (`2050`) *(o `META` en `--load-voice`)* | Acepta 12 idiomas *case-insensitive*: `english`, `german`, `spanish`, `chinese`, `japanese`, `french`, `sichuan_dialect`, `korean`, `russian`, `italian`, `portuguese`, `beijing_dialect`. Con `--load-voice`, si se omite usa `META.lang_id` si es `> 0`. Desconocido → `exit 1`. |
-| **Muestreo** | `-T, --temperature <f>` | `0.9` *(CLI)* / `0.5` *(HTTP)* | Rango `[0.0, 2.0]`; `0.0` = greedy. Si hay sustitución paralingüística inline sin `-T`, usa la `T` de la etiqueta (`1.1`, o `1.0` en `[scoff]`). |
+| **Muestreo** | `-T, --temperature <f>` | `0.325` | Rango `[0.0, 2.0]`; `0.0` = greedy. Si hay sustitución paralingüística inline sin `-T`, usa la `T` de la etiqueta (`1.1`, o `1.0` en `[scoff]`). |
 | | `-k, --top-k <n>` | `50` | Límite de candidatos *top-k* en `[0, 3072]`. |
 | | `-p, --top-p <f>` | `1.0` | Umbral acumulado *nucleus sampling* en `[0.0, 1.0]`. |
 | | `-r, --rep-penalty <f>` | `1.05` | Penalización de repetición sobre tokens previos en `[0.5, 2.0]`. |
@@ -127,7 +127,7 @@
 | `text` o `input` | `string` | *(obligatorio)* | No vacío ni solo espacios/escapes `\n`, `\t`, `\r`; `<= 8192` bytes. |
 | `speaker` o `voice` | `string` | `ryan` (o voz clonada) | Debe existir en `PRESET_SPEAKERS` si se envía (con voz clonada se mantiene la identidad clonada). |
 | `language` | `string` | `English` (`None` en clon HTTP) | Debe existir en `lookup_language`. En HTTP con voz clonada, si se omite no fuerza idioma (`CODEC_NO_THINK`). |
-| `temperature` | `number` | `0.5` | Rango válido `[0.0, 2.0]`. |
+| `temperature` | `number` | `0.325` | Rango válido `[0.0, 2.0]`. |
 | `top_k` | `integer` | `50` | Rango válido `[0, 3072]`. |
 | `top_p` | `number` | `1.0` | Rango válido `[0.0, 1.0]`. |
 | `rep_penalty` | `number` | `1.05` | Rango válido `[0.5, 2.0]`. |
@@ -214,7 +214,7 @@ use qwen_engine::{
 let exec = RequestExecution::new(RequestConfig {
     speaker_id: 3061,
     language_id: Some(2050), // English
-    temperature: 0.9,
+    temperature: 0.325,
     seed: 42,
     ..Default::default()
 });
