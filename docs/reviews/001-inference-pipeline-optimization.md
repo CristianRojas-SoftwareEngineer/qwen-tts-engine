@@ -34,7 +34,7 @@ El diseño actual ya incorpora optimizaciones clave para CPU: cuantización `Q4_
 
 3. **Consumo de memoria RAM**:
    - Cada `SessionScratch` preasigna **~181.6 MiB** al crearse (`112.0 MiB` de `TalkerKvCache` para `1024` posiciones + `60.0 MiB` de `pref_*_f32` + `8.0 MiB` de `EmbLruCache`), lo que suma **~726 MiB** con `--workers 4` antes de procesar la primera petición.
-   - `BatchWorkspace` reserva **`122.08 MiB`/slot** contiguos (`~976.6 MiB` para `B=8`) y `generate_batch_multi` clona `TalkerKvCache` completos (**`112 MiB`/petición**) antes de copiar solo el prompt.
+   - `BatchWorkspace` reserva **`122.08 MiB`/slot** contiguos (`~976.6 MiB` para `B=8`) y `generate_batch_multi` clonaba `TalkerKvCache` completos en un snapshot antes de copiar solo el prompt (**`112 MiB`/petición** pre-`O10a`; **`28,0 MiB`/petición** post-`O10a` con `KV_INITIAL_POSITIONS=256`; el snapshot completo se eliminó en `O11`, Fase 1 Paso 1.2).
 
 ---
 
@@ -129,7 +129,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 1. **En petición individual (`B=1`, CLI o HTTP simple)**:
    - La reducción de RTF es **moderada en frases largas** y **más pronunciada en frases cortas y TTFA**.
    - **Techo de implementación, no de volumen de bytes**: cada fotograma lee `~1.04 GiB` de pesos cuantizados (`236.25 MiB` del Talker `Q4_0` + `774.34 MiB` de los 14 pasos del CP + `30.0 MiB` de `lm_head`). Con esos mismos bytes, el gemelo C completa el Code Predictor en `33.0–37.0 ms/f` y este motor en `38.7 ms/f`: existe un **5–17 % de margen sin cambiar bitwidth**. **Fundamento**: `Anexo A de phase-0/estado.md`.
-   - **Palancas con efecto en `B=1`**: `O3` (`-3 MiB/frame`), `O5` (libera el `drain` cuando mejora el productor), `O4` (`prefill_ms`, crítico en textos breves) y `O1` solo en `cp_prefill2` (2 posiciones/fotograma; el matmat entero es exacto pero no más rápido: **1.35×** E2E y **1.2–1.7×** en microbanco). **Fundamento**: `Anexo A de phase-0/estado.md`.
+   - **Palancas con efecto en `B=1`**: `O3` (`-3 MiB/frame`), `O5` (libera el `drain` cuando mejora el productor), `O4` (`prefill_ms`, crítico en textos breves) y `O1` solo en `cp_prefill2` (2 posiciones/fotograma; el matmat entero es exacto pero no más rápido: **1.26×** E2E y **1.2–1.7×** en microbanco). **Fundamento**: `Anexo A de phase-0/estado.md`.
 2. **En servidor concurrente (`--batch-size N`, `ContinuousBatchScheduler`)**:
    - Aquí se produce la **mayor reducción de RTF agregado** (tiempo total / audio total generado). Actualmente, `int8_matmat_slice` y `q4_0_matmat_slice` re-leen los pesos `B` veces, multiplicando el tráfico de DRAM casi por `B`. Con `O1 + O2 + O7`, el costo de leer `~1.04 GiB/frame` se amortiza entre las `B` peticiones activas simultáneamente.
 3. **Optimizaciones orientadas a RAM y arranque (`O10`, `O11`, `O12`)**:
@@ -144,10 +144,10 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 #### O1. Microkernels `matmat` reales para `INT8` y `Q4_0`
 - **Ubicación**: `crates/qwen-kernels/src/simd/avx2.rs` (`int8_matmat_slice` L571–603, `q4_0_matmat_slice` L735–766) y `crates/qwen-kernels/src/simd/scalar.rs` (L134–166, L195–226).
 - **Problema**: Para cada tile de `MM_TILE = 8` filas, el kernel ejecuta `for b in 0..b_dim` llamando a `int8_matvec_2row` / `q4_0_matvec_2row`. Esto relee las mismas filas de peso `w` desde caché/DRAM `b_dim` veces y en `Q4_0` recalcula `q4_0_sumq` en cada iteración, limitando los resultados de `--matmat-bench` (`crates/qwen-kernels/src/bench.rs`).
-- **Impacto**: Ahorra **`~55.3 MiB/frame`** en `cp_prefill2` (`B=2`) y reduce el tráfico de `B` relecturas a **1** (techo teórico `B×`). Medido: **1.35×** E2E en `--batch-bench` y **1.2–1.7×** en microbanco `INT8`/`INT4`. `matmat_bf16` queda fuera de alcance: **0.76–0.97×** en este hardware y descartado en el gemelo C. **Fundamento**: `Anexo A de phase-0/estado.md`.
+- **Impacto**: Ahorra **`~55.3 MiB/frame`** en `cp_prefill2` (`B=2`) y reduce el tráfico de `B` relecturas a **1** (techo teórico `B×`). Medido: **1.26×** E2E en `--batch-bench` y **1.2–1.7×** en microbanco `INT8`/`INT4`. `matmat_bf16` queda fuera de alcance: **0.76–0.97×** en este hardware y descartado en el gemelo C. **Fundamento**: `Anexo A de phase-0/estado.md`.
 - **Propuesta**: Escribir microkernels `AVX2+FMA` especializados para `B=2, 4, 8`: cargar 32 bytes de peso (`INT8` o un `Q4_0Block`), decodificar nibbles una sola vez y acumular `B` vectores `a_b` en registros YMM independientes, precalculando `sumq[0..b_dim]` una vez por bloque. Mantener equivalente estructurado en `simd/scalar.rs` para ARM64 y *fallback* x86.
 - **Contrato numérico**: **Compatible 100 %** (`L2_rel == 0.0` en `INT8`, `L2_rel <= 1e-6` en `Q4_0` en `--self-test`).
-- **Estado**: `vigente` (solo `INT8`/`Q4_0`). **Efecto medido**: 1.35× E2E. **Fundamento**: `.work/plans/optimizations/phase-0/estado.md`. **Si se pierde**: volver a leer los pesos `B` veces por lote.
+- **Estado**: `vigente` (solo `INT8`/`Q4_0`). **Efecto medido**: 1.26× E2E. **Fundamento**: `.work/plans/optimizations/phase-0/estado.md`. **Si se pierde**: volver a leer los pesos `B` veces por lote.
 
 #### O2. Eliminar la doble transposición en `batch_proj_q` + `quantize_act_int8_cols`
 - **Ubicación**: `crates/qwen-engine/src/batch.rs:53-115` y `crates/qwen-kernels/src/dispatch.rs:357-379`.
@@ -230,12 +230,12 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Contrato numérico**: **Bit-idéntico**.
 - **Estado**: `O10a` `condicionado`; `O10b` y `O10c` `vigente`. **Efecto medido**: `O10a` ahorra `84 MiB`/sesión solo si no hay crecimiento. `256` cubre 211 frames de audio + prompt; un texto de 450 caracteres usa ~319. El gemelo C probó `512`, creció a `1024` en textos largos y lo descartó; su valor validado es `1024`, que este motor ya tiene. **Prueba obligatoria**: medir el pico *durante* `ensure_capacity`. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`. **Si se pierde**: reasignación del KV en frases largas.
 
-#### O11. Eliminar el clonado de `112 MiB` en `generate_batch_multi` y dimensionar `BatchWorkspace`
-- **Ubicación**: `crates/qwen-engine/src/batch.rs:163, 200-215, 1158-1170, 1416-1421`.
-- **Problema**: `generate_batch_multi` materializa `scratch.talker_kv.k` y `.v` completos (**`112 MiB` por petición** = **`896 MiB` para 8 peticiones**) en `kv_snapshots` antes de copiar solo `prompt_lens[b]` tokens a `BatchWorkspace`. Además, `run_continuous_batch` preasigna `122.08 MiB/slot` contiguos (`kv_max = 1116`).
-- **Propuesta**: eliminar el `to_vec()` de `kv_snapshots` (`batch.rs:1158-1162`) y copiar directamente `prompt_lens[b] * KV_DIM` por capa desde el KV de sesión. `load_slot_kv` (`batch.rs:200-215`) ya realiza la copia acotada: el residuo es el snapshot completo. Ahorro objetivo **~`850+ MiB`** de pico temporal; a futuro, evaluar bloques KV paginados de 64 tokens si se escala a `B >= 16`.
+#### O11. Snapshot compacto de KV en `generate_batch_multi`
+- **Ubicación**: `crates/qwen-engine/src/batch.rs:163, 200-219, 1144-1181` (y `run_continuous_batch` en `1485`, ruta directa sin snapshot).
+- **Problema**: `generate_batch_multi` materializaba el KV completo del scratch por slot en `kv_snapshots` antes de copiar solo `prompt_lens[b]` posiciones a `BatchWorkspace` (**`112 MiB`/petición** pre-`O10a`, **`896 MiB`** para 8; post-`O10a` `28,0 MiB`/slot, **`224 MiB`** por grupo de 8). `run_continuous_batch`/`BatchWorkspace` preasignan `122.08 MiB`/slot contiguos (`kv_max = 1116`), huella independiente del snapshot.
+- **Implementación (Fase 1, Paso 1.2)**: se elimina el snapshot completo y se conserva un staging compacto con layout `(layer × pl) × KV_DIM` (`NUM_LAYERS * pl * KV_DIM` elementos `u16` por buffer), cargado al slot por la **única ruta** existente `load_slot_kv(b, sk, sv, pl, pl)` (`src_kv_max = prompt_len`, stride de fuente igual al de destino lógico del prompt). Se mantiene el staging porque `bw.kv_max` depende del `max_pl` de todo el grupo y se conoce solo tras prefilar todos los slots; la copia directa scratch→`bw` exigiría `BatchWorkspace` ragged (stride por slot) o pre-dimensionarlo a 1116 (peor para RAM) — opción futura junto a bloques KV paginados si se escala a `B >= 16`.
 - **Contrato numérico**: **Bit-idéntico**.
-- **Estado**: `vigente`. **Efecto medido**: pico `--batch-size 4` de **3 062.1 MiB** con 4 peticiones en vuelo (+1 340 MiB, ≈335 MiB/slot); objetivo ≤2 250 MiB. **Fundamento**: `.work/plans/optimizations/phase-0/estado.md`. **Si se pierde**: el modo `batch` duplica la huella frente a `--workers`.
+- **Estado**: `implementado` (Fase 1, Paso 1.2). **Alcance**: modo batch del CLI (`generate_batch_multi` / `--batch-multi-test` / `--batch`), **no** el pico del servidor `--batch-size` (que usa `run_continuous_batch` sin snapshot; su pico lo gobierna `BatchWorkspace.kv_k/kv_v` ≈ 488 MiB committed con `kv_max=1116`, a tratar en `O10c`). **Efecto medido** (A/B intercalado, pico de privados pareado, 3 pares × 2 textos, hashes 48/48 por texto): **corto (pl=21) −206,0 MiB**, **largo (pl=44) −169,5 MiB** de mediana (Δ en la fase de snapshots 185,9 MiB, acorde a 917 504 B × (256 − pl)); wall ±3%; servidor workers4/batch4 sin cambio (commit pico exacto −2,8 / 0,0 MiB). **Compuerta**: hashes bit-idénticos y no-regresión de rutas no tocadas (no «WS ≤ 2 250 MiB»). **Fundamento**: `.work/plans/optimizations/phase-0/estado.md`, `.work/plans/optimizations/phase-1/estado.md`. **Si se pierde**: volver al snapshot completo y al pico de privados medido en el control.
 
 #### O12. Carga paralela de cuantización al iniciar `Model06B::load`
 - **Ubicación**: `crates/qwen-engine/src/model.rs:1487-1489` y `crates/qwen-kernels/src/quant.rs:144-236`.
@@ -254,7 +254,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 | **2** | **O1** | `vigente` | Microkernels `matmat_int8` / `matmat_q4_0` reales (sin `bf16`) | **Ancho de banda + CPU** | Ninguna | Ninguno (bit-idéntico) | Medio |
 | **3** | **O2** | `pendiente` | Eliminar doble transposición en `batch_proj_q` | **Ancho de banda + CPU** | Depende de **O1** | Ninguno (bit-idéntico) | Bajo–Medio |
 | **4** | **O10** | `condicionado` | `KV_INITIAL_POSITIONS`, `pref_*_f32` diferido, `tmp_*` a `DecoderWorkspace` | **RAM** | Ninguna | Ninguno (bit-idéntico) | Bajo |
-| **5** | **O11** | `vigente` | Eliminar el snapshot completo del KV en `generate_batch_multi` | **RAM** | Ninguna | Ninguno (bit-idéntico) | Bajo |
+| **5** | **O11** | `implementado` | Snapshot compacto de KV en `generate_batch_multi` (CLI batch) | **RAM** | Ninguna | Ninguno (bit-idéntico) | Bajo |
 | **6** | **O7** | `vigente` | Quitar `ftz_on()` hot path, compactar batch y barrera única atención | **CPU + Ancho de banda** | Ninguna (mejor tras **O1**) | Ninguno (bit-idéntico) | Bajo–Medio |
 | **7** | **O9** | `vigente` | Fijar `OMP_NUM_THREADS = -j` en el lanzador y `openblas_set_num_threads` una sola vez | **CPU (servidor)** | Ninguna | Ninguno | Bajo |
 | **8** | **O12** | `pendiente` | Cuantización paralela en `Model06B::load` | **Tiempo de carga** | Ninguna | Ninguno (bit-idéntico) | Bajo |
@@ -297,7 +297,7 @@ Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar a
 - **Prerequisitos**: Fase 0 completada.
 - **Pasos (ordenados de menor a mayor riesgo de borde)**:
   - **Paso 1.1 (`O10a`)**: **Qué cambia**: `KV_INITIAL_POSITIONS` de `1024` a `256` (`crates/qwen-engine/src/model.rs:33`). **Por qué**: −84.0 MiB/sesión. **Riesgo a vigilar**: `256` cubre 211 frames de audio + prompt; un texto de 450 caracteres usa ~319 → prueba de crecimiento obligatoria y medición del pico durante `ensure_capacity`. **Compuerta**: RSS sin subir durante el crecimiento. **Decisión**: conservar solo si no aparece ese pico.
-  - **Paso 1.2 (`O11`)**: **Qué cambia**: eliminar el `.to_vec()` de `kv_snapshots` (`crates/qwen-engine/src/batch.rs:1158-1162`) y copiar `prompt_lens[b] * KV_DIM` por capa desde el KV de sesión. **Por qué**: pico de 3 062.1 MiB con `--batch-size 4`. **Riesgo a vigilar**: offset por capa (`layer * max_pos * KV_DIM`). **Compuerta**: pico ≤2 250 MiB. **Decisión**: conservar si se alcanza el objetivo sin cambiar los códigos.
+  - **Paso 1.2 (`O11`)**: **Qué cambia**: sustituir el snapshot completo de `generate_batch_multi` por un snapshot compacto `(layer × pl) × KV_DIM` cargado por la ruta única `load_slot_kv(b, sk, sv, pl, pl)` (`crates/qwen-engine/src/batch.rs`); `run_continuous_batch` (servidor `--batch-size`) no usa snapshots y no se modifica. **Por qué**: reducir el pico de privados del modo batch del CLI (el pico del servidor lo gobierna `BatchWorkspace`, ~488 MiB committed con `kv_max=1116`). **Riesgo a vigilar**: offsets de capa/stride (`layer * src_stride * KV_DIM` en origen). **Compuerta**: hashes bit-idénticos y Δ de pico privado pareado en banda (medido: −206,0 MiB corto pl=21, −169,5 MiB largo pl=44; servidor ± commit exacto). **Decisión**: conservado (implementado).
   - **Paso 1.3 (`O10b`)**: **Qué cambia**: asignar `pref_*_f32` (`60.0 MiB`) bajo demanda en `TalkerBuffers::ensure_prefill_capacity`. **Por qué**: −60 MiB/worker. **Compuerta**: RSS CLI y servidor. **Decisión**: conservar sin regresión de `prefill_ms`.
   - **Paso 1.4 (`O10c`)**: **Qué cambia**: mover los `14` vectores `tmp_*` de `SdStreamState` a `DecoderWorkspace`. **Por qué**: menos duplicación por `ContinuousSlot`. **Compuerta**: RSS del modo `batch`. **Decisión**: conservar sin regresión de `decoder_ms`.
   - **Paso 1.5 (`O5`)**: **Qué cambia**: reemplazar la atención escalar de `speech_decoder_decode_streaming` (`crates/qwen-engine/src/speech_decoder.rs:1679-1723`) por `d.causal_attention_windowed` con `q_offset = st.kv_len - st.kv_base` y `seq_k = st.kv_len + new_frames - st.kv_base`. **Por qué**: el decoder gobierna el wall cuando mejora el productor. **Riesgo a vigilar**: compactación con `st.kv_base > 0`. **Compuerta**: `decoder_ms` ≤9 150 ms y `drain` ≤350 ms. **Decisión**: conservar con `SNR >= 100 dB`.
@@ -324,7 +324,7 @@ Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar a
 - **Criterio de cierre de Fase 2**:
   1. `qwen_tts --self-test` con `L2_rel == 0.0` (`INT8`) y `L2_rel <= 1e-6` (`Q4_0`) entre `matmat(B=8)` y `8 × matvec`.
   2. `qwen_tts --batch-test` aprobado y salida E2E **bit-idéntica** respecto al cierre de la Fase 1.
-  3. `qwen_tts --matmat-bench` (`QWEN_BATCH_B=2,4,8`) y `--batch-bench` con techo realista **1.35×** E2E y **1.2–1.7×** en microbanco `INT8`/`INT4` frente a la Fase 0, y caída medible de `cp_ms` en `cp_prefill2`. `matmat_bf16` no se evalúa: mide 0.76–0.97×. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`.
+  3. `qwen_tts --matmat-bench` (`QWEN_BATCH_B=2,4,8`) y `--batch-bench` con techo realista **1.26×** E2E y **1.2–1.7×** en microbanco `INT8`/`INT4` frente a la Fase 0, y caída medible de `cp_ms` en `cp_prefill2`. `matmat_bf16` no se evalúa: mide 0.76–0.97×. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`.
 
 ---
 

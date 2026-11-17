@@ -197,6 +197,10 @@ impl BatchWorkspace {
         })
     }
 
+    /// Copia las primeras `prompt_len` posiciones de cada capa desde una cache
+    /// fuente con stride `src_kv_max` al slot `slot` (stride `self.kv_max`).
+    /// Unica ruta de carga de KV por slot: scratch de sesion
+    /// (src_kv_max = talker_kv.max_pos) o snapshot compacto (src_kv_max = prompt_len).
     pub fn load_slot_kv(
         &mut self,
         slot: usize,
@@ -1137,7 +1141,7 @@ pub fn generate_batch_multi(
         let mut tcls = vec![0usize; b_dim];
         let mut icl_modes = vec![false; b_dim];
         let mut seed_hidden = vec![0.0f32; b_dim * HIDDEN_SIZE];
-        let mut kv_snapshots: Vec<(Vec<u16>, Vec<u16>, usize)> = Vec::with_capacity(b_dim);
+        let mut kv_snapshots: Vec<(Vec<u16>, Vec<u16>)> = Vec::with_capacity(b_dim);
         let mut max_pl = 0usize;
 
         runtime.blas.set_threads(nt);
@@ -1155,18 +1159,25 @@ pub fn generate_batch_multi(
             tcls[b] = tcl;
             icl_modes[b] = icl_mode;
             max_pl = max_pl.max(pl);
-            kv_snapshots.push((
-                scratch.talker_kv.k.as_slice().to_vec(),
-                scratch.talker_kv.v.as_slice().to_vec(),
-                scratch.talker_kv.max_pos,
-            ));
+            let src_stride = scratch.talker_kv.max_pos * KV_DIM; // 256, o crecido si pl > 256
+            let mut sk = vec![0u16; NUM_LAYERS * pl * KV_DIM];
+            let mut sv = vec![0u16; NUM_LAYERS * pl * KV_DIM];
+            for layer in 0..NUM_LAYERS {
+                let src = layer * src_stride;
+                let dst = layer * pl * KV_DIM;
+                sk[dst..dst + pl * KV_DIM]
+                    .copy_from_slice(&scratch.talker_kv.k[src..src + pl * KV_DIM]);
+                sv[dst..dst + pl * KV_DIM]
+                    .copy_from_slice(&scratch.talker_kv.v[src..src + pl * KV_DIM]);
+            }
+            kv_snapshots.push((sk, sv));
         }
 
         let kv_max = (max_pl + gen_cap + 4).min(ROPE_MAX_POS);
         let mut bw = BatchWorkspace::new(b_dim, kv_max)?;
         bw.force_matvec = force_matvec || env_batch_force_matvec();
-        for (b, (sk, sv, smax)) in kv_snapshots.iter().enumerate() {
-            bw.load_slot_kv(b, sk, sv, *smax, prompt_lens[b]);
+        for (b, (sk, sv)) in kv_snapshots.iter().enumerate() {
+            bw.load_slot_kv(b, sk, sv, prompt_lens[b], prompt_lens[b]);
         }
 
         let mut pos = prompt_lens;
