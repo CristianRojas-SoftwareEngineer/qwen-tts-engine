@@ -3,15 +3,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-#![allow(
-    clippy::missing_safety_doc,
-    clippy::too_many_arguments,
-    clippy::needless_range_loop
-)]
+//! Kernels SIMD `AVX2 + FMA` de `qwen-kernels` (invocados exclusivamente mediante `KernelDispatch`).
+//!
+//! # Safety
+//! Todas las funciones `pub(crate) unsafe fn` de este módulo requieren que la CPU soporte `avx2` y `fma`
+//! (verificado por `CpuCaps::detect()`) y que los slices recibidos satisfagan las dimensiones declaradas.
 
 use core::arch::x86_64::*;
 
-use crate::ftz::ftz_on;
 use crate::quant::{
     bf16_to_f32, f16_to_f32, Q4_0Block, Q4_0_BLOCK_SIZE, QWEN_INT8_PF_DIST, QWEN_LONG_ROW_COLS,
     QWEN_QACT_MAX,
@@ -53,7 +52,7 @@ unsafe fn set_m128i(hi: __m128i, lo: __m128i) -> __m256i {
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn quantize_act_int8(qx: &mut [i8], x: &[f32]) -> f32 {
+pub(crate) unsafe fn quantize_act_int8(qx: &mut [i8], x: &[f32]) -> f32 {
     let n = x.len();
     let sign = _mm256_set1_ps(-0.0f32);
     let mut vmax = _mm256_setzero_ps();
@@ -101,7 +100,7 @@ pub unsafe fn quantize_act_int8(qx: &mut [i8], x: &[f32]) -> f32 {
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn rms_norm(
+pub(crate) unsafe fn rms_norm(
     out: &mut [f32],
     x: &[f32],
     weight: &[f32],
@@ -149,7 +148,7 @@ pub unsafe fn rms_norm(
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn rms_norm_residual(
+pub(crate) unsafe fn rms_norm_residual(
     out: &mut [f32],
     x: &mut [f32],
     residual: &[f32],
@@ -199,7 +198,7 @@ pub unsafe fn rms_norm_residual(
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn rms_norm_per_head(
+pub(crate) unsafe fn rms_norm_per_head(
     x: &mut [f32],
     weight: &[f32],
     seq: usize,
@@ -250,7 +249,7 @@ pub unsafe fn rms_norm_per_head(
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn bf16_matvec_slice(y: &mut [f32], x: &[f32], w: &[u16], in_dim: usize, out_dim: usize) {
+pub(crate) unsafe fn bf16_matvec_slice(y: &mut [f32], x: &[f32], w: &[u16], in_dim: usize, out_dim: usize) {
     let xp = x.as_ptr();
     let wp = w.as_ptr();
     let yp = y.as_mut_ptr();
@@ -379,8 +378,8 @@ unsafe fn bf16_matmat_fixed_b<const BV: usize>(
         for k in 0..cols {
             let wv = bf16_to_f32(*wr.add(k));
             let xk = x.as_ptr().add(k * BV);
-            for j in 0..BV {
-                acc[j] = wv.mul_add(*xk.add(j), acc[j]);
+            for (j, acc_slot) in acc.iter_mut().enumerate().take(BV) {
+                *acc_slot = wv.mul_add(*xk.add(j), *acc_slot);
             }
         }
         std::ptr::copy_nonoverlapping(acc.as_ptr(), yr, BV);
@@ -424,7 +423,7 @@ unsafe fn bf16_matmat_generic(
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn bf16_matmat_slice(
+pub(crate) unsafe fn bf16_matmat_slice(
     y: &mut [f32],
     w: &[u16],
     x: &[f32],
@@ -457,7 +456,6 @@ unsafe fn int8_matvec_1row(
     in_dim: usize,
     out_dim: usize,
 ) {
-    ftz_on();
     let ones = _mm256_set1_epi16(1);
     for o in 0..out_dim {
         let w0 = w.add(o * in_dim);
@@ -490,7 +488,6 @@ unsafe fn int8_matvec_2row(
     in_dim: usize,
     out_dim: usize,
 ) {
-    ftz_on();
     let ones = _mm256_set1_epi16(1);
     let mut o = 0usize;
     while o + 1 < out_dim {
@@ -537,7 +534,7 @@ unsafe fn int8_matvec_2row(
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn int8_matvec_slice(
+pub(crate) unsafe fn int8_matvec_slice(
     y: &mut [f32],
     qx: &[i8],
     sx: f32,
@@ -569,8 +566,9 @@ pub unsafe fn int8_matvec_slice(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn int8_matmat_slice(
+pub(crate) unsafe fn int8_matmat_slice(
     y: &mut [f32],
     w: &[i8],
     scale: &[f32],
@@ -626,9 +624,9 @@ unsafe fn q4_0_block(acc: __m256, blk: *const Q4_0Block, a: __m256i, sumq: i32) 
 unsafe fn q4_0_sumq(qx: *const i8, nb: usize, sumq: &mut [i32]) {
     let ones8 = _mm256_set1_epi8(1);
     let ones16 = _mm256_set1_epi16(1);
-    for b in 0..nb {
+    for (b, slot) in sumq.iter_mut().enumerate().take(nb) {
         let a = _mm256_loadu_si256(qx.add(b * Q4_0_BLOCK_SIZE) as *const __m256i);
-        sumq[b] = hsum_epi32(_mm256_madd_epi16(_mm256_maddubs_epi16(ones8, a), ones16));
+        *slot = hsum_epi32(_mm256_madd_epi16(_mm256_maddubs_epi16(ones8, a), ones16));
     }
 }
 
@@ -645,10 +643,10 @@ unsafe fn q4_0_rows1(
     for o in 0..out_dim {
         let r0 = w.add(o * nb);
         let mut s0 = _mm256_setzero_ps();
-        for b in 0..nb {
+        for (b, &sq) in sumq.iter().enumerate().take(nb) {
             let a = _mm256_loadu_si256(qx.add(b * Q4_0_BLOCK_SIZE) as *const __m256i);
             _mm_prefetch::<_MM_HINT_T0>(r0.add(b + 16) as *const i8);
-            s0 = q4_0_block(s0, r0.add(b), a, sumq[b]);
+            s0 = q4_0_block(s0, r0.add(b), a, sq);
         }
         *y.add(o) = hsum256_ps(s0) * sx;
     }
@@ -663,7 +661,6 @@ unsafe fn q4_0_matvec_2row(
     cols: usize,
     out_dim: usize,
 ) {
-    ftz_on();
     let nb = cols / Q4_0_BLOCK_SIZE;
     let mut sumq = [0i32; QWEN_QACT_MAX / Q4_0_BLOCK_SIZE];
     q4_0_sumq(qx, nb, &mut sumq[..nb]);
@@ -673,12 +670,12 @@ unsafe fn q4_0_matvec_2row(
         let r1 = r0.add(nb);
         let mut s0 = _mm256_setzero_ps();
         let mut s1 = _mm256_setzero_ps();
-        for b in 0..nb {
+        for (b, &sq) in sumq.iter().enumerate().take(nb) {
             let a = _mm256_loadu_si256(qx.add(b * Q4_0_BLOCK_SIZE) as *const __m256i);
             _mm_prefetch::<_MM_HINT_T0>(r0.add(b + 16) as *const i8);
             _mm_prefetch::<_MM_HINT_T0>(r1.add(b + 16) as *const i8);
-            s0 = q4_0_block(s0, r0.add(b), a, sumq[b]);
-            s1 = q4_0_block(s1, r1.add(b), a, sumq[b]);
+            s0 = q4_0_block(s0, r0.add(b), a, sq);
+            s1 = q4_0_block(s1, r1.add(b), a, sq);
         }
         *y.add(o) = hsum256_ps(s0) * sx;
         *y.add(o + 1) = hsum256_ps(s1) * sx;
@@ -698,7 +695,6 @@ unsafe fn q4_0_matvec_1row(
     cols: usize,
     out_dim: usize,
 ) {
-    ftz_on();
     let nb = cols / Q4_0_BLOCK_SIZE;
     let mut sumq = [0i32; QWEN_QACT_MAX / Q4_0_BLOCK_SIZE];
     q4_0_sumq(qx, nb, &mut sumq[..nb]);
@@ -706,7 +702,7 @@ unsafe fn q4_0_matvec_1row(
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn q4_0_matvec_slice(
+pub(crate) unsafe fn q4_0_matvec_slice(
     y: &mut [f32],
     qx: &[i8],
     sx: f32,
@@ -722,7 +718,7 @@ pub unsafe fn q4_0_matvec_slice(
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn q4_0_matvec_qkv_slice(
+pub(crate) unsafe fn q4_0_matvec_qkv_slice(
     y: &mut [f32],
     qx: &[i8],
     sx: f32,
@@ -734,8 +730,9 @@ pub unsafe fn q4_0_matvec_qkv_slice(
     q4_0_matvec_2row(y.as_mut_ptr(), qx.as_ptr(), sx, w.as_ptr(), cols, out_dim);
 }
 
+#[allow(clippy::too_many_arguments)]
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn q4_0_matmat_slice(
+pub(crate) unsafe fn q4_0_matmat_slice(
     y: &mut [f32],
     w: &[Q4_0Block],
     qxt: &[i8],
@@ -769,7 +766,7 @@ pub unsafe fn q4_0_matmat_slice(
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn argmax_matvec_bf16(
+pub(crate) unsafe fn argmax_matvec_bf16(
     x: &[f32],
     w_bf16: &[u16],
     in_dim: usize,
@@ -1018,8 +1015,9 @@ unsafe fn acc_wt_bf16(o: *mut f32, v: *const u16, w: f32, n: usize) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn causal_attention_f32_heads(
+pub(crate) unsafe fn causal_attention_f32_heads(
     out: &mut [f32],
     q: &[f32],
     k: &[f32],
@@ -1079,9 +1077,45 @@ pub unsafe fn causal_attention_f32_heads(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn causal_attention_bf16kv_heads(
+pub(crate) unsafe fn causal_attention_bf16kv_heads(
     out: &mut [f32],
+    q: &[f32],
+    k_bf16: &[u16],
+    v_bf16: &[u16],
+    seq_q: usize,
+    seq_k: usize,
+    n_heads: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
+    scale: f32,
+    q_offset: usize,
+    h_begin: usize,
+    h_end: usize,
+) {
+    assert!(out.len() >= seq_q * n_heads * head_dim);
+    causal_attention_bf16kv_heads_ptr(
+        out.as_mut_ptr(),
+        q,
+        k_bf16,
+        v_bf16,
+        seq_q,
+        seq_k,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        scale,
+        q_offset,
+        h_begin,
+        h_end,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+#[target_feature(enable = "avx2,fma")]
+pub(crate) unsafe fn causal_attention_bf16kv_heads_ptr(
+    op: *mut f32,
     q: &[f32],
     k_bf16: &[u16],
     v_bf16: &[u16],
@@ -1101,7 +1135,6 @@ pub unsafe fn causal_attention_bf16kv_heads(
     let qp = q.as_ptr();
     let kp = k_bf16.as_ptr();
     let vp = v_bf16.as_ptr();
-    let op = out.as_mut_ptr();
 
     for h in h_begin..h_end {
         let kv_h = h / heads_per_kv;
@@ -1137,7 +1170,7 @@ pub unsafe fn causal_attention_bf16kv_heads(
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn apply_rope_neox_inplace(
+pub(crate) unsafe fn apply_rope_neox_inplace(
     x: &mut [f32],
     n_heads: usize,
     head_dim: usize,
@@ -1174,7 +1207,7 @@ pub unsafe fn apply_rope_neox_inplace(
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn bf16_accum_f32(dst: &mut [f32], src_bf16: &[u16]) {
+pub(crate) unsafe fn bf16_accum_f32(dst: &mut [f32], src_bf16: &[u16]) {
     let n = dst.len().min(src_bf16.len());
     let dp = dst.as_mut_ptr();
     let sp = src_bf16.as_ptr();
@@ -1192,7 +1225,7 @@ pub unsafe fn bf16_accum_f32(dst: &mut [f32], src_bf16: &[u16]) {
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn bf16_to_f32_vec(dst: &mut [f32], src_bf16: &[u16]) {
+pub(crate) unsafe fn bf16_to_f32_vec(dst: &mut [f32], src_bf16: &[u16]) {
     let n = dst.len().min(src_bf16.len());
     let dp = dst.as_mut_ptr();
     let sp = src_bf16.as_ptr();
@@ -1239,7 +1272,7 @@ unsafe fn vsin2_avx2(y: __m256) -> __m256 {
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn f32_to_bf16_vec(dst: &mut [u16], src: &[f32]) {
+pub(crate) unsafe fn f32_to_bf16_vec(dst: &mut [u16], src: &[f32]) {
     let n = dst.len().min(src.len());
     let dp = dst.as_mut_ptr();
     let sp = src.as_ptr();
@@ -1260,7 +1293,7 @@ pub unsafe fn f32_to_bf16_vec(dst: &mut [u16], src: &[f32]) {
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn f32_matvec_accum(y: &mut [f32], w: &[f32], x: &[f32], rows: usize, cols: usize) {
+pub(crate) unsafe fn f32_matvec_accum(y: &mut [f32], w: &[f32], x: &[f32], rows: usize, cols: usize) {
     let wp = w.as_ptr();
     let xp = x.as_ptr();
     let yp = y.as_mut_ptr();
@@ -1271,7 +1304,7 @@ pub unsafe fn f32_matvec_accum(y: &mut [f32], w: &[f32], x: &[f32], rows: usize,
 }
 
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn snake_row(row: &mut [f32], log_alpha: f32, log_beta: f32) {
+pub(crate) unsafe fn snake_row(row: &mut [f32], log_alpha: f32, log_beta: f32) {
     const QWEN_SIN_POLY_MAX: f32 = 8192.0;
     let a = log_alpha.exp();
     let inv_b = (-log_beta).exp();

@@ -148,6 +148,10 @@ pub fn quantize_bf16_to_int8_into(
     dst_int8: &mut [i8],
     dst_scale: &mut [f32],
 ) {
+    assert!(
+        src_bf16.len() >= rows * cols && dst_int8.len() >= rows * cols && dst_scale.len() >= rows,
+        "quantize_bf16_to_int8_into slice bounds mismatch"
+    );
     for r in 0..rows {
         let row = &src_bf16[r * cols..(r + 1) * cols];
         let mut amax = 0.0f32;
@@ -184,7 +188,15 @@ pub fn quantize_bf16_to_q4_0_into(
     cols: usize,
     dst: &mut [Q4_0Block],
 ) {
+    assert!(
+        cols.is_multiple_of(Q4_0_BLOCK_SIZE),
+        "quantize_bf16_to_q4_0_into cols={cols} not multiple of {Q4_0_BLOCK_SIZE}"
+    );
     let bpr = cols / Q4_0_BLOCK_SIZE;
+    assert!(
+        src_bf16.len() >= rows * cols && dst.len() >= rows * bpr,
+        "quantize_bf16_to_q4_0_into slice bounds mismatch"
+    );
     for r in 0..rows {
         let row = &src_bf16[r * cols..(r + 1) * cols];
         let dst_row = &mut dst[r * bpr..(r + 1) * bpr];
@@ -262,6 +274,10 @@ pub fn interleave_gate_up_bf16(
     rows: usize,
     cols: usize,
 ) {
+    assert!(
+        dst.len() >= 2 * rows * cols && gate.len() >= rows * cols && up.len() >= rows * cols,
+        "interleave_gate_up_bf16 slice bounds mismatch"
+    );
     for r in 0..rows {
         dst[2 * r * cols..(2 * r + 1) * cols].copy_from_slice(&gate[r * cols..(r + 1) * cols]);
         dst[(2 * r + 1) * cols..(2 * r + 2) * cols].copy_from_slice(&up[r * cols..(r + 1) * cols]);
@@ -274,6 +290,10 @@ pub fn quantize_gate_up_int8(
     rows: usize,
     cols: usize,
 ) -> (AlignedBuf<i8>, AlignedBuf<f32>) {
+    assert!(
+        gate.len() >= rows * cols && up.len() >= rows * cols,
+        "quantize_gate_up_int8 slice bounds mismatch"
+    );
     let mut dst_int8 = AlignedBuf::<i8>::new_zeroed(2 * rows * cols);
     let mut dst_scale = AlignedBuf::<f32>::new_zeroed(2 * rows);
     for r in 0..rows {
@@ -301,6 +321,12 @@ pub fn quantize_gate_up_q4_0(
     rows: usize,
     cols: usize,
 ) -> AlignedBuf<Q4_0Block> {
+    assert!(
+        cols.is_multiple_of(Q4_0_BLOCK_SIZE)
+            && gate.len() >= rows * cols
+            && up.len() >= rows * cols,
+        "quantize_gate_up_q4_0 slice bounds mismatch"
+    );
     let bpr = cols / Q4_0_BLOCK_SIZE;
     let mut dst = AlignedBuf::<Q4_0Block>::new_zeroed(2 * rows * bpr);
     for r in 0..rows {
@@ -329,6 +355,10 @@ pub fn erff(x: f32) -> f32 {
 }
 
 pub fn gate_up_to_f32(dst: &mut [f32], gate: &[u16], up: &[u16], rows: usize, cols: usize) {
+    assert!(
+        dst.len() >= 2 * rows * cols && gate.len() >= rows * cols && up.len() >= rows * cols,
+        "gate_up_to_f32 slice bounds mismatch"
+    );
     for r in 0..rows {
         let g = &mut dst[2 * r * cols..(2 * r + 1) * cols];
         let sg = &gate[r * cols..(r + 1) * cols];

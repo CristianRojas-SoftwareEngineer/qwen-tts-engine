@@ -163,8 +163,12 @@ impl<T: Copy + Default, const ALIGN: usize> Clone for AlignedBuf<T, ALIGN> {
 impl<T, const ALIGN: usize> Drop for AlignedBuf<T, ALIGN> {
     fn drop(&mut self) {
         if self.cap > 0 {
-            let bytes = self.cap * std::mem::size_of::<T>();
-            let layout = Layout::from_size_align(bytes.max(1), ALIGN).unwrap();
+            let bytes = self
+                .cap
+                .checked_mul(std::mem::size_of::<T>())
+                .expect("AlignedBuf byte size overflow");
+            let layout =
+                Layout::from_size_align(bytes.max(1), ALIGN).expect("invalid AlignedBuf layout");
             unsafe { dealloc(self.ptr.as_ptr() as *mut u8, layout) };
         }
     }

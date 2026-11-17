@@ -30,12 +30,22 @@ fn env_spin_budget() -> usize {
     }
 }
 
-#[derive(Default)]
 struct JobSlot {
-    fn_ptr: usize,
-    ctx_ptr: usize,
+    fn_ptr: Option<unsafe fn(usize, usize, *const ())>,
+    ctx_ptr: *const (),
     nt: usize,
     next: AtomicUsize,
+}
+
+impl Default for JobSlot {
+    fn default() -> Self {
+        Self {
+            fn_ptr: None,
+            ctx_ptr: std::ptr::null(),
+            nt: 0,
+            next: AtomicUsize::new(0),
+        }
+    }
 }
 
 struct SleepState {
@@ -44,8 +54,8 @@ struct SleepState {
 }
 
 struct PoolInner {
-    n_threads: usize,
-    n_workers: usize,
+    n_threads: AtomicUsize,
+    n_workers: AtomicUsize,
     spin_budget: usize,
     submit_mtx: Mutex<()>,
     mtx: Mutex<SleepState>,
@@ -61,13 +71,78 @@ struct PoolInner {
     workers: Mutex<Vec<JoinHandle<()>>>,
 }
 
+unsafe impl Send for PoolInner {}
 unsafe impl Sync for PoolInner {}
+
+struct PoolGuard(Arc<PoolInner>);
+
+impl Drop for PoolGuard {
+    fn drop(&mut self) {
+        self.0.stop.store(true, Ordering::SeqCst);
+        {
+            let _guard = self.0.mtx.lock().unwrap_or_else(|e| e.into_inner());
+            self.0.generation.fetch_add(1, Ordering::SeqCst);
+            self.0.wake.notify_all();
+        }
+        let mut handles = self.0.workers.lock().unwrap_or_else(|e| e.into_inner());
+        for h in handles.drain(..) {
+            let _ = h.join();
+        }
+    }
+}
+
+fn wait_workers_complete(inner: &PoolInner, actual_workers: usize) {
+    let mut budget = inner.spin_budget;
+    while budget > 0 && inner.completed.load(Ordering::Acquire) != actual_workers {
+        budget -= 1;
+        std::hint::spin_loop();
+    }
+    if inner.completed.load(Ordering::Acquire) != actual_workers {
+        let mut guard = inner.mtx.lock().unwrap_or_else(|e| e.into_inner());
+        guard.main_sleeping = true;
+        while inner.completed.load(Ordering::Acquire) != actual_workers {
+            guard = inner.complete.wait(guard).unwrap_or_else(|e| e.into_inner());
+        }
+        guard.main_sleeping = false;
+    }
+}
+
+struct ActiveJobGuard<'a> {
+    inner: &'a PoolInner,
+    actual_workers: usize,
+    done: bool,
+}
+
+impl Drop for ActiveJobGuard<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            wait_workers_complete(self.inner, self.actual_workers);
+        }
+    }
+}
+
+struct WorkerCompletionGuard<'a> {
+    inner: &'a PoolInner,
+}
+
+impl Drop for WorkerCompletionGuard<'_> {
+    fn drop(&mut self) {
+        if self.inner.completed.fetch_add(1, Ordering::AcqRel) + 1
+            == self.inner.n_workers.load(Ordering::Acquire)
+        {
+            let guard = self.inner.mtx.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.main_sleeping {
+                self.inner.complete.notify_one();
+            }
+        }
+    }
+}
 
 /// Pool de hilos persistente e instanciable (sin estado global) con espera activa
 /// (`QWEN_POOL_SPIN=4096` + `spin_loop()`), `Condvar` y `ftz_on()` por trabajador.
 #[derive(Clone)]
 pub struct ComputePool {
-    inner: Arc<PoolInner>,
+    guard: Arc<PoolGuard>,
 }
 
 impl ComputePool {
@@ -77,12 +152,12 @@ impl ComputePool {
 
     pub fn with_spin_budget(n_threads: usize, spin_budget: usize) -> Self {
         ftz_on();
-        let n_threads = n_threads.max(1);
-        let n_workers = n_threads.saturating_sub(1);
+        let requested_threads = n_threads.max(1);
+        let requested_workers = requested_threads.saturating_sub(1);
 
         let inner = Arc::new(PoolInner {
-            n_threads,
-            n_workers,
+            n_threads: AtomicUsize::new(requested_threads),
+            n_workers: AtomicUsize::new(requested_workers),
             spin_budget,
             submit_mtx: Mutex::new(()),
             mtx: Mutex::new(SleepState {
@@ -96,35 +171,42 @@ impl ComputePool {
             completed: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
             job_slot: UnsafeCell::new(JobSlot::default()),
-            workers: Mutex::new(Vec::with_capacity(n_workers)),
+            workers: Mutex::new(Vec::with_capacity(requested_workers)),
         });
 
-        if n_workers > 0 {
+        if requested_workers > 0 {
             let gen0 = inner.generation.load(Ordering::Acquire);
-            let mut handles = inner.workers.lock().unwrap();
-            for _ in 0..n_workers {
-                let p = Arc::clone(&inner);
-                match thread::Builder::new()
-                    .name("qwen-worker".to_string())
-                    .spawn(move || worker_main(p, gen0))
-                {
-                    Ok(h) => handles.push(h),
-                    Err(_) => break,
+            let mut spawned = 0usize;
+            {
+                let mut handles = inner.workers.lock().unwrap_or_else(|e| e.into_inner());
+                for _ in 0..requested_workers {
+                    let p = Arc::clone(&inner);
+                    match thread::Builder::new()
+                        .name("qwen-worker".to_string())
+                        .spawn(move || worker_main(p, gen0))
+                    {
+                        Ok(h) => {
+                            handles.push(h);
+                            spawned += 1;
+                        }
+                        Err(_) => break,
+                    }
                 }
+            }
+            if spawned != requested_workers {
+                inner.n_workers.store(spawned, Ordering::Release);
+                inner.n_threads.store(spawned + 1, Ordering::Release);
             }
         }
 
-        Self { inner }
+        Self {
+            guard: Arc::new(PoolGuard(inner)),
+        }
     }
 
     #[inline]
     pub fn n_threads(&self) -> usize {
-        self.inner.n_threads
-    }
-
-    #[inline]
-    pub fn spin_budget(&self) -> usize {
-        self.inner.spin_budget
+        self.guard.0.n_threads.load(Ordering::Relaxed)
     }
 
     /// Ejecuta `f(tid, nt)` para `tid` en `0..nt` sobre el pool (el hilo llamador participa)
@@ -136,7 +218,8 @@ impl ComputePool {
         if nt == 0 {
             return;
         }
-        let actual_workers = self.inner.n_workers;
+        let inner = &self.guard.0;
+        let actual_workers = inner.n_workers.load(Ordering::Acquire);
         if actual_workers == 0 || nt == 1 {
             for tid in 0..nt {
                 f(tid, nt);
@@ -144,63 +227,42 @@ impl ComputePool {
             return;
         }
 
-        unsafe fn trampoline<F: Fn(usize, usize) + Sync>(tid: usize, nt: usize, ctx: usize) {
+        unsafe fn trampoline<F: Fn(usize, usize) + Sync>(tid: usize, nt: usize, ctx: *const ()) {
             let func = &*(ctx as *const F);
             func(tid, nt);
         }
 
-        let _submit_guard = self.inner.submit_mtx.lock().unwrap();
-        let job = unsafe { &mut *self.inner.job_slot.get() };
-        job.fn_ptr = trampoline::<F> as *const () as usize;
-        job.ctx_ptr = (&f as *const F) as usize;
+        let _submit_guard = inner.submit_mtx.lock().unwrap_or_else(|e| e.into_inner());
+        let job = unsafe { &mut *inner.job_slot.get() };
+        job.fn_ptr = Some(trampoline::<F>);
+        job.ctx_ptr = (&f as *const F).cast();
         job.nt = nt;
         job.next.store(0, Ordering::Relaxed);
-        self.inner.completed.store(0, Ordering::Relaxed);
+        inner.completed.store(0, Ordering::Relaxed);
 
-        self.inner.generation.fetch_add(1, Ordering::SeqCst);
-        if self.inner.sleeping_atomic.load(Ordering::SeqCst) > 0 {
-            let _guard = self.inner.mtx.lock().unwrap();
-            self.inner.wake.notify_all();
+        inner.generation.fetch_add(1, Ordering::SeqCst);
+        if inner.sleeping_atomic.load(Ordering::SeqCst) > 0 {
+            let _guard = inner.mtx.lock().unwrap_or_else(|e| e.into_inner());
+            inner.wake.notify_all();
         }
 
+        // Garantiza la espera de los workers antes de liberar `f` incluso ante pánico en el hilo principal.
+        let mut active_guard = ActiveJobGuard {
+            inner,
+            actual_workers,
+            done: false,
+        };
         run_chunks(job);
-
-        let mut budget = self.inner.spin_budget;
-        while budget > 0
-            && self.inner.completed.load(Ordering::Acquire) != self.inner.n_workers
-        {
-            budget -= 1;
-            std::hint::spin_loop();
-        }
-        if self.inner.completed.load(Ordering::Acquire) != self.inner.n_workers {
-            let mut guard = self.inner.mtx.lock().unwrap();
-            guard.main_sleeping = true;
-            while self.inner.completed.load(Ordering::Acquire) != self.inner.n_workers {
-                guard = self.inner.complete.wait(guard).unwrap();
-            }
-            guard.main_sleeping = false;
-        }
-    }
-}
-
-impl Drop for PoolInner {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        {
-            let _guard = self.mtx.lock().unwrap();
-            self.generation.fetch_add(1, Ordering::SeqCst);
-            self.wake.notify_all();
-        }
-        let mut handles = self.workers.lock().unwrap();
-        for h in handles.drain(..) {
-            let _ = h.join();
-        }
+        wait_workers_complete(inner, actual_workers);
+        active_guard.done = true;
     }
 }
 
 #[inline]
 fn run_chunks(job: &JobSlot) {
-    let fn_ptr: unsafe fn(usize, usize, usize) = unsafe { std::mem::transmute(job.fn_ptr) };
+    let Some(fn_ptr) = job.fn_ptr else {
+        return;
+    };
     loop {
         let tid = job.next.fetch_add(1, Ordering::Relaxed);
         if tid >= job.nt {
@@ -223,16 +285,16 @@ fn worker_main(inner: Arc<PoolInner>, mut seen: u64) {
         }
 
         if inner.generation.load(Ordering::Acquire) == seen && !inner.stop.load(Ordering::Acquire) {
-            let mut guard = inner.mtx.lock().unwrap();
+            let mut guard = inner.mtx.lock().unwrap_or_else(|e| e.into_inner());
             guard.sleeping += 1;
             inner.sleeping_atomic.store(guard.sleeping, Ordering::SeqCst);
             while !inner.stop.load(Ordering::SeqCst)
                 && inner.generation.load(Ordering::SeqCst) == seen
             {
-                guard = inner.wake.wait(guard).unwrap();
+                guard = inner.wake.wait(guard).unwrap_or_else(|e| e.into_inner());
             }
             guard.sleeping -= 1;
-            inner.sleeping_atomic.store(guard.sleeping, Ordering::Release);
+            inner.sleeping_atomic.store(guard.sleeping, Ordering::SeqCst);
         }
 
         if inner.stop.load(Ordering::Acquire) {
@@ -240,14 +302,8 @@ fn worker_main(inner: Arc<PoolInner>, mut seen: u64) {
         }
 
         seen = inner.generation.load(Ordering::Acquire);
+        let _completion = WorkerCompletionGuard { inner: &inner };
         let job = unsafe { &*inner.job_slot.get() };
         run_chunks(job);
-
-        if inner.completed.fetch_add(1, Ordering::AcqRel) + 1 == inner.n_workers {
-            let guard = inner.mtx.lock().unwrap();
-            if guard.main_sleeping {
-                inner.complete.notify_one();
-            }
-        }
     }
 }

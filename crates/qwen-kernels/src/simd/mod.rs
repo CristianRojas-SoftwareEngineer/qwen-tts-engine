@@ -5,7 +5,7 @@
 
 //! Backends SIMD y escalar de `qwen-kernels` seleccionados en runtime por `KernelDispatch`.
 
-pub mod scalar;
+pub(crate) mod scalar;
 
 #[cfg(target_arch = "x86_64")]
-pub mod avx2;
+pub(crate) mod avx2;

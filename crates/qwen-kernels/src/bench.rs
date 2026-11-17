@@ -7,17 +7,13 @@ use std::fmt::Write;
 use std::time::Instant;
 
 use crate::aligned::AlignedBuf;
-use crate::dispatch::ComputeRuntime;
+use crate::dispatch::{env_batch_b, ComputeRuntime};
 use crate::quant::{f32_to_bf16_round, quantize_bf16_to_int8, quantize_bf16_to_q4_0};
 
 /// Ejecuta el microbenchmark `matmat` vs `B * matvec` (`--matmat-bench`) con `QWEN_BATCH_B` (default `8`).
 pub fn run_matmat_bench(rt: &ComputeRuntime) -> String {
     let mut out = String::new();
-    let b_dim = std::env::var("QWEN_BATCH_B")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&v| (1..=64).contains(&v))
-        .unwrap_or(8);
+    let b_dim = env_batch_b(8, 64);
 
     let shapes = [(3072usize, 1024usize), (1024, 3072), (2048, 1024)];
     let mut rng: u64 = 0x1234567u64;

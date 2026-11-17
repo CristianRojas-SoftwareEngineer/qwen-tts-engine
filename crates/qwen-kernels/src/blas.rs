@@ -70,6 +70,81 @@ extern "C" {
     fn openblas_set_num_threads(num_threads: c_int);
 }
 
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn validate_sgemm_bounds(
+    transa: Transpose,
+    transb: Transpose,
+    m: usize,
+    n: usize,
+    k: usize,
+    a_len: usize,
+    lda: usize,
+    b_len: usize,
+    ldb: usize,
+    c_len: usize,
+    ldc: usize,
+    check_c_int: bool,
+) {
+    if check_c_int {
+        assert!(
+            m <= c_int::MAX as usize
+                && n <= c_int::MAX as usize
+                && k <= c_int::MAX as usize
+                && lda <= c_int::MAX as usize
+                && ldb <= c_int::MAX as usize
+                && ldc <= c_int::MAX as usize,
+            "sgemm dimensions exceed c_int::MAX"
+        );
+    } else {
+        assert!(
+            lda <= isize::MAX as usize && ldb <= isize::MAX as usize && ldc <= isize::MAX as usize,
+            "sgemm leading dimensions exceed isize::MAX"
+        );
+    }
+
+    let (a_rows, a_cols) = match transa {
+        Transpose::NoTrans => (m, k),
+        Transpose::Trans => (k, m),
+    };
+    assert!(lda >= a_cols.max(1), "sgemm invalid lda={lda} < {a_cols}");
+    let a_req = (a_rows - 1).checked_mul(lda).and_then(|v| v.checked_add(a_cols)).expect("sgemm a size overflow");
+    assert!(a_len >= a_req, "sgemm buffer a too small: {} < {}", a_len, a_req);
+
+    let (b_rows, b_cols) = match transb {
+        Transpose::NoTrans => (k, n),
+        Transpose::Trans => (n, k),
+    };
+    assert!(ldb >= b_cols.max(1), "sgemm invalid ldb={ldb} < {b_cols}");
+    let b_req = (b_rows - 1).checked_mul(ldb).and_then(|v| v.checked_add(b_cols)).expect("sgemm b size overflow");
+    assert!(b_len >= b_req, "sgemm buffer b too small: {} < {}", b_len, b_req);
+
+    assert!(ldc >= n.max(1), "sgemm invalid ldc={ldc} < {n}");
+    let c_req = (m - 1).checked_mul(ldc).and_then(|v| v.checked_add(n)).expect("sgemm c size overflow");
+    assert!(c_len >= c_req, "sgemm buffer c too small: {} < {}", c_len, c_req);
+}
+
+#[inline]
+fn handle_zero_k_sgemm(m: usize, n: usize, beta: f32, c: &mut [f32], ldc: usize) {
+    if m > 0 && n > 0 && beta != 1.0 {
+        let req = (m - 1)
+            .checked_mul(ldc)
+            .and_then(|v| v.checked_add(n))
+            .expect("sgemm zero-k c overflow");
+        assert!(ldc >= n && c.len() >= req, "sgemm zero-k c bounds");
+        for row in 0..m {
+            let slice = &mut c[row * ldc..row * ldc + n];
+            if beta == 0.0 {
+                slice.fill(0.0);
+            } else {
+                for v in slice.iter_mut() {
+                    *v *= beta;
+                }
+            }
+        }
+    }
+}
+
 /// Backend BLAS por defecto enlazado vía FFI a OpenBLAS (Linux/Windows) o Accelerate (macOS).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FfiBlas;
@@ -116,13 +191,23 @@ impl BlasBackend for FfiBlas {
         ldc: usize,
     ) {
         if m == 0 || n == 0 || k == 0 {
-            if beta == 0.0 && m > 0 && n > 0 {
-                for row in 0..m {
-                    c[row * ldc..row * ldc + n].fill(0.0);
-                }
-            }
+            handle_zero_k_sgemm(m, n, beta, c, ldc);
             return;
         }
+        validate_sgemm_bounds(
+            transa,
+            transb,
+            m,
+            n,
+            k,
+            a.len(),
+            lda,
+            b.len(),
+            ldb,
+            c.len(),
+            ldc,
+            true,
+        );
         let ta = match transa {
             Transpose::NoTrans => CblasTranspose::NoTrans as c_int,
             Transpose::Trans => CblasTranspose::Trans as c_int,
@@ -198,13 +283,23 @@ impl BlasBackend for PureRustBlas {
         use faer::{Accum, MatMut, MatRef, Par};
 
         if m == 0 || n == 0 || k == 0 {
-            if beta == 0.0 && m > 0 && n > 0 {
-                for row in 0..m {
-                    c[row * ldc..row * ldc + n].fill(0.0);
-                }
-            }
+            handle_zero_k_sgemm(m, n, beta, c, ldc);
             return;
         }
+        validate_sgemm_bounds(
+            transa,
+            transb,
+            m,
+            n,
+            k,
+            a.len(),
+            lda,
+            b.len(),
+            ldb,
+            c.len(),
+            ldc,
+            false,
+        );
 
         let (a_rs, a_cs) = match transa {
             Transpose::NoTrans => (lda as isize, 1isize),

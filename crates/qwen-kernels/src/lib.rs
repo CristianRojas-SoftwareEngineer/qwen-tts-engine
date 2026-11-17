@@ -15,7 +15,7 @@ pub mod ftz;
 pub mod pool;
 pub mod quant;
 pub mod selftest;
-pub mod simd;
+mod simd;
 
 pub use aligned::AlignedBuf;
 pub use blas::{BlasBackend, FfiBlas, Transpose};

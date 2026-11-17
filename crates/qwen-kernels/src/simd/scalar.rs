@@ -5,8 +5,6 @@
 
 //! Implementación escalar de referencia (usada como fallback universal en ARM64 y x86 sin AVX2).
 
-#![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
-
 use crate::quant::{
     bf16_to_f32, f16_to_f32, quantize_act_int8_scalar, Q2_0Block, Q4_0Block, Q2_0_BLOCK_SIZE,
     Q4_0_BLOCK_SIZE,
@@ -26,8 +24,8 @@ pub fn rms_norm(out: &mut [f32], x: &[f32], weight: &[f32], seq: usize, dim: usi
             sum += v * v;
         }
         let inv_rms = 1.0f32 / (sum / dim as f32 + eps).sqrt();
-        for i in 0..dim {
-            os[i] = xs[i] * inv_rms * weight[i];
+        for (o_slot, (xs_val, w_val)) in os.iter_mut().zip(xs.iter().zip(weight.iter())) {
+            *o_slot = *xs_val * inv_rms * *w_val;
         }
     }
 }
@@ -87,6 +85,7 @@ pub fn bf16_matvec_slice(y: &mut [f32], x: &[f32], w: &[u16], cols: usize, rows:
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn bf16_matmat_slice(
     y: &mut [f32],
     w: &[u16],
@@ -131,6 +130,7 @@ pub fn int8_matvec_slice(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn int8_matmat_slice(
     y: &mut [f32],
     w: &[i8],
@@ -191,6 +191,7 @@ pub fn q4_0_matvec_slice(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn q4_0_matmat_slice(
     y: &mut [f32],
     w: &[Q4_0Block],
@@ -259,6 +260,7 @@ pub fn argmax_matvec_bf16(x: &[f32], w_bf16: &[u16], in_dim: usize, out_dim: usi
     best_idx
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn causal_attention_f32_heads(
     out: &mut [f32],
     q: &[f32],
@@ -273,6 +275,7 @@ pub fn causal_attention_f32_heads(
     q_offset: usize,
     window: usize,
 ) {
+    assert!(n_kv_heads > 0 && n_heads.is_multiple_of(n_kv_heads));
     let heads_per_kv = n_heads / n_kv_heads;
     let q_hidden = n_heads * head_dim;
     let kv_hidden = n_kv_heads * head_dim;
@@ -319,16 +322,57 @@ pub fn causal_attention_f32_heads(
             }
             if sum_exp > 0.0 {
                 let inv_sum = 1.0f32 / sum_exp;
-                for d in 0..head_dim {
-                    o_row[d] *= inv_sum;
+                for v in o_row.iter_mut().take(head_dim) {
+                    *v *= inv_sum;
                 }
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn causal_attention_bf16kv_heads(
     out: &mut [f32],
+    q: &[f32],
+    k_bf16: &[u16],
+    v_bf16: &[u16],
+    seq_q: usize,
+    seq_k: usize,
+    n_heads: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
+    scale: f32,
+    q_offset: usize,
+    h_begin: usize,
+    h_end: usize,
+) {
+    assert!(n_kv_heads > 0 && n_heads.is_multiple_of(n_kv_heads));
+    assert!(out.len() >= seq_q * n_heads * head_dim);
+    unsafe {
+        causal_attention_bf16kv_heads_ptr(
+            out.as_mut_ptr(),
+            q,
+            k_bf16,
+            v_bf16,
+            seq_q,
+            seq_k,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            scale,
+            q_offset,
+            h_begin,
+            h_end,
+        );
+    }
+}
+
+/// # Safety
+/// `out_ptr` debe apuntar a un búfer válido de al menos `seq_q * n_heads * head_dim` floats;
+/// hilos concurrentes pueden llamarla solo con rangos `[h_begin, h_end)` disjuntos.
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn causal_attention_bf16kv_heads_ptr(
+    out_ptr: *mut f32,
     q: &[f32],
     k_bf16: &[u16],
     v_bf16: &[u16],
@@ -350,7 +394,10 @@ pub fn causal_attention_bf16kv_heads(
         let kv_h = h / heads_per_kv;
         for i in 0..seq_q {
             let q_row = &q[i * q_hidden + h * head_dim..i * q_hidden + (h + 1) * head_dim];
-            let o_row = &mut out[i * q_hidden + h * head_dim..i * q_hidden + (h + 1) * head_dim];
+            let o_row = std::slice::from_raw_parts_mut(
+                out_ptr.add(i * q_hidden + h * head_dim),
+                head_dim,
+            );
             let k_end = (q_offset + i + 1).min(seq_k);
 
             let mut max_score = -1e30f32;
@@ -383,8 +430,8 @@ pub fn causal_attention_bf16kv_heads(
             }
             if sum_exp > 0.0 {
                 let inv_sum = 1.0f32 / sum_exp;
-                for d in 0..head_dim {
-                    o_row[d] *= inv_sum;
+                for v in o_row.iter_mut().take(head_dim) {
+                    *v *= inv_sum;
                 }
             }
         }

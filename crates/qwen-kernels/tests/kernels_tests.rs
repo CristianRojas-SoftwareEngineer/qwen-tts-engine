@@ -111,3 +111,111 @@ fn test_blas_sgemm_and_q2_0() {
     assert!(quant_shape_check("bad_max", 8224).is_err());
     assert!((f16_to_f32(f32_to_f16(0.125)) - 0.125).abs() < 1e-6);
 }
+
+#[test]
+fn test_compute_pool_drop_joins_cleanly() {
+    for _ in 0..8 {
+        let pool = ComputePool::new(4);
+        let sum = AtomicUsize::new(0);
+        pool.parallel(4, |tid, _| {
+            sum.fetch_add(tid + 1, Ordering::Relaxed);
+        });
+        assert_eq!(sum.load(Ordering::SeqCst), 10);
+        drop(pool);
+    }
+}
+
+#[test]
+fn test_compute_pool_panic_safety() {
+    let pool = ComputePool::new(4);
+    let completed = AtomicUsize::new(0);
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pool.parallel(4, |tid, _| {
+            if tid == 0 {
+                panic!("intentional test panic");
+            }
+            completed.fetch_add(1, Ordering::SeqCst);
+        });
+    }));
+    assert!(res.is_err());
+    assert_eq!(completed.load(Ordering::SeqCst), 3);
+
+    // El pool sigue operativo tras el pánico en una tarea previa
+    let next = AtomicUsize::new(0);
+    pool.parallel(4, |_, _| {
+        next.fetch_add(1, Ordering::SeqCst);
+    });
+    assert_eq!(next.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn test_scalar_dispatch_parity_and_bounds() {
+    use qwen_kernels::KernelDispatch;
+
+    let sc = KernelDispatch::scalar();
+    let det = KernelDispatch::detect();
+    let pool = ComputePool::new(2);
+
+    // Paridad quantize_act_int8 escalar vs dispatch detectado
+    let x: Vec<f32> = (0..64).map(|i| (i as f32 - 31.5) * 0.25).collect();
+    let mut q_sc = vec![0i8; 64];
+    let mut q_det = vec![0i8; 64];
+    let s_sc = sc.quantize_act_int8(&mut q_sc, &x);
+    let s_det = det.quantize_act_int8(&mut q_det, &x);
+    assert_eq!(q_sc, q_det);
+    assert_eq!(s_sc.to_bits(), s_det.to_bits());
+
+    // Paridad rms_norm + snake_activation + causal_attention
+    let w = vec![1.25f32; 64];
+    let mut o_sc = vec![0.0f32; 64];
+    let mut o_det = vec![0.0f32; 64];
+    sc.rms_norm(&mut o_sc, &x, &w, 1, 64, 1e-6);
+    det.rms_norm(&mut o_det, &x, &w, 1, 64, 1e-6);
+    for (a, b) in o_sc.iter().zip(o_det.iter()) {
+        assert!((a - b).abs() < 1e-5);
+    }
+
+    // Paridad matvec_int8 / matvec_q4_0 escalar vs detectado
+    let wb: Vec<u16> = (0..32 * 64)
+        .map(|i| f32_to_bf16_round(((i % 19) as f32 - 9.0) * 0.05))
+        .collect();
+    let (wi, si) = qwen_kernels::quant::quantize_bf16_to_int8(&wb, 32, 64);
+    let mut y_sc = vec![0.0f32; 32];
+    let mut y_det = vec![0.0f32; 32];
+    sc.matvec_int8(&pool, &mut y_sc, &wi, &si, &x, 32, 64);
+    det.matvec_int8(&pool, &mut y_det, &wi, &si, &x, 32, 64);
+    for (a, b) in y_sc.iter().zip(y_det.iter()) {
+        assert!((a - b).abs() < 1e-5);
+    }
+
+    // Validación de límites seguros en KernelDispatch
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut tiny = [0.0f32; 4];
+        det.rms_norm(&mut tiny, &x, &w, 1, 64, 1e-6);
+    }));
+    assert!(res.is_err());
+
+    let res_b = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut y = vec![0.0f32; 65];
+        det.matmat_bf16(&pool, &mut y, &wb, &x, 1, 64, 65);
+    }));
+    assert!(res_b.is_err());
+
+    // Paridad matmat_int8 y matmat_q4_0 escalar vs dispatch detectado
+    let wq = qwen_kernels::quant::quantize_bf16_to_q4_0(&wb, 32, 64);
+    let mut x_mat = vec![0.0f32; 64 * 4];
+    for (i, v) in x_mat.iter_mut().enumerate() {
+        *v = ((i % 23) as f32 - 11.0) * 0.1;
+    }
+    let mut ym_sc = vec![0.0f32; 32 * 4];
+    let mut ym_det = vec![0.0f32; 32 * 4];
+    sc.matmat_int8(&pool, &mut ym_sc, &wi, &si, &x_mat, 32, 64, 4);
+    det.matmat_int8(&pool, &mut ym_det, &wi, &si, &x_mat, 32, 64, 4);
+    assert_eq!(ym_sc, ym_det);
+
+    sc.matmat_q4_0(&pool, &mut ym_sc, &wq, &x_mat, 32, 64, 4);
+    det.matmat_q4_0(&pool, &mut ym_det, &wq, &x_mat, 32, 64, 4);
+    for (a, b) in ym_sc.iter().zip(ym_det.iter()) {
+        assert!((a - b).abs() < 1e-5);
+    }
+}
