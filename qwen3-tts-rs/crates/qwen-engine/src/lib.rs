@@ -2,21 +2,40 @@
 
 pub mod audio;
 pub mod code_predictor;
+pub mod compose;
+pub mod emotion;
 pub mod error;
 pub mod model;
 pub mod pipeline;
 pub mod speech_decoder;
+pub mod speech_encoder;
 pub mod talker;
+pub mod voice_clone;
 
 pub use audio::{
-    apply_gain, encode_wav_bytes, f32_to_s16le_clamped, onset_fade, tail_glitch_score, tail_trim,
-    time_stretch, write_wav, AudioSink, MemorySink, StdoutRawSink, WavStreamSink,
+    apply_gain, encode_wav_bytes, f32_to_s16le_clamped, onset_fade, read_wav_24khz, read_wav_pcm,
+    tail_glitch_score, tail_trim, time_stretch, trim_trailing_silence,
+    validate_wav_path_or_header, write_wav, AudioSink, MemorySink, StdoutRawSink, WavStreamSink,
+};
+pub use compose::{
+    prepare_markup_06b, render_spans_buffer, render_spans_stream, voice_class_for, PreparedMarkup,
+};
+pub use emotion::{
+    apply_emotion_direction, attach_emo_ref, emotion_voice_key, resolve_emovoice_06b,
+    EmoVoice06BAction,
 };
 pub use error::EngineError;
 pub use model::{
-    AbortHandle, CodePredictorWeights, CpPrecision, Model06B, ModelLoadOptions, RequestConfig,
-    RequestExecution, SessionScratch, SpeechDecoderWeights, SynthesisTiming, TalkerPrecision,
-    TalkerWeights, VoiceBindings, VoiceIdentity,
+    AbortHandle, Bf16Weight, CodePredictorWeights, CpPrecision, F32Weight, Model06B,
+    ModelLoadOptions, RequestConfig, RequestExecution, SessionScratch, SpeechDecoderWeights,
+    SynthesisTiming, TalkerPrecision, TalkerWeights, TextProjOverride, VoiceBindings,
+    VoiceIdentity,
 };
 pub use pipeline::{synthesize_to_samples, synthesize_to_sink};
 pub use speech_decoder::{speech_decoder_decode, speech_decoder_decode_streaming};
+pub use speech_encoder::{speech_encoder_encode, SpeechEncoderWeights};
+pub use voice_clone::{
+    build_voice_from_ref_audio, build_wovr_override, extract_speaker_embedding,
+    load_voice_from_file, mel_spectrogram, speaker_encoder_forward, SaveVoiceOptions,
+    SpeakerEncoderWeights, VoiceLoadOptions,
+};

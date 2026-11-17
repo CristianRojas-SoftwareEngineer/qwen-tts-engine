@@ -1,6 +1,8 @@
 use std::fs::File;
-use std::io::{BufWriter, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+
+use qwen_core::config::SAMPLE_RATE;
 
 use crate::error::EngineError;
 
@@ -396,4 +398,287 @@ pub fn tail_trim(s: &mut Vec<f32>, sample_rate: usize, min_score: f32) -> usize 
     let trimmed = s.len() - new_n;
     s.truncate(new_n);
     trimmed
+}
+
+const NON_WAV_EXTS: &[&str] = &[
+    "mp4", "m4a", "mp3", "ogg", "opus", "flac", "aac", "wma", "webm", "mkv", "avi", "mov",
+];
+
+fn ffmpeg_convert_hint(path: &Path) -> String {
+    format!(
+        "Voice cloning requires 24 kHz WAV (PCM, 16-bit, mono).\nConvert first:\n  ffmpeg -i \"{}\" -ar 24000 -ac 1 output.wav",
+        path.display()
+    )
+}
+
+/// Fast pre-load validation of reference audio path & RIFF/WAVE header (with ffmpeg hints).
+pub fn validate_wav_path_or_header(path: &Path) -> Result<(), EngineError> {
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let lower = ext.to_ascii_lowercase();
+        if NON_WAV_EXTS.contains(&lower.as_str()) {
+            return Err(EngineError::InvalidArg(format!(
+                "Error: {} is not a WAV file (detected .{lower} format)\n{}",
+                path.display(),
+                ffmpeg_convert_hint(path)
+            )));
+        }
+    }
+
+    let mut f = File::open(path).map_err(|e| {
+        EngineError::InvalidArg(format!("Error: cannot open file {}: {e}", path.display()))
+    })?;
+    let mut hdr = [0u8; 12];
+    let n = f.read(&mut hdr)?;
+    if n < 4 {
+        return Err(EngineError::InvalidArg(format!(
+            "Error: file too small to be audio: {}",
+            path.display()
+        )));
+    }
+    if (n >= 4 && hdr[..3] == [0, 0, 0]) || (n >= 8 && &hdr[4..8] == b"ftyp") {
+        return Err(EngineError::InvalidArg(format!(
+            "Error: {} is an MP4/M4A file, not a WAV file\n{}",
+            path.display(),
+            ffmpeg_convert_hint(path)
+        )));
+    }
+    if n >= 3 && hdr[0] == 0xFF && (hdr[1] & 0xE0) == 0xE0 {
+        return Err(EngineError::InvalidArg(format!(
+            "Error: {} is an MP3 file, not a WAV file\n{}",
+            path.display(),
+            ffmpeg_convert_hint(path)
+        )));
+    }
+    if n >= 4 && &hdr[..4] == b"OggS" {
+        return Err(EngineError::InvalidArg(format!(
+            "Error: {} is an OGG/Opus file, not a WAV file\n{}",
+            path.display(),
+            ffmpeg_convert_hint(path)
+        )));
+    }
+    if n >= 4 && &hdr[..4] == b"fLaC" {
+        return Err(EngineError::InvalidArg(format!(
+            "Error: {} is a FLAC file, not a WAV file\n{}",
+            path.display(),
+            ffmpeg_convert_hint(path)
+        )));
+    }
+    if n >= 3 && &hdr[..3] == b"ID3" {
+        return Err(EngineError::InvalidArg(format!(
+            "Error: {} is an MP3 file (ID3 tagged), not a WAV file\n{}",
+            path.display(),
+            ffmpeg_convert_hint(path)
+        )));
+    }
+    if &hdr[..4] != b"RIFF" {
+        return Err(EngineError::InvalidArg(format!(
+            "Error: {} is not a WAV file (unrecognized format)\n{}",
+            path.display(),
+            ffmpeg_convert_hint(path)
+        )));
+    }
+    if n < 12 || &hdr[8..12] != b"WAVE" {
+        return Err(EngineError::InvalidArg(format!(
+            "Error: {} has RIFF header but is not a WAV file (no WAVE marker)\n{}",
+            path.display(),
+            ffmpeg_convert_hint(path)
+        )));
+    }
+    Ok(())
+}
+
+/// Reads a PCM (16-bit or 32-bit integer) WAV file into normalized `[-1.0, 1.0]` mono `f32` samples.
+pub fn read_wav_pcm(path: &Path) -> Result<(Vec<f32>, u32), EngineError> {
+    validate_wav_path_or_header(path)?;
+    let f = File::open(path)?;
+    let mut r = BufReader::new(f);
+    let mut riff_hdr = [0u8; 12];
+    r.read_exact(&mut riff_hdr)?;
+
+    let mut sample_rate = 0u32;
+    let mut bits_per_sample = 0u16;
+    let mut num_channels = 0u16;
+    let mut audio_format = 0u16;
+    let mut got_fmt = false;
+    let mut raw_data: Option<Vec<u8>> = None;
+
+    loop {
+        let mut chunk_id = [0u8; 4];
+        if r.read_exact(&mut chunk_id).is_err() {
+            break;
+        }
+        let mut sz_buf = [0u8; 4];
+        if r.read_exact(&mut sz_buf).is_err() {
+            break;
+        }
+        let chunk_size = u32::from_le_bytes(sz_buf);
+
+        if &chunk_id == b"fmt " {
+            if chunk_size < 16 {
+                return Err(EngineError::InvalidArg(format!(
+                    "Error: truncated fmt chunk in {}",
+                    path.display()
+                )));
+            }
+            let mut fmt_buf = [0u8; 16];
+            r.read_exact(&mut fmt_buf).map_err(|_| {
+                EngineError::InvalidArg(format!("Error: truncated fmt chunk in {}", path.display()))
+            })?;
+            audio_format = u16::from_le_bytes([fmt_buf[0], fmt_buf[1]]);
+            num_channels = u16::from_le_bytes([fmt_buf[2], fmt_buf[3]]);
+            sample_rate = u32::from_le_bytes([fmt_buf[4], fmt_buf[5], fmt_buf[6], fmt_buf[7]]);
+            bits_per_sample = u16::from_le_bytes([fmt_buf[14], fmt_buf[15]]);
+            got_fmt = true;
+            let extra = (chunk_size as usize) - 16;
+            if extra > 0 {
+                r.seek(SeekFrom::Current(extra as i64))?;
+            }
+        } else if &chunk_id == b"data" {
+            let mut buf = vec![0u8; chunk_size as usize];
+            let mut read_total = 0usize;
+            while read_total < buf.len() {
+                let n = r.read(&mut buf[read_total..])?;
+                if n == 0 {
+                    break;
+                }
+                read_total += n;
+            }
+            buf.truncate(read_total);
+            raw_data = Some(buf);
+            break;
+        } else {
+            let skip = (chunk_size as i64) + ((chunk_size & 1) as i64);
+            if r.seek(SeekFrom::Current(skip)).is_err() {
+                break;
+            }
+        }
+    }
+
+    let raw = raw_data.ok_or_else(|| {
+        EngineError::InvalidArg(format!("Error: no data chunk in WAV file: {}", path.display()))
+    })?;
+    if raw.is_empty() {
+        return Err(EngineError::InvalidArg(format!(
+            "Error: empty data chunk in WAV file: {}",
+            path.display()
+        )));
+    }
+    if !got_fmt || num_channels == 0 {
+        return Err(EngineError::InvalidArg(format!(
+            "Error: missing or invalid fmt chunk in WAV file: {}",
+            path.display()
+        )));
+    }
+    if audio_format != 1 {
+        return Err(EngineError::InvalidArg(format!(
+            "Error: unsupported WAV format {audio_format} (only PCM=1 supported): {}",
+            path.display()
+        )));
+    }
+    if bits_per_sample != 16 && bits_per_sample != 32 {
+        return Err(EngineError::InvalidArg(format!(
+            "Error: unsupported bits per sample {bits_per_sample} (only 16/32 supported): {}",
+            path.display()
+        )));
+    }
+
+    let bytes_per_sample = (bits_per_sample / 8) as usize;
+    let n_ch = num_channels as usize;
+    let total_samples = raw.len() / (bytes_per_sample * n_ch);
+    let mut samples = Vec::with_capacity(total_samples);
+
+    for i in 0..total_samples {
+        if n_ch == 1 {
+            let val = if bits_per_sample == 16 {
+                let off = i * 2;
+                i16::from_le_bytes([raw[off], raw[off + 1]]) as f32 / 32768.0f32
+            } else {
+                let off = i * 4;
+                i32::from_le_bytes([raw[off], raw[off + 1], raw[off + 2], raw[off + 3]]) as f32
+                    / 2_147_483_648.0f32
+            };
+            samples.push(val);
+        } else {
+            let mut sum = 0.0f32;
+            for c in 0..n_ch {
+                let off = (i * n_ch + c) * bytes_per_sample;
+                sum += if bits_per_sample == 16 {
+                    i16::from_le_bytes([raw[off], raw[off + 1]]) as f32 / 32768.0f32
+                } else {
+                    i32::from_le_bytes([raw[off], raw[off + 1], raw[off + 2], raw[off + 3]]) as f32
+                        / 2_147_483_648.0f32
+                };
+            }
+            samples.push(sum / (n_ch as f32));
+        }
+    }
+
+    Ok((samples, sample_rate))
+}
+
+/// Strict 24 kHz WAV reader: rejects any sample rate != 24000 Hz with an `ffmpeg` conversion hint.
+pub fn read_wav_24khz(path: &Path) -> Result<Vec<f32>, EngineError> {
+    let (samples, sr) = read_wav_pcm(path)?;
+    if sr as usize != SAMPLE_RATE {
+        return Err(EngineError::InvalidArg(format!(
+            "Error: reference audio must be {SAMPLE_RATE} Hz (got {sr} Hz)\nConvert with: ffmpeg -i \"{}\" -ar 24000 -ac 1 output.wav",
+            path.display()
+        )));
+    }
+    Ok(samples)
+}
+
+/// Conservative trailing near-silence / fade-out trimmer (`qwen_trim_trailing_silence`).
+/// Opt out via `QWEN_NO_REF_TRIM`.
+pub fn trim_trailing_silence(audio: &mut Vec<f32>, sample_rate: usize, silent: bool) {
+    if std::env::var_os("QWEN_NO_REF_TRIM").is_some() {
+        return;
+    }
+    let n = audio.len();
+    if n < sample_rate * 3 {
+        return;
+    }
+    let sum: f64 = audio.iter().map(|&v| (v as f64) * (v as f64)).sum();
+    let global_rms = (sum / (n as f64)).sqrt() as f32;
+    if global_rms <= 0.0 {
+        return;
+    }
+    let thresh = (0.18f32 * global_rms).max(0.004f32);
+    let win = (sample_rate / 50).max(1);
+    let mut last_voiced_end: Option<usize> = None;
+    let mut i = n;
+    while i >= win {
+        let s: f64 = audio[i - win..i]
+            .iter()
+            .map(|&v| (v as f64) * (v as f64))
+            .sum();
+        if ((s / (win as f64)).sqrt() as f32) >= thresh {
+            last_voiced_end = Some(i);
+            break;
+        }
+        i -= win;
+    }
+    let Some(end) = last_voiced_end else {
+        return;
+    };
+    let mut new_n = (end + sample_rate / 20).min(n);
+    let max_trim = ((n as f32) * 0.40f32) as usize;
+    if new_n < n - max_trim {
+        new_n = n - max_trim;
+    }
+    let min_keep = sample_rate * 2;
+    if new_n < min_keep {
+        new_n = n.min(min_keep);
+    }
+    if new_n < n {
+        if !silent {
+            eprintln!(
+                "  Voice clone: trimmed {:.2}s trailing silence/fade ({:.1}s -> {:.1}s)",
+                (n - new_n) as f32 / (sample_rate as f32),
+                n as f32 / (sample_rate as f32),
+                new_n as f32 / (sample_rate as f32)
+            );
+        }
+        audio.truncate(new_n);
+    }
 }
