@@ -1,6 +1,6 @@
-# Qwen3-TTS (`0.6B`) en Rust (`qwen3-tts-rs`)
+# `qwen-tts-rs`
 
-Motor de inferencia TTS en CPU para **Qwen3-TTS 0.6B** (`CustomVoice` y `Base`) escrito en Rust estable, con soporte de CLI, streaming progresivo, clonación de voz (`.qvoice`/`.bin`, `ECAPA-TDNN`, `SpeechEncoder` RVQ), expresividad `0.6B` (`emovoice`, `--emo-ref`, `--roughness`, marcado inline), y servidor HTTP compatible con OpenAI (`/v1/tts`, `/v1/tts/stream`, `/v1/audio/speech`, `/v1/health`, `/v1/speakers`) con `WorkerPoolScheduler` y `ContinuousBatchScheduler`.
+Motor de inferencia TTS en CPU escrito en Rust estable (actualmente con soporte para **Qwen3-TTS 0.6B** `CustomVoice` y `Base`, sin dependencias de Python, LibTorch ni Candle), con soporte de CLI, streaming progresivo, clonación de voz (`.qvoice`/`.bin`, `ECAPA-TDNN`, `SpeechEncoder` RVQ), expresividad `0.6B` (`emovoice`, `--emo-ref`, `--roughness`, marcado inline), y servidor HTTP compatible con OpenAI (`/v1/tts`, `/v1/tts/stream`, `/v1/audio/speech`, `/v1/health`, `/v1/speakers`) con `WorkerPoolScheduler` y `ContinuousBatchScheduler`.
 
 ## Estructura del repositorio
 

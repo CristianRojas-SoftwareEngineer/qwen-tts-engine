@@ -1,4 +1,4 @@
-name: CI (qwen3-tts-rs)
+name: CI (qwen-tts-rs)
 
 on:
   push:

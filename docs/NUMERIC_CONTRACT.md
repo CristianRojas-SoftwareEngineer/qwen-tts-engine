@@ -1,6 +1,6 @@
 # Contrato Numérico, Cuantización y Determinismo (`NUMERIC_CONTRACT.md`)
 
-Fija las leyes aritméticas, de cuantización, de memoria y de streaming que el motor Rust (`qwen3-tts-rs`) cumple para preservar la calidad de audio y el RTF del modelo `0.6B`.
+Fija las leyes aritméticas, de cuantización, de memoria y de streaming que el motor Rust (`qwen-tts-rs`) cumple para preservar la calidad de audio y el RTF del modelo `0.6B`.
 
 ---
 
