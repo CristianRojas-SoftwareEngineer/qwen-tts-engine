@@ -759,7 +759,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
             &active_text,
             &voice,
             cfg.no_compose,
-            cfg.seed,
+            if cfg.seed_set { cfg.seed } else { None },
             if cfg.temp_set {
                 Some(cfg.temperature)
             } else {
@@ -768,7 +768,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
             cfg.temperature,
         );
         active_text = prep.text;
-        if cfg.seed.is_none() && prep.did_para_substitute {
+        if !cfg.seed_set && prep.did_para_substitute {
             resolved_seed = Some(prep.seed);
         }
         resolved_temp = prep.temperature;
@@ -792,7 +792,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
     if !cfg.silent {
         eprintln!(
             "seed: {final_seed}{}",
-            if cfg.seed.is_some() { "" } else { " (auto/time-based)" }
+            if resolved_seed.is_some() { "" } else { " (auto/time-based)" }
         );
     }
 

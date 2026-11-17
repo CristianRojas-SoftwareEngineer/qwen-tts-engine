@@ -380,7 +380,7 @@ fn prepare_http_tts<'a>(
         &vreq.text,
         voice_ref,
         false,
-        vreq.seed.or(Some(seed)),
+        if vreq.seed_set { Some(seed) } else { None },
         if vreq.temp_set {
             Some(vreq.temperature)
         } else {
@@ -388,7 +388,7 @@ fn prepare_http_tts<'a>(
         },
         vreq.temperature,
     );
-    let effective_seed = if vreq.seed.is_none() && prep.did_para_substitute {
+    let effective_seed = if !vreq.seed_set && prep.did_para_substitute {
         prep.seed
     } else {
         seed

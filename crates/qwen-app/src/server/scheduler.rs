@@ -366,7 +366,7 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
                             &vreq.text,
                             &voice_c,
                             false,
-                            vreq.seed.or(Some(seed)),
+                            if vreq.seed_set { Some(seed) } else { None },
                             if vreq.temp_set {
                                 Some(vreq.temperature)
                             } else {
@@ -394,7 +394,7 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
                                 continue;
                             }
                             let effective_seed =
-                                if vreq.seed.is_none() && prep.did_para_substitute {
+                                if !vreq.seed_set && prep.did_para_substitute {
                                     prep.seed
                                 } else {
                                     seed

@@ -12,9 +12,9 @@ use std::time::Instant;
 use qwen_core::config::{
     CODEBOOK_DIM, CODEBOOK_SIZE, CODEC_VOCAB_SIZE, CP_HEAD_DIM, CP_HIDDEN_SIZE,
     CP_INTERMEDIATE_SIZE, CP_KV_DIM, CP_NUM_LAYERS, CP_Q_DIM, DEC_HEAD_DIM,
-    DEC_NUM_LAYERS, DEC_ROPE_THETA, DEC_UPSAMPLE_CHANNELS, DEFAULT_TEMPERATURE, HEAD_DIM,
-    HIDDEN_SIZE, INTERMEDIATE_SIZE, KV_DIM, NUM_CODEBOOKS, NUM_HEADS, NUM_LAYERS, Q_DIM,
-    TEXT_HIDDEN_SIZE, TOKEN_TTS_BOS, TOKEN_TTS_EOS, TOKEN_TTS_PAD,
+    DEC_NUM_LAYERS, DEC_ROPE_THETA, DEC_UPSAMPLE_CHANNELS, DEFAULT_SEED, DEFAULT_TEMPERATURE,
+    HEAD_DIM, HIDDEN_SIZE, INTERMEDIATE_SIZE, KV_DIM, NUM_CODEBOOKS, NUM_HEADS, NUM_LAYERS,
+    Q_DIM, TEXT_HIDDEN_SIZE, TOKEN_TTS_BOS, TOKEN_TTS_EOS, TOKEN_TTS_PAD,
 };
 use qwen_core::{
     decode_wdelta_bf16, Bf16Ref, BpeTokenizer, F32Ref, LcgRng, MmapStore, ModelConfig06B,
@@ -1104,7 +1104,7 @@ impl Default for SessionScratch {
 }
 
 /// Parámetros de muestreo, audio y diagnóstico para una petición de síntesis.
-/// Por defecto usa `DEFAULT_TEMPERATURE` (`0.325`).
+/// Por defecto usa `DEFAULT_TEMPERATURE` (`0.325`) y `DEFAULT_SEED` (`4`).
 #[derive(Debug, Clone)]
 pub struct RequestConfig {
     pub speaker_id: i32,
@@ -1116,6 +1116,7 @@ pub struct RequestConfig {
     pub rep_penalty: f32,
     pub max_tokens: usize,
     pub greedy_warmup: usize,
+    /// Semilla inicial del LCG (por defecto `DEFAULT_SEED = 4`).
     pub seed: u32,
     pub stream: bool,
     pub stream_chunk_frames: usize,
@@ -1137,7 +1138,7 @@ impl Default for RequestConfig {
             rep_penalty: 1.05,
             max_tokens: 8192,
             greedy_warmup: 0,
-            seed: 42,
+            seed: DEFAULT_SEED,
             stream: false,
             stream_chunk_frames: 10,
             volume: 1.0,

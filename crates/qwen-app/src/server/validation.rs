@@ -5,7 +5,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use qwen_core::config::{lookup_language, lookup_speaker, CODEC_VOCAB_SIZE, DEFAULT_TEMPERATURE};
+use qwen_core::config::{
+    lookup_language, lookup_speaker, CODEC_VOCAB_SIZE, DEFAULT_SEED, DEFAULT_TEMPERATURE,
+};
 use serde_json::Value;
 
 pub const MAX_TTS_TEXT: usize = 8192;
@@ -21,7 +23,9 @@ pub struct ValidatedTtsRequest {
     pub top_k: i32,
     pub top_p: f32,
     pub rep_penalty: f32,
+    /// Semilla de muestreo (`Some(4)` por defecto; `None` cuando el cliente solicita reloj con `< 0`).
     pub seed: Option<u32>,
+    pub seed_set: bool,
     pub volume: f32,
     pub rate: f32,
     pub chunk_frames: usize,
@@ -210,12 +214,12 @@ impl ValidatedTtsRequest {
             None => 1.05,
         };
 
-        // semilla
-        let seed = match extract_opt_i64(obj, "seed")? {
-            Some(v) if v < 0 => None,
-            Some(v) if v <= u32::MAX as i64 => Some(v as u32),
+        // semilla: por defecto DEFAULT_SEED (4); valores negativos activan reloj del sistema
+        let (seed, seed_set) = match extract_opt_i64(obj, "seed")? {
+            Some(v) if v < 0 => (None, true),
+            Some(v) if v <= u32::MAX as i64 => (Some(v as u32), true),
             Some(_) => return Err("'seed' exceeds u32::MAX".to_string()),
-            None => None,
+            None => (Some(DEFAULT_SEED), false),
         };
 
         // emotion (opcional, validado como string si está presente)
@@ -262,6 +266,7 @@ impl ValidatedTtsRequest {
             top_p,
             rep_penalty,
             seed,
+            seed_set,
             volume,
             rate,
             chunk_frames,
@@ -299,7 +304,14 @@ mod tests {
         assert_eq!(ok.text, "Hello!");
         assert_eq!(ok.speaker_id, 3061);
         assert_eq!(ok.temperature, DEFAULT_TEMPERATURE);
+        assert_eq!(ok.seed, Some(DEFAULT_SEED));
+        assert!(!ok.seed_set);
+        assert_eq!(ok.resolve_seed_or_time(), DEFAULT_SEED);
         assert!((ok.rate - 1.2).abs() < 1e-6);
+
+        let neg_seed = ValidatedTtsRequest::parse(r#"{"text":"Hi.","seed":-1}"#, false, false, 3061, Some(2050)).unwrap();
+        assert_eq!(neg_seed.seed, None);
+        assert!(neg_seed.seed_set);
 
         // Con voz clonada, si se omite `language` se mantiene `None` (no fuerza `English` ni `META`).
         let clone_ok = ValidatedTtsRequest::parse(r#"{"text":"Cloned.","chunk_frames":999}"#, true, true, 3061, None).unwrap();

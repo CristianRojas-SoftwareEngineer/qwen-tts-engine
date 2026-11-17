@@ -3,7 +3,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use qwen_core::config::SAMPLE_RATE;
+use qwen_core::config::{DEFAULT_SEED, SAMPLE_RATE};
 use qwen_core::{MarkupPlanner, SpanSpec, VoiceClass};
 use qwen_kernels::ComputeRuntime;
 
@@ -45,14 +45,18 @@ pub fn prepare_markup_06b(
             text: text.to_string(),
             did_para_substitute: false,
             use_compose: false,
-            seed: user_seed.unwrap_or(42),
+            seed: user_seed.unwrap_or(DEFAULT_SEED),
             temperature: user_temp.unwrap_or(default_temp),
         };
     }
 
     let vc = voice_class_for(voice);
     let sub = MarkupPlanner::para_substitute(text, vc);
-    let seed = user_seed.unwrap_or(if sub.did_substitute { sub.seed } else { 42 });
+    let seed = user_seed.unwrap_or(if sub.did_substitute {
+        sub.seed
+    } else {
+        DEFAULT_SEED
+    });
     let temperature = user_temp.unwrap_or(if sub.did_substitute {
         sub.temperature
     } else {

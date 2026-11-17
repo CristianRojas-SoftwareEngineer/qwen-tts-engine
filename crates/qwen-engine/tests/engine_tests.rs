@@ -6,7 +6,8 @@
 use std::path::PathBuf;
 
 use qwen_core::config::{
-    lookup_language, lookup_speaker, DEFAULT_TEMPERATURE, NUM_CODEBOOKS, SAMPLE_RATE,
+    lookup_language, lookup_speaker, DEFAULT_SEED, DEFAULT_TEMPERATURE, NUM_CODEBOOKS,
+    SAMPLE_RATE,
 };
 use qwen_engine::model::{DecoderWorkspace, SdStreamState};
 use qwen_engine::{
@@ -139,11 +140,11 @@ fn test_e2e_determinism_and_abort() {
     let req = RequestConfig {
         speaker_id: spk.id,
         language_id: Some(lang),
-        seed: 42,
         silent: true,
         ..Default::default()
     };
     assert_eq!(req.temperature, DEFAULT_TEMPERATURE);
+    assert_eq!(req.seed, DEFAULT_SEED);
 
     let mut scratch1 = SessionScratch::new();
     let (s1, t1) = synthesize_to_samples(

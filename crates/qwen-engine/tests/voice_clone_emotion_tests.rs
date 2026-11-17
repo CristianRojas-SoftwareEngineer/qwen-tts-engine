@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use qwen_core::config::{DEFAULT_TEMPERATURE, ENC_DIM, NUM_CODEBOOKS, SAMPLE_RATE};
+use qwen_core::config::{DEFAULT_SEED, DEFAULT_TEMPERATURE, ENC_DIM, NUM_CODEBOOKS, SAMPLE_RATE};
 use qwen_core::{write_bin_embedding, MarkupPlanner, QVoiceFile};
 use qwen_engine::{
     apply_emotion_direction, attach_emo_ref, build_voice_from_ref_audio, encode_wav_bytes,
@@ -189,10 +189,11 @@ fn test_clone_wdelta_q4_error_and_e2e() {
     let exec_ref = RequestExecution::new(RequestConfig {
         speaker_id: 3061,
         language_id: Some(2050),
-        seed: 42,
+        seed: DEFAULT_SEED,
         silent: true,
         ..Default::default()
     });
+    assert_eq!(exec_ref.config.seed, DEFAULT_SEED);
     let (ref_samples, _) = synthesize_to_samples(
         &runtime,
         &cv_model,
@@ -310,7 +311,7 @@ fn test_clone_wdelta_q4_error_and_e2e() {
         &RequestExecution::new(RequestConfig {
             speaker_id: 3061,
             language_id: Some(2050),
-            seed: 42,
+            seed: DEFAULT_SEED,
             silent: true,
             ..Default::default()
         }),
@@ -324,7 +325,7 @@ fn test_clone_wdelta_q4_error_and_e2e() {
         "Che bella notizia! [pause:400ms] [sad] Devo andare... [sigh] [neutral] Ciao.",
         &preset_voice,
         false,
-        Some(42),
+        Some(DEFAULT_SEED),
         None,
         DEFAULT_TEMPERATURE,
     );

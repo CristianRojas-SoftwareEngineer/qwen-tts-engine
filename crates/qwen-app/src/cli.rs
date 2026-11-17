@@ -5,7 +5,7 @@
 
 use std::net::Ipv4Addr;
 
-use qwen_core::config::{CODEC_VOCAB_SIZE, DEFAULT_TEMPERATURE};
+use qwen_core::config::{CODEC_VOCAB_SIZE, DEFAULT_SEED, DEFAULT_TEMPERATURE};
 
 /// Argumentos CLI parseados para el binario `qwen_tts`.
 #[derive(Debug, Clone)]
@@ -24,7 +24,9 @@ pub struct CliArgs {
     pub max_tokens: usize,
     pub max_duration: Option<f32>,
     pub threads: Option<usize>,
+    /// Semilla de muestreo (por defecto `Some(DEFAULT_SEED)` = `4`; un valor negativo en `--seed` activa semilla temporal).
     pub seed: Option<u32>,
+    pub seed_set: bool,
     pub greedy_warmup: usize,
 
     pub use_int8: bool,
@@ -106,7 +108,8 @@ impl Default for CliArgs {
             max_tokens: 8192,
             max_duration: None,
             threads: None,
-            seed: None,
+            seed: Some(DEFAULT_SEED),
+            seed_set: false,
             greedy_warmup: 0,
             use_int8: false,
             use_int4: false,
@@ -193,7 +196,7 @@ pub fn print_usage(prog: &str) {
     eprintln!("  --stream-chunk <n>         Max frames per stream chunk (2..250, default: 10)");
     eprintln!("  --volume <f>               Output gain (default: 1.0)");
     eprintln!("  --rate <f>                 Speaking rate, pitch-preserving (default: 1.0)");
-    eprintln!("  --seed <n>                 Random seed (default: time-based)");
+    eprintln!("  --seed <n>                 Random seed (default: 4; < 0 for time-based)");
     eprintln!("  --greedy-warmup <n>        First n frames greedy (T=0, k=1)");
     eprintln!("  --max-duration <secs>      Max audio duration in seconds");
     eprintln!("  --ref-audio <path>         Reference 24 kHz mono WAV for voice cloning (0.6B-Base)");
@@ -373,8 +376,10 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                     .map_err(|_| format!("Error: invalid seed '{s}'"))?;
                 if val < 0 {
                     out.seed = None;
+                    out.seed_set = true;
                 } else if val <= u32::MAX as i64 {
                     out.seed = Some(val as u32);
+                    out.seed_set = true;
                 } else {
                     return Err(format!("Error: seed {val} exceeds u32::MAX"));
                 }
@@ -653,5 +658,14 @@ mod tests {
         assert!(cfg.stream);
         assert_eq!(cfg.batch_words, 4);
         assert_eq!(cfg.temperature, DEFAULT_TEMPERATURE);
+        assert_eq!(cfg.seed, Some(DEFAULT_SEED));
+        assert!(!cfg.seed_set);
+
+        let neg_seed = vec!["qwen_tts".to_string(), "--seed".to_string(), "-1".to_string()];
+        let ParseOutcome::Run(neg_cfg) = parse_cli(&neg_seed).unwrap() else {
+            panic!("expected Run");
+        };
+        assert_eq!(neg_cfg.seed, None);
+        assert!(neg_cfg.seed_set);
     }
 }
