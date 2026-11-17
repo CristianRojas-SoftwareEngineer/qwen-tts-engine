@@ -12,7 +12,7 @@ Motor de inferencia TTS en CPU escrito en Rust estable (actualmente con soporte 
 - `docs/` — Contratos y arquitectura ([INTERFACE_CONTRACT.md](docs/INTERFACE_CONTRACT.md), [SPEC_06B.md](docs/SPEC_06B.md), [NUMERIC_CONTRACT.md](docs/NUMERIC_CONTRACT.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [VERIFICATION_PLAN.md](docs/VERIFICATION_PLAN.md)), [docs/adr/](docs/adr/001-only-06b.md) y registro histórico en [docs/archive/MIGRATION_PLAN.md](docs/archive/MIGRATION_PLAN.md).
 - `.github/workflows/ci.yml` — CI multiplataforma (Windows `x86_64-pc-windows-gnu`, Linux `x86_64`/`aarch64`, macOS `arm64`).
 - `models/` — *(Opcional, ignorado en Git)* Pesos locales `0.6B` (`models/qwen3-tts-0.6b` y `models/qwen3-tts-0.6b-base`).
-- `LICENSE` — Licencia MIT.
+- `LICENSE` — Licencia Mozilla Public License 2.0 (`MPL-2.0`; ver `NOTICE` para atribución upstream).
 
 ## Requisitos de entorno
 
