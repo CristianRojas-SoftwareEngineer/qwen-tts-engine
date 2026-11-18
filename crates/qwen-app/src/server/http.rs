@@ -13,8 +13,8 @@ use qwen_core::MarkupPlanner;
 use qwen_engine::{
     encode_wav_bytes, f32_to_s16le_clamped, prepare_markup_06b, render_spans_buffer,
     render_spans_stream, synthesize_to_samples, synthesize_to_sink, AbortHandle, AudioSink,
-    EngineError, Model06B, RequestConfig, RequestExecution, SessionScratch, SynthesisTiming,
-    VoiceBindings, VoiceIdentity,
+    EngineError, MemorySink, Model06B, RequestConfig, RequestExecution, SessionScratch,
+    SynthesisTiming, VoiceBindings, VoiceIdentity,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -397,6 +397,54 @@ fn prepare_http_tts<'a>(
         voice_ref,
         prep,
         effective_seed,
+    }
+}
+
+/// Fotogramas de la síntesis de calentamiento: el primer fragmento (2) y uno completo (10).
+const WARM_UP_FRAMES: usize = 12;
+
+/// Síntesis corta y descartada al arrancar un worker del servidor.
+///
+/// Deja `scratch` (Talker, Code Predictor y decoder) dimensionado y en caliente, para que la
+/// primera petición no pague el arranque en frío (~60–80 ms de TTFA). No cambia el audio de
+/// las peticiones: cada una reinicia su estado y su semilla.
+pub fn warm_up_session(
+    runtime: &ComputeRuntime,
+    model: &Model06B,
+    base_voice: &VoiceBindings,
+    scratch: &mut SessionScratch,
+) {
+    let (has_clone, def_spk, def_lang) = default_voice_context(base_voice);
+    let vreq = match ValidatedTtsRequest::parse(
+        r#"{"text":"Hello.","seed":1}"#,
+        true,
+        has_clone,
+        def_spk,
+        def_lang,
+    ) {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("[HTTP] Calentamiento omitido: {msg}");
+            return;
+        }
+    };
+    let mut owned_voice = None;
+    let ctx = prepare_http_tts(base_voice, &vreq, &mut owned_voice);
+    let mut exec = build_http_exec(&vreq, &ctx.prep, ctx.effective_seed, true, AbortHandle::new());
+    exec.config.max_tokens = WARM_UP_FRAMES;
+    let mut sink = MemorySink::new(0);
+    let t0 = Instant::now();
+    match synthesize_to_sink(
+        runtime,
+        model,
+        ctx.voice_ref,
+        scratch,
+        &exec,
+        &ctx.prep.text,
+        &mut sink,
+    ) {
+        Ok(_) => eprintln!("[HTTP] Calentamiento: {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0),
+        Err(e) => eprintln!("[HTTP] Calentamiento fallido (sin efecto en las peticiones): {e}"),
     }
 }
 

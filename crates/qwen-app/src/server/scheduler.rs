@@ -22,7 +22,7 @@ use super::http::{
     default_voice_context, handle_connection, handle_health, handle_speakers, handle_tts_full,
     handle_tts_stream, log_http_request, log_stream_sent, log_wav_sent, read_http_request,
     send_chunked_end, send_chunked_header, send_cors_options, send_error, send_pcm_chunk,
-    send_response, socket_disconnected, ReadHttpResult,
+    send_response, socket_disconnected, warm_up_session, ReadHttpResult,
 };
 use super::validation::ValidatedTtsRequest;
 
@@ -44,6 +44,7 @@ impl SynthesisScheduler for WorkerPoolScheduler {
     fn run(self: Box<Self>, listener: TcpListener) -> Result<(), String> {
         if self.n_workers <= 1 {
             let mut scratch = SessionScratch::new();
+            warm_up_session(&self.runtime, &self.model, &self.voice, &mut scratch);
             for incoming in listener.incoming() {
                 match incoming {
                     Ok(stream) => {
@@ -96,6 +97,7 @@ impl SynthesisScheduler for WorkerPoolScheduler {
                         Some(worker_threads),
                     );
                     let mut scratch = SessionScratch::new();
+                    warm_up_session(&rt, &model_c, &voice_c, &mut scratch);
                     loop {
                         let item = {
                             let guard = rx_c.lock().unwrap_or_else(|e| e.into_inner());

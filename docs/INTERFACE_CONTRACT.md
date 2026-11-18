@@ -109,6 +109,7 @@
 - **Límite de cuerpo**: máximo `1 MiB` (`1_048_576` bytes) por petición HTTP.
 - **CORS**: todas las respuestas incluyen `Access-Control-Allow-Origin: *`; `OPTIONS` responde `204 No Content`.
 - **Formato de error**: `{"error":"<causa>"}` con `Content-Type: application/json`.
+- **Calentamiento al arrancar** (modo `--workers`, también con 1 worker): cada worker sintetiza y descarta 12 fotogramas de «Hello.» antes de aceptar conexiones (~1 s), para que la primera petición no pague el arranque en frío. El commit en reposo queda en el nivel que antes alcanzaba tras la primera petición; el audio de las peticiones no cambia. Log: `[HTTP] Calentamiento: <ms> ms`.
 
 ### 2.2 Endpoints y esquema JSON
 
@@ -296,6 +297,7 @@ Los tests y scripts de operación esperan las siguientes líneas exactas en `std
   `seed: <u32>` *(o `seed: <u32> (auto/time-based)`)*
 - **Generación en pipeline** (`pipeline.rs`):
   `  Generated <N> frames (<S>s audio)`
+- **Servidor HTTP al arrancar** (`http.rs`): `[HTTP] Calentamiento: <ms> ms` (o `[HTTP] Calentamiento fallido (sin efecto en las peticiones): <causa>`).
 - **Servidor HTTP en petición exitosa** (`http.rs` / `scheduler.rs`):
   ```text
   [HTTP] Sent <bytes> bytes WAV (<dur>s audio) in <sec>s (RTF <rtf>)
