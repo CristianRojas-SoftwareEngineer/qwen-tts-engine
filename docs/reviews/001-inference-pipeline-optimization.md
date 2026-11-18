@@ -246,7 +246,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 
 ## 5. Matriz de priorización y dependencias
 
-Prioridades para el uso real (servidor residente, una petición cada vez por `/v1/tts/stream`, laptop solo CPU, multiplataforma), ordenadas por impacto medido en el perfil fino del 2026-11-18 (`.work/plans/optimizations/perfil-reestructuracion/perfil.md`). El servidor con varios clientes y el batch están fuera de alcance: [`ROADMAP.md`](../../ROADMAP.md).
+Prioridades para el uso real (servidor residente, una petición cada vez por `/v1/tts/stream`, laptop solo CPU, multiplataforma), ordenadas por impacto medido en el perfil fino del 2026-11-18 (§6, «Hallazgos del perfil fino»). El servidor con varios clientes y el batch están fuera de alcance: [`ROADMAP.md`](../../ROADMAP.md).
 
 | Prioridad | Optimización | Objetivo al que sirve | Techo | Riesgo numérico | Esfuerzo | Fase |
 |---|---|---|---|---|---|---|
@@ -314,11 +314,11 @@ Las mejoras **no deben aplicarse en un único cambio monolítico**: mezclar ajus
 ### Reestructuración de las fases pendientes (2026-11-18)
 Las fases 2–4 originales priorizaban el servidor multi-cliente y el batch, estaban ordenadas por técnica y partían de dos supuestos que el perfil refutó: el coste del decoder no está en su atención, sino en los bloques de upsample del vocoder, y el primer audio lo gobierna el **prefill**, no el Code Predictor. Se sustituyen por fases ordenadas por el efecto que nota el usuario. **Línea base única**: el cierre de la Fase 1 (`.work/plans/optimizations/00-estado.md`, fila «Cierre Fase 1»; audio `phase-1/baseline_fase1_{short,long}.wav`); cada fase se compara contra el cierre de la anterior.
 
-**Hallazgos del perfil fino** (`.work/plans/optimizations/perfil-reestructuracion/perfil.md`, corta / larga):
+**Hallazgos del perfil fino** (corta / larga). Una corrida por texto de referencia con HEAD `78d4bc9` más instrumentación temporal de tiempos por hilo, sin carga; el audio salió con los hashes de la línea base, así que la instrumentación no altera el cálculo. Con una sola corrida (±5 % de ruido) sirve para repartir el tiempo, no para comparar binarios. Evidencia e instrumentación reutilizable: `.work/plans/optimizations/phase-4/instrumentacion/`.
 - TTFA 602 / 663 ms = prefill 346 / 417 ms + 2 frames de Talker y CP ~72 ms + primer fragmento del decoder 190 / 179 ms (~90 ms de arranque en frío sobre el régimen).
 - Prefill: conversión `BF16→F32` 37 % / 32 %, `sgemm` 57 % / 59 %.
 - Code Predictor: 325 despachos al pool por frame; espera en barreras 6,5 % / 4,2 % del CP.
-- Decoder: bloques de upsample 78 % / 83 %; productor y decoder empatados (RTF ~0,56 cada uno).
+- Decoder: bloques de upsample 78 % / 83 %; casi no usa su pool (su cálculo va por `sgemm` y bucles en un solo hilo); productor y decoder empatados (RTF ~0,56 cada uno).
 
 ---
 
