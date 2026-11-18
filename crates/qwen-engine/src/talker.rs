@@ -11,9 +11,12 @@ use qwen_kernels::{AlignedBuf, ComputeRuntime, Transpose};
 use crate::error::EngineError;
 use crate::model::{Model06B, SessionScratch, TransformerLayerWeights};
 
-/// Elementos F32 del búfer de pesos convertidos del *prefill*: la mayor proyección
-/// (`gate_up`, 24 MiB).
-const PREFILL_STAGE_ELEMS: usize = 2 * INTERMEDIATE_SIZE * HIDDEN_SIZE;
+/// Elementos F32 del bloque de pesos convertidos del *prefill* (4 MiB).
+///
+/// Cabe en la L3 (16 MiB en la CPU de referencia) junto a las activaciones, así `sgemm`
+/// relee los pesos convertidos desde caché y no desde la RAM. Un bloque del tamaño de la
+/// L2 multiplicaría las llamadas a `sgemm` y al pool (~3 400 por *prefill* frente a ~420).
+const PREFILL_STAGE_ELEMS: usize = 1 << 20;
 
 /// Pesos BF16 de una proyección del *prefill*, fila a fila (`rows × k`).
 #[derive(Clone, Copy)]
@@ -26,10 +29,9 @@ enum Bf16Rows<'a> {
 
 /// `out[s, n] = Σ_k x[s, k] · W[n, k]` para las `rows` filas de `W` (BF16); `out` es `seq_len × rows`.
 ///
-/// Convierte `W` a F32 en `stage` justo antes de su `sgemm`: la proyección convertida se
-/// relee en parte desde caché y nunca existen todos los pesos F32 de la capa a la vez.
-/// Una sola `sgemm` por proyección: partir `W` por filas cambia el redondeo de OpenBLAS
-/// (0.3.34) y, con él, el audio.
+/// Convierte `W` a F32 por bloques de filas en `stage` y lanza `sgemm` sobre cada bloque:
+/// los pesos F32 nunca existen completos en memoria. OpenBLAS (0.3.34) redondea distinto
+/// según el ancho del bloque, así que el tamaño de bloque forma parte del contrato numérico.
 #[allow(clippy::too_many_arguments)]
 fn prefill_matmul_bf16(
     runtime: &ComputeRuntime,
@@ -41,28 +43,46 @@ fn prefill_matmul_bf16(
     rows: usize,
     out: &mut [f32],
 ) {
-    let st = &mut stage[..rows * k];
-    match w {
-        Bf16Rows::Plain(src) => runtime.dispatch.bf16_to_f32_par(&runtime.pool, st, src),
-        Bf16Rows::GateUp { gate, up } => {
-            runtime.dispatch.gate_up_to_f32_par(&runtime.pool, st, gate, up, rows / 2, k);
+    // Par, para que cada bloque de `GateUp` lleve parejas completas.
+    let block_rows = (stage.len() / k) & !1;
+    assert!(block_rows > 0, "prefill_matmul_bf16: stage too small for k={k}");
+    let mut r0 = 0;
+    while r0 < rows {
+        let r1 = (r0 + block_rows).min(rows);
+        let st = &mut stage[..(r1 - r0) * k];
+        match w {
+            Bf16Rows::Plain(src) => {
+                runtime.dispatch.bf16_to_f32_par(&runtime.pool, st, &src[r0 * k..r1 * k]);
+            }
+            Bf16Rows::GateUp { gate, up } => {
+                let (p0, p1) = (r0 / 2, r1 / 2);
+                runtime.dispatch.gate_up_to_f32_par(
+                    &runtime.pool,
+                    st,
+                    &gate[p0 * k..p1 * k],
+                    &up[p0 * k..p1 * k],
+                    p1 - p0,
+                    k,
+                );
+            }
         }
+        runtime.blas.sgemm(
+            Transpose::NoTrans,
+            Transpose::Trans,
+            seq_len,
+            r1 - r0,
+            k,
+            1.0,
+            x,
+            k,
+            st,
+            k,
+            0.0,
+            &mut out[r0..],
+            rows,
+        );
+        r0 = r1;
     }
-    runtime.blas.sgemm(
-        Transpose::NoTrans,
-        Transpose::Trans,
-        seq_len,
-        rows,
-        k,
-        1.0,
-        x,
-        k,
-        st,
-        k,
-        0.0,
-        out,
-        rows,
-    );
 }
 
 /// Ejecuta el *prefill* completo del Talker (`kv_len = 0`) sobre `input_embeds[seq_len, HIDDEN_SIZE]`.
@@ -103,7 +123,7 @@ pub fn talker_prefill(
     let pref_proj = &mut tb.pref_proj[..seq_len * HIDDEN_SIZE];
     let swiglu_tmp = &mut tb.swiglu_tmp[..INTERMEDIATE_SIZE];
 
-    // Pesos convertidos de una proyección (24 MiB), transitorio: se libera al salir del prefill.
+    // Bloque de pesos convertidos (4 MiB), transitorio: se libera al salir del prefill.
     let mut stage_buf = AlignedBuf::<f32>::new_zeroed(PREFILL_STAGE_ELEMS);
     let stage = &mut stage_buf[..];
 

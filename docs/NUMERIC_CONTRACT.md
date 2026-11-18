@@ -55,6 +55,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | **Activación Snake (`SpeechDecoder`)** | `y = x + exp(-log_beta) * sin^2(exp(log_alpha) * x)` en `F32` | Los parámetros `{alpha, beta}` del checkpoint están en escala logarítmica. |
 | **`causal_conv1d` / `conv_transpose1d`** | `conv_transpose1d`: 1 `BlasBackend::sgemm` + dispersión en orden ascendente de `k`; `causal_conv1d` (`k>1`): `k` `sgemm` acumulados sobre `W_k` `[k][out][in]` | Elimina copias `im2col` manteniendo `SNR >= 96–98 dB`. |
 | **Atención con ventana deslizante (`SpeechDecoder`)** | Un único kernel `causal_attention_windowed` (*online softmax* + FMA) para streaming y decodificación completa; en streaming, consultas en coordenadas de la caché compactable (`q_offset = kv_len - kv_base`), que conserva `window - 1` posiciones | Streaming y completo comparten aritmética (`SNR >= 100 dB`); el bucle escalar previo difería en ±1 LSB de PCM16. |
+| **`Talker` prefill** | Pesos `BF16` → `F32` por bloques de filas de **4 MiB** (`PREFILL_STAGE_ELEMS`) y una `sgemm` por bloque (`gate_up` intercalado por parejas de filas) | OpenBLAS redondea según el ancho del bloque y el muestreo autorregresivo amplifica cualquier diferencia hasta cambiar los códigos: **cambiar el tamaño de bloque cambia el audio** y exige una línea base nueva. |
 | **`CodePredictor` prefill** | **`PREFILL2`** (`matmat(B=2)`) cuando las 5 capas están cuantizadas | Lee cada matriz una vez para posiciones `0` y `1` con resultado idéntico al secuencial. |
 
 ---
@@ -81,3 +82,5 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | | `matmat_bf16(B=8)` vs `B × matvec_bf16` | `L2_rel < 1e-4` |
 | **Speech Decoder aislado** | Streaming vs decodificación completa | **`SNR >= 100 dB`** |
 | **Pipeline E2E** (misma semilla/params) | 2 corridas independientes | **Bit-idéntico** en CLI, `/v1/tts` y `/v1/tts/stream` |
+
+**Audio de referencia vigente** (desde el prefill por bloques, 2026-11-18; `--seed 4 --quant-mixed -j 4 -s ryan -l English`, textos corto y largo de `.work/plans/optimizations/phase-1/harness_f1.ps1`): `.work/plans/optimizations/phase-3/baseline_fase3_{short,long}.wav`, SHA-256 `BE0EB0B1…23335083` / `FD9B8968…3FD10643`. El audio anterior (`phase-1/baseline_fase1_*`) queda como histórico.
