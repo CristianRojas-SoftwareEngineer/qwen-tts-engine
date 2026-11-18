@@ -11,6 +11,60 @@ use qwen_kernels::{AlignedBuf, ComputeRuntime, Transpose};
 use crate::error::EngineError;
 use crate::model::{Model06B, SessionScratch, TransformerLayerWeights};
 
+/// Elementos F32 del búfer de pesos convertidos del *prefill*: la mayor proyección
+/// (`gate_up`, 24 MiB).
+const PREFILL_STAGE_ELEMS: usize = 2 * INTERMEDIATE_SIZE * HIDDEN_SIZE;
+
+/// Pesos BF16 de una proyección del *prefill*, fila a fila (`rows × k`).
+#[derive(Clone, Copy)]
+enum Bf16Rows<'a> {
+    /// Matriz contigua.
+    Plain(&'a [u16]),
+    /// `gate` y `up` intercaladas por filas (`gate_0`, `up_0`, `gate_1`, …).
+    GateUp { gate: &'a [u16], up: &'a [u16] },
+}
+
+/// `out[s, n] = Σ_k x[s, k] · W[n, k]` para las `rows` filas de `W` (BF16); `out` es `seq_len × rows`.
+///
+/// Convierte `W` a F32 en `stage` justo antes de su `sgemm`: la proyección convertida se
+/// relee en parte desde caché y nunca existen todos los pesos F32 de la capa a la vez.
+/// Una sola `sgemm` por proyección: partir `W` por filas cambia el redondeo de OpenBLAS
+/// (0.3.34) y, con él, el audio.
+#[allow(clippy::too_many_arguments)]
+fn prefill_matmul_bf16(
+    runtime: &ComputeRuntime,
+    stage: &mut [f32],
+    x: &[f32],
+    seq_len: usize,
+    k: usize,
+    w: Bf16Rows<'_>,
+    rows: usize,
+    out: &mut [f32],
+) {
+    let st = &mut stage[..rows * k];
+    match w {
+        Bf16Rows::Plain(src) => runtime.dispatch.bf16_to_f32_par(&runtime.pool, st, src),
+        Bf16Rows::GateUp { gate, up } => {
+            runtime.dispatch.gate_up_to_f32_par(&runtime.pool, st, gate, up, rows / 2, k);
+        }
+    }
+    runtime.blas.sgemm(
+        Transpose::NoTrans,
+        Transpose::Trans,
+        seq_len,
+        rows,
+        k,
+        1.0,
+        x,
+        k,
+        st,
+        k,
+        0.0,
+        out,
+        rows,
+    );
+}
+
 /// Ejecuta el *prefill* completo del Talker (`kv_len = 0`) sobre `input_embeds[seq_len, HIDDEN_SIZE]`.
 pub fn talker_prefill(
     runtime: &ComputeRuntime,
@@ -23,8 +77,6 @@ pub fn talker_prefill(
 ) -> Result<(), EngineError> {
     let eps = model.config.rms_norm_eps;
     let d = runtime.dispatch;
-    let pool = &runtime.pool;
-    let blas = &runtime.blas;
 
     if !silent {
         eprintln!("  Prefill:{} tokens, hidden={}", seq_len, HIDDEN_SIZE);
@@ -51,92 +103,21 @@ pub fn talker_prefill(
     let pref_proj = &mut tb.pref_proj[..seq_len * HIDDEN_SIZE];
     let swiglu_tmp = &mut tb.swiglu_tmp[..INTERMEDIATE_SIZE];
 
-    // Staging F32 de los pesos de una capa (BF16 -> F32 para `sgemm`), 60 MiB.
-    // Es transitorio: vive solo durante el prefill y se libera al salir, de modo
-    // que no forma parte de la huella residente de `SessionScratch`.
-    let mut wq_buf = AlignedBuf::<f32>::new_zeroed(Q_DIM * HIDDEN_SIZE);
-    let mut wk_buf = AlignedBuf::<f32>::new_zeroed(KV_DIM * HIDDEN_SIZE);
-    let mut wv_buf = AlignedBuf::<f32>::new_zeroed(KV_DIM * HIDDEN_SIZE);
-    let mut wo_buf = AlignedBuf::<f32>::new_zeroed(HIDDEN_SIZE * Q_DIM);
-    let mut gate_up_buf = AlignedBuf::<f32>::new_zeroed(2 * INTERMEDIATE_SIZE * HIDDEN_SIZE);
-    let mut down_buf = AlignedBuf::<f32>::new_zeroed(HIDDEN_SIZE * INTERMEDIATE_SIZE);
-    let wq_f32 = &mut wq_buf[..];
-    let wk_f32 = &mut wk_buf[..];
-    let wv_f32 = &mut wv_buf[..];
-    let wo_f32 = &mut wo_buf[..];
-    let gate_up_f32 = &mut gate_up_buf[..];
-    let down_f32 = &mut down_buf[..];
+    // Pesos convertidos de una proyección (24 MiB), transitorio: se libera al salir del prefill.
+    let mut stage_buf = AlignedBuf::<f32>::new_zeroed(PREFILL_STAGE_ELEMS);
+    let stage = &mut stage_buf[..];
 
     let scale = 1.0f32 / (HEAD_DIM as f32).sqrt();
     let kv_max = scratch.talker_kv.max_pos;
 
     for (layer_idx, l) in model.talker.layers.iter().enumerate() {
-        d.convert_talker_layer_bf16_to_f32(
-            pool,
-            wq_f32,
-            &l.wq_bf16,
-            wk_f32,
-            &l.wk_bf16,
-            wv_f32,
-            &l.wv_bf16,
-            wo_f32,
-            &l.wo_bf16,
-            gate_up_f32,
-            &l.gate_bf16,
-            &l.up_bf16,
-            down_f32,
-            &l.down_bf16,
-            INTERMEDIATE_SIZE,
-            HIDDEN_SIZE,
-        );
-
         d.rms_norm(pref_x_norm, residual, &l.input_norm, seq_len, HIDDEN_SIZE, eps);
 
-        blas.sgemm(
-            Transpose::NoTrans,
-            Transpose::Trans,
-            seq_len,
-            Q_DIM,
-            HIDDEN_SIZE,
-            1.0,
-            pref_x_norm,
-            HIDDEN_SIZE,
-            wq_f32,
-            HIDDEN_SIZE,
-            0.0,
-            pref_q,
-            Q_DIM,
-        );
-        blas.sgemm(
-            Transpose::NoTrans,
-            Transpose::Trans,
-            seq_len,
-            KV_DIM,
-            HIDDEN_SIZE,
-            1.0,
-            pref_x_norm,
-            HIDDEN_SIZE,
-            wk_f32,
-            HIDDEN_SIZE,
-            0.0,
-            pref_k,
-            KV_DIM,
-        );
-        blas.sgemm(
-            Transpose::NoTrans,
-            Transpose::Trans,
-            seq_len,
-            KV_DIM,
-            HIDDEN_SIZE,
-            1.0,
-            pref_x_norm,
-            HIDDEN_SIZE,
-            wv_f32,
-            HIDDEN_SIZE,
-            0.0,
-            pref_v,
-            KV_DIM,
-        );
+        let x = &*pref_x_norm;
+        let h = HIDDEN_SIZE;
+        prefill_matmul_bf16(runtime, stage, x, seq_len, h, Bf16Rows::Plain(&l.wq_bf16), Q_DIM, pref_q);
+        prefill_matmul_bf16(runtime, stage, x, seq_len, h, Bf16Rows::Plain(&l.wk_bf16), KV_DIM, pref_k);
+        prefill_matmul_bf16(runtime, stage, x, seq_len, h, Bf16Rows::Plain(&l.wv_bf16), KV_DIM, pref_v);
 
         d.rms_norm_per_head(pref_q, &l.q_norm, seq_len, NUM_HEADS, HEAD_DIM, eps);
         d.rms_norm_per_head(pref_k, &l.k_norm, seq_len, NUM_KV_HEADS, HEAD_DIM, eps);
@@ -184,20 +165,15 @@ pub fn talker_prefill(
             0,
         );
 
-        blas.sgemm(
-            Transpose::NoTrans,
-            Transpose::Trans,
-            seq_len,
-            HIDDEN_SIZE,
-            Q_DIM,
-            1.0,
+        prefill_matmul_bf16(
+            runtime,
+            stage,
             pref_attn_out,
+            seq_len,
             Q_DIM,
-            wo_f32,
-            Q_DIM,
-            0.0,
-            pref_proj,
+            Bf16Rows::Plain(&l.wo_bf16),
             HIDDEN_SIZE,
+            pref_proj,
         );
         d.add_inplace(residual, pref_proj);
 
@@ -210,20 +186,15 @@ pub fn talker_prefill(
             eps,
         );
 
-        blas.sgemm(
-            Transpose::NoTrans,
-            Transpose::Trans,
-            seq_len,
-            2 * INTERMEDIATE_SIZE,
-            HIDDEN_SIZE,
-            1.0,
+        prefill_matmul_bf16(
+            runtime,
+            stage,
             pref_x_norm,
+            seq_len,
             HIDDEN_SIZE,
-            gate_up_f32,
-            HIDDEN_SIZE,
-            0.0,
-            pref_gate,
+            Bf16Rows::GateUp { gate: &l.gate_bf16, up: &l.up_bf16 },
             2 * INTERMEDIATE_SIZE,
+            pref_gate,
         );
 
         for s in 0..seq_len {
@@ -239,20 +210,15 @@ pub fn talker_prefill(
             }
         }
 
-        blas.sgemm(
-            Transpose::NoTrans,
-            Transpose::Trans,
-            seq_len,
-            HIDDEN_SIZE,
-            INTERMEDIATE_SIZE,
-            1.0,
+        prefill_matmul_bf16(
+            runtime,
+            stage,
             &pref_gate[..seq_len * INTERMEDIATE_SIZE],
+            seq_len,
             INTERMEDIATE_SIZE,
-            down_f32,
-            INTERMEDIATE_SIZE,
-            0.0,
-            pref_proj,
+            Bf16Rows::Plain(&l.down_bf16),
             HIDDEN_SIZE,
+            pref_proj,
         );
         d.add_inplace(residual, pref_proj);
 

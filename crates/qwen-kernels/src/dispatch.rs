@@ -1265,76 +1265,59 @@ impl KernelDispatch {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn convert_talker_layer_bf16_to_f32(
-        &self,
-        pool: &ComputePool,
-        wq_dst: &mut [f32],
-        wq_src: &[u16],
-        wk_dst: &mut [f32],
-        wk_src: &[u16],
-        wv_dst: &mut [f32],
-        wv_src: &[u16],
-        wo_dst: &mut [f32],
-        wo_src: &[u16],
-        gate_up_dst: &mut [f32],
-        gate_src: &[u16],
-        up_src: &[u16],
-        down_dst: &mut [f32],
-        down_src: &[u16],
-        inter: usize,
-        hidden: usize,
-    ) {
+    /// Convierte `src` (BF16) a `dst` (F32) repartiendo el trabajo entre los hilos de `pool`.
+    pub fn bf16_to_f32_par(&self, pool: &ComputePool, dst: &mut [f32], src: &[u16]) {
+        let total = dst.len();
+        assert!(src.len() >= total, "bf16_to_f32_par slice bounds mismatch");
         let nt = pool.n_threads();
-        assert!(
-            gate_up_dst.len() >= 2 * inter * hidden
-                && gate_src.len() >= inter * hidden
-                && up_src.len() >= inter * hidden
-        );
         if nt <= 1 {
-            self.bf16_to_f32_vec(wq_dst, wq_src);
-            self.bf16_to_f32_vec(wk_dst, wk_src);
-            self.bf16_to_f32_vec(wv_dst, wv_src);
-            self.bf16_to_f32_vec(wo_dst, wo_src);
-            self.bf16_to_f32_vec(down_dst, down_src);
-            crate::quant::gate_up_to_f32(gate_up_dst, gate_src, up_src, inter, hidden);
+            self.bf16_to_f32_vec(dst, &src[..total]);
             return;
         }
-        let nq = wq_dst.len().min(wq_src.len());
-        let nk = wk_dst.len().min(wk_src.len());
-        let nv = wv_dst.len().min(wv_src.len());
-        let no = wo_dst.len().min(wo_src.len());
-        let nd = down_dst.len().min(down_src.len());
-        let wq_p = SendMutPtr::from_slice(wq_dst);
-        let wk_p = SendMutPtr::from_slice(wk_dst);
-        let wv_p = SendMutPtr::from_slice(wv_dst);
-        let wo_p = SendMutPtr::from_slice(wo_dst);
-        let gu_p = SendMutPtr::from_slice(gate_up_dst);
-        let dn_p = SendMutPtr::from_slice(down_dst);
+        let dst_p = SendMutPtr::from_slice(dst);
         let conv_fn = self.bf16_to_f32_vec_fn;
         pool.parallel(nt, |tid, n| {
-            let slice_conv = |dst_ptr: SendMutPtr<f32>, src: &[u16], total: usize| {
-                let a = tid * total / n;
-                let b = (tid + 1) * total / n;
-                if b > a {
-                    let dst = unsafe { dst_ptr.slice_mut(a, b - a) };
-                    conv_fn(dst, &src[a..b]);
-                }
-            };
-            slice_conv(wq_p, wq_src, nq);
-            slice_conv(wk_p, wk_src, nk);
-            slice_conv(wv_p, wv_src, nv);
-            slice_conv(wo_p, wo_src, no);
-            slice_conv(dn_p, down_src, nd);
-            let r0 = tid * inter / n;
-            let r1 = (tid + 1) * inter / n;
+            let a = tid * total / n;
+            let b = (tid + 1) * total / n;
+            if b > a {
+                let d = unsafe { dst_p.slice_mut(a, b - a) };
+                conv_fn(d, &src[a..b]);
+            }
+        });
+    }
+
+    /// Convierte las filas `gate` y `up` (BF16, `rows × cols`) a F32 intercaladas
+    /// (`gate_0`, `up_0`, `gate_1`, …) repartiendo las filas entre los hilos de `pool`.
+    pub fn gate_up_to_f32_par(
+        &self,
+        pool: &ComputePool,
+        dst: &mut [f32],
+        gate: &[u16],
+        up: &[u16],
+        rows: usize,
+        cols: usize,
+    ) {
+        assert!(
+            dst.len() >= 2 * rows * cols && gate.len() >= rows * cols && up.len() >= rows * cols,
+            "gate_up_to_f32_par slice bounds mismatch"
+        );
+        let nt = pool.n_threads();
+        if nt <= 1 {
+            crate::quant::gate_up_to_f32(dst, gate, up, rows, cols);
+            return;
+        }
+        let dst_p = SendMutPtr::from_slice(dst);
+        pool.parallel(nt, |tid, n| {
+            let r0 = tid * rows / n;
+            let r1 = (tid + 1) * rows / n;
             if r1 > r0 {
-                let gu_slice = unsafe { gu_p.slice_mut(2 * r0 * hidden, 2 * (r1 - r0) * hidden) };
+                let d = unsafe { dst_p.slice_mut(2 * r0 * cols, 2 * (r1 - r0) * cols) };
                 crate::quant::gate_up_to_f32(
-                    gu_slice,
-                    &gate_src[r0 * hidden..r1 * hidden],
-                    &up_src[r0 * hidden..r1 * hidden],
+                    d,
+                    &gate[r0 * cols..r1 * cols],
+                    &up[r0 * cols..r1 * cols],
                     r1 - r0,
-                    hidden,
+                    cols,
                 );
             }
         });
