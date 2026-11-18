@@ -12,6 +12,11 @@ use crate::ftz::ftz_on;
 
 pub const QWEN_POOL_SPIN_DEFAULT: usize = 4096;
 
+/// Hilos de cómputo efectivos: los pedidos con `-j` o, si no, [`default_num_threads`].
+pub fn resolve_num_threads(threads: Option<usize>) -> usize {
+    threads.unwrap_or_else(default_num_threads).max(1)
+}
+
 pub fn default_num_threads() -> usize {
     thread::available_parallelism()
         .map(|n| n.get().min(4))

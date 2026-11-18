@@ -260,7 +260,7 @@ Sinks incluidos en `qwen_engine`: `MemorySink`, `WavStreamSink`, `StdoutRawSink`
 
 | Variable | Scope | Default | Efecto |
 |---|---|---|---|
-| `OMP_NUM_THREADS` | OpenBLAS / Windows | — | Debe igualar `-j` cuando OpenBLAS usa OpenMP. |
+| `OMP_NUM_THREADS` | OpenBLAS / Windows | `-j` *(lo fija el binario)* | Opcional. Si se define, manda: OpenBLAS reserva un búfer de 128 MiB de commit por hilo indicado, y los hilos de BLAS no superan ese valor aunque `-j` sea mayor. |
 | `OPENBLAS_NUM_THREADS` | OpenBLAS | *(no definir)* | Si está definida, `FfiBlas::set_threads` no reconfigura hilos entre *prefill* y generación. |
 | `OPENBLAS_LIB_DIR` | Build (`qwen-kernels`) | `C:/msys64/ucrt64/lib` *(Win)* | Ruta de búsqueda para `openblas` / `libopenblas.a`. |
 | `WINDRES` | Build (`qwen-app`) | auto | Compilador de recursos COFF para incrustar el manifiesto UTF-8 en Windows GNU. |
@@ -284,7 +284,7 @@ Sinks incluidos en `qwen_engine`: `MemorySink`, `WavStreamSink`, `StdoutRawSink`
 ### 4.2 Afinidad SMT en Windows y gestión de OpenBLAS
 
 - **Afinidad Win32 (`affinity.rs`)**: al arrancar en Windows con 1 grupo de procesadores, `qwen_tts` fija `SetProcessAffinityMask` a **1 hilo lógico por núcleo físico** para evitar contención SMT del planificador.
-- **OpenBLAS + OpenMP**: en Windows con `x86_64-pc-windows-gnu`, define `OMP_NUM_THREADS` igual a `-j` y mantén **sin definir** `OPENBLAS_NUM_THREADS` para que el motor pueda ajustar los hilos entre *prefill* (`nt`) y generación (`gen_blas`).
+- **OpenBLAS + OpenMP**: en Windows con `x86_64-pc-windows-gnu`, OpenBLAS está enlazado estático y se inicializa antes de `main`, reservando 128 MiB de commit por hilo. Si no hay `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS` ni `GOTO_NUM_THREADS`, el binario fija `OMP_NUM_THREADS` al `-j` efectivo antes de esa inicialización (`.CRT$XCT`); no hace falta definir nada. `set_threads` aplica los hilos en cada hilo que llama a `sgemm` y nunca pasa de los iniciales (OpenBLAS 0.3.34 se cuelga si se le piden más). Mantén **sin definir** `OPENBLAS_NUM_THREADS` para que el motor pueda ajustar los hilos entre *prefill* (`nt`) y generación (`gen_blas`).
 
 ### 4.3 Líneas de log contractuales
 

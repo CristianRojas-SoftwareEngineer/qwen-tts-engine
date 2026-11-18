@@ -17,7 +17,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```powershell
 # Windows (x86_64-pc-windows-gnu)
 $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
-$env:OMP_NUM_THREADS = "4"
 Remove-Item Env:OPENBLAS_NUM_THREADS -ErrorAction SilentlyContinue
 
 cargo test --workspace --release --target x86_64-pc-windows-gnu

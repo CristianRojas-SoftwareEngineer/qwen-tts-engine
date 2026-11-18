@@ -75,7 +75,6 @@ huggingface-cli download Qwen/Qwen3-TTS-12Hz-0.6B-Base --local-dir models/qwen3-
 
 ```powershell
 $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
-$env:OMP_NUM_THREADS = "4"
 Remove-Item Env:OPENBLAS_NUM_THREADS -ErrorAction SilentlyContinue
 
 cargo build -p qwen-app --release --target x86_64-pc-windows-gnu
@@ -189,7 +188,6 @@ En Windows (`x86_64-pc-windows-gnu`):
 
 ```powershell
 $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
-$env:OMP_NUM_THREADS = "4"
 Remove-Item Env:OPENBLAS_NUM_THREADS -ErrorAction SilentlyContinue
 
 .\target\x86_64-pc-windows-gnu\release\qwen_tts.exe --self-test

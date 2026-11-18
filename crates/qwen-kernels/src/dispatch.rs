@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::blas::{BlasBackend, FfiBlas};
 use crate::caps::CpuCaps;
 use crate::ftz::ftz_on;
-use crate::pool::{default_num_threads, ComputePool};
+use crate::pool::{resolve_num_threads, ComputePool};
 use crate::quant::{Q2_0Block, Q4_0Block, Q2_0_BLOCK_SIZE, Q4_0_BLOCK_SIZE, QWEN_QACT_MAX};
 use crate::simd::scalar;
 
@@ -1407,7 +1407,7 @@ impl ComputeRuntime {
         ftz_on();
         let caps = CpuCaps::detect();
         let dispatch = KernelDispatch::for_caps(&caps);
-        let nt = threads.unwrap_or_else(default_num_threads).max(1);
+        let nt = resolve_num_threads(threads);
         let sd_nt = std::env::var("QWEN_SD_THREADS")
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())

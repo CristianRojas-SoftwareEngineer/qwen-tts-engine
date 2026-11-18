@@ -4,6 +4,14 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::os::raw::c_int;
+#[cfg(not(target_os = "macos"))]
+use std::{
+    cell::Cell,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        OnceLock,
+    },
+};
 
 /// Modo de transposición de matrices para `BlasBackend::sgemm`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -68,6 +76,12 @@ extern "C" {
 
     #[cfg(not(target_os = "macos"))]
     fn openblas_set_num_threads(num_threads: c_int);
+
+    #[cfg(not(target_os = "macos"))]
+    fn openblas_get_num_threads() -> c_int;
+
+    #[cfg(all(windows, target_env = "gnu"))]
+    fn _putenv(envstring: *const std::ffi::c_char) -> c_int;
 }
 
 #[inline]
@@ -145,6 +159,76 @@ fn handle_zero_k_sgemm(m: usize, n: usize, beta: f32, c: &mut [f32], ldc: usize)
     }
 }
 
+/// Hilos de OpenBLAS pedidos con `set_threads` (0 = sin fijar: manda el entorno).
+///
+/// El estado de OpenBLAS es global al proceso, así que el valor también lo es.
+#[cfg(not(target_os = "macos"))]
+static BLAS_THREADS: AtomicUsize = AtomicUsize::new(0);
+
+// Valor de `BLAS_THREADS` ya aplicado en cada hilo.
+#[cfg(not(target_os = "macos"))]
+thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
+    static APPLIED_THREADS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Hilos con que se inicializó OpenBLAS: tope de `set_threads` (pedir más cuelga `sgemm`).
+#[cfg(not(target_os = "macos"))]
+fn initial_threads() -> usize {
+    static INITIAL: OnceLock<usize> = OnceLock::new();
+    *INITIAL.get_or_init(|| unsafe { openblas_get_num_threads() }.max(1) as usize)
+}
+
+/// Aplica en el hilo actual los hilos pedidos con `set_threads`, sin pasar de los iniciales.
+///
+/// Con OpenMP, cada `sgemm` de OpenBLAS se reajusta a `omp_get_max_threads()` del hilo
+/// que la llama, y ese valor es por hilo. Sin esto, un hilo que no llamó a `set_threads`
+/// (p. ej. el del decoder) usaría el valor global de `OMP_NUM_THREADS`.
+#[cfg(not(target_os = "macos"))]
+fn apply_threads_on_this_thread() {
+    let n = BLAS_THREADS.load(Ordering::Relaxed).min(initial_threads());
+    if n != 0 && APPLIED_THREADS.with(Cell::get) != n {
+        unsafe {
+            openblas_set_num_threads(n as c_int);
+        }
+        APPLIED_THREADS.with(|a| a.set(n));
+    }
+}
+
+/// Fija los hilos con que se inicializa OpenBLAS, si el usuario no los fijó por entorno.
+///
+/// En `x86_64-pc-windows-gnu` OpenBLAS se enlaza estático con OpenMP. Su constructor corre
+/// antes de `main` y reserva un búfer de 128 MiB (memoria comprometida) por cada hilo que
+/// indique `OMP_NUM_THREADS`; sin la variable, uno por CPU lógica. `openblas_set_num_threads`
+/// posterior no devuelve esa memoria, y pedir más hilos que los iniciales cuelga la primera
+/// `sgemm` (OpenBLAS 0.3.34). Por eso el binario llama a esta función antes que los
+/// constructores de OpenBLAS y libgomp, con el número de hilos que va a usar.
+///
+/// `_putenv` actualiza la tabla de entorno de la CRT, que es la que lee `getenv`. En el resto
+/// de plataformas no hace nada: Linux no cobra el commit por adelantado y macOS usa Accelerate.
+pub fn set_initial_openblas_threads(n: usize) {
+    #[cfg(all(windows, target_env = "gnu"))]
+    {
+        let user_set = ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "GOTO_NUM_THREADS"]
+            .iter()
+            .any(|v| std::env::var_os(v).is_some());
+        if user_set {
+            return;
+        }
+        let Ok(var) = std::ffi::CString::new(format!("OMP_NUM_THREADS={}", n.max(1))) else {
+            return;
+        };
+        // Si falla, OpenBLAS arranca con su valor por defecto: más memoria, mismo resultado.
+        unsafe {
+            _putenv(var.as_ptr());
+        }
+    }
+    #[cfg(not(all(windows, target_env = "gnu")))]
+    {
+        let _ = n;
+    }
+}
+
 /// Backend BLAS por defecto enlazado vía FFI a OpenBLAS (Linux/Windows) o Accelerate (macOS).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FfiBlas;
@@ -164,9 +248,8 @@ impl BlasBackend for FfiBlas {
             if std::env::var_os("OPENBLAS_NUM_THREADS").is_some() {
                 return;
             }
-            unsafe {
-                openblas_set_num_threads(n.max(1) as c_int);
-            }
+            BLAS_THREADS.store(n.max(1), Ordering::Relaxed);
+            apply_threads_on_this_thread();
         }
         #[cfg(target_os = "macos")]
         {
@@ -216,7 +299,9 @@ impl BlasBackend for FfiBlas {
             Transpose::NoTrans => CblasTranspose::NoTrans as c_int,
             Transpose::Trans => CblasTranspose::Trans as c_int,
         };
-            unsafe {
+        #[cfg(not(target_os = "macos"))]
+        apply_threads_on_this_thread();
+        unsafe {
             cblas_sgemm(
                 CblasOrder::RowMajor as c_int,
                 ta,

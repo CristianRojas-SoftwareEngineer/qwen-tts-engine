@@ -946,6 +946,30 @@ fn run_decode_dump(codes_path: &str, model_dir: &str, out_wav: &str) -> Result<i
     Ok(0)
 }
 
+/// Fija los hilos iniciales de OpenBLAS con el `-j` efectivo antes de que se inicialice.
+///
+/// Corre en `.CRT$XCT`: dentro de `_initterm`, con la CRT ya iniciada y antes de los
+/// constructores (`.ctors`) de OpenBLAS y libgomp. Ver [`qwen_kernels::set_initial_openblas_threads`].
+/// Si los argumentos no se pueden leer o no son válidos, no hace nada: `main` informa del error.
+#[cfg(all(windows, target_env = "gnu"))]
+mod openblas_preinit {
+    extern "C" fn set_initial_threads() {
+        let Ok(args) = std::env::args_os()
+            .map(std::ffi::OsString::into_string)
+            .collect::<Result<Vec<String>, _>>()
+        else {
+            return;
+        };
+        if let Ok(crate::cli::ParseOutcome::Run(cfg)) = crate::cli::parse_cli(&args) {
+            qwen_kernels::set_initial_openblas_threads(qwen_kernels::resolve_num_threads(cfg.threads));
+        }
+    }
+
+    #[used]
+    #[link_section = ".CRT$XCT"]
+    static SET_INITIAL_THREADS: extern "C" fn() = set_initial_threads;
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("decode-dump") {

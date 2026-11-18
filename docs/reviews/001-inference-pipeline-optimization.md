@@ -212,7 +212,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Problema**: `FfiBlas::set_threads` modifica el estado global de proceso de OpenBLAS. Con `--workers N > 1`, múltiples workers se pisan entre prefill y generación. Un `OMP_NUM_THREADS` ausente en el lanzador compromete los hilos de OpenMP antes de `main`.
 - **Propuesta**: fijar `OMP_NUM_THREADS = -j` en el lanzador y `openblas_set_num_threads` una sola vez al iniciar cuando `n_workers > 1` (sin reconfigurar por petición). `OPENBLAS_NUM_THREADS` permanece sin definir. `--batch-size N` (o `faer-blas`) es la opción preferente en concurrencia.
 - **Contrato numérico**: **Bit-idéntico** por petición con el mismo número de hilos efectivo.
-- **Estado**: parte lanzador (`OMP_NUM_THREADS = -j`) `vigente` (**Fase 2**, aplica a toda síntesis; su coste en este motor sin la variable está sin medir: Paso 2.1); parte multi-worker (`openblas_set_num_threads` con `n_workers > 1`) **fuera de alcance** → [`ROADMAP.md`](../../ROADMAP.md), «Configurar los hilos de OpenBLAS una sola vez con varios workers». **Efecto medido (gemelo C)**: en Windows `OMP_NUM_THREADS = -j` reduce **1 410 MiB** comprometidos y el tiempo un **6 %**, sin cambiar el audio. **Fundamento**: `Anexo A §A.6 de phase-0/estado.md`.
+- **Estado**: parte lanzador `implementada` (**Fase 2**, Paso 2.2: el binario fija `OMP_NUM_THREADS = -j` antes de que se inicialice OpenBLAS; sin la variable, el servidor comprometía **+1 539 MiB** y el RTF empeoraba un 12 %); parte multi-worker (`openblas_set_num_threads` con `n_workers > 1`) **fuera de alcance** → [`ROADMAP.md`](../../ROADMAP.md), «Configurar los hilos de OpenBLAS una sola vez con varios workers». **Efecto medido (gemelo C)**: en Windows `OMP_NUM_THREADS = -j` reduce **1 410 MiB** comprometidos y el tiempo un **6 %**, sin cambiar el audio. **Fundamento**: `Anexo A §A.6 de phase-0/estado.md`.
 
 ---
 
@@ -250,7 +250,7 @@ Prioridades para el uso real (servidor residente, una petición cada vez por `/v
 
 | Prioridad | Optimización | Objetivo al que sirve | Techo | Riesgo numérico | Esfuerzo | Fase |
 |---|---|---|---|---|---|---|
-| **1** | Hilos de OpenMP fijados por el binario (`OMP_NUM_THREADS = -j`) | Menos RAM; menos hilos compitiendo con carga | ~1,4 GB de commit y −6 % de tiempo en el motor C; en este motor, sin medir | Ninguno | Bajo | 2 |
+| **1** | Hilos de OpenMP fijados por el binario (`OMP_NUM_THREADS = -j`) | Menos RAM; menos hilos compitiendo con carga | medido: −1 539 MiB de commit en el servidor arrancado sin la variable; RTF 0,74–0,77 → 0,66–0,69 | Ninguno | Bajo | 2 |
 | **2** | Prefill por bloques `BF16→F32` (Opción A) | Oír la voz antes | −100 a −200 ms de TTFA (conversión 127–133 ms más la relectura) | Ninguno esperado (bit-idéntico) | Medio | 3.1 |
 | **3** | Primer fragmento del decoder en caliente | Oír la voz antes | ~90 ms de TTFA, si el arranque en frío persiste en el servidor | Ninguno | Bajo | 3.2 |
 | **4** | Vocoder vectorizado (bloques de upsample) | Audio sin cortes con carga | Bloques de upsample = 78–83 % del decoder, que limita el RTF junto al productor | `SNR >= 100 dB` | Medio | 4.1–4.2 |
@@ -328,6 +328,7 @@ Las fases 2–4 originales priorizaban el servidor multi-cliente y el batch, est
 - **Pasos**:
   - **Paso 2.1 (medir el coste de no fijar `OMP_NUM_THREADS`)**: servidor con la variable sin definir y con `=4`, una petición por `/v1/tts/stream`: pico y reposo de commit, número de hilos y RTF. Si la diferencia es < 50 MiB y el RTF no cambia más de un 3 %, la fase se cierra sin cambio de código.
   - **Paso 2.2 (fijar los hilos desde el binario)**: hilos de OpenMP = `-j` antes de la primera región paralela de OpenBLAS (`crates/qwen-kernels/src/blas.rs`); `OPENBLAS_NUM_THREADS` del usuario mantiene la prioridad; macOS (Accelerate) no cambia. Verificación: repetir la corrida del Paso 2.1.
+- **Resultado de los Pasos 2.1 y 2.2 (2026-11-18)**: OpenBLAS 0.3.34 va enlazado estático con OpenMP y su constructor, antes de `main`, reserva 128 MiB de commit por hilo según `OMP_NUM_THREADS` (sin ella, 16). Servidor sin la variable: reposo 2 604 → 1 065 MiB, pico 2 740 → 1 328 MiB (igual que con `=4`), 25 → 13 hilos, RTF 0,74–0,77 → 0,66–0,69, PCM idéntico. Implementación: un inicializador en `.CRT$XCT` (`qwen-app`) parsea los argumentos con `parse_cli` y llama a `set_initial_openblas_threads(-j)` antes de los constructores de OpenBLAS y libgomp. Hallazgo: pedir a OpenBLAS más hilos que los iniciales colgaba la primera `sgemm` (ya pasaba con `OMP_NUM_THREADS=4` y `-j 6`); `set_threads` ahora se limita a los hilos iniciales y los aplica en cada hilo que llama a `sgemm` (con OpenMP el valor es por hilo). **Fundamento**: `.work/plans/optimizations/phase-2/estado.md`.
 - **Criterio de cierre**: objetivo cumplido; audio bit-idéntico; A/B E2E de la fase sin regresión de RTF, sin carga y con carga.
 
 ---
@@ -381,7 +382,6 @@ En **Windows (`x86_64-pc-windows-gnu`, MSYS2 UCRT64)** manteniendo `OPENBLAS_NUM
 
 ```powershell
 $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
-$env:OMP_NUM_THREADS = "4"
 Remove-Item Env:OPENBLAS_NUM_THREADS -ErrorAction SilentlyContinue
 
 cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
