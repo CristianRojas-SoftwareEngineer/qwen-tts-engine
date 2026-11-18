@@ -566,6 +566,45 @@ pub(crate) unsafe fn int8_matvec_slice(
     }
 }
 
+/// Columnas de lote que un microkernel `matmat` acumula a la vez en registros.
+const MM_BATCH_CHUNK: usize = 8;
+
+/// Una fila de pesos INT8 contra `NB` activaciones: cada bloque de 32 pesos se
+/// lee una sola vez y alimenta `NB` acumuladores enteros independientes. La suma
+/// entera es exacta, de modo que el resultado es bit-identico a `NB` llamadas a
+/// `int8_matvec_*` (mismo `(s as f32) * scale * sx`).
+#[inline]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn int8_matmat_row<const NB: usize>(
+    yr: *mut f32,
+    wr: *const i8,
+    scale_r: f32,
+    qxt: *const i8,
+    sx: *const f32,
+    cols: usize,
+) {
+    let ones = _mm256_set1_epi16(1);
+    let mut acc = [_mm256_setzero_si256(); NB];
+    let mut k = 0usize;
+    while k < cols {
+        _mm_prefetch::<_MM_HINT_T0>(wr.add(k + QWEN_INT8_PF_DIST));
+        let v = _mm256_loadu_si256(wr.add(k) as *const __m256i);
+        let abs_v = _mm256_sign_epi8(v, v);
+        for (j, acc_j) in acc.iter_mut().enumerate() {
+            let a = _mm256_loadu_si256(qxt.add(j * cols + k) as *const __m256i);
+            let p = _mm256_maddubs_epi16(abs_v, _mm256_sign_epi8(a, v));
+            *acc_j = _mm256_add_epi32(*acc_j, _mm256_madd_epi16(p, ones));
+        }
+        k += 32;
+    }
+    for (j, acc_j) in acc.iter().enumerate() {
+        *yr.add(j) = (hsum_epi32(*acc_j) as f32) * scale_r * *sx.add(j);
+    }
+}
+
+/// `y[r, b] = W_int8[r, :] · x_b` para las filas `r0..r1` y `b_dim` columnas de lote
+/// (`qxt[b * cols ..]` cuantizadas por columna, `cols` multiplo de 32). Los pesos se
+/// leen una vez por grupo de `MM_BATCH_CHUNK` columnas (O1).
 #[allow(clippy::too_many_arguments)]
 #[target_feature(enable = "avx2,fma")]
 pub(crate) unsafe fn int8_matmat_slice(
@@ -579,26 +618,27 @@ pub(crate) unsafe fn int8_matmat_slice(
     cols: usize,
     b_dim: usize,
 ) {
-    const MM_TILE: usize = 8;
-    let mut yt = [0.0f32; MM_TILE];
-    let mut r = r0;
-    while r < r1 {
-        let n = (r1 - r).min(MM_TILE);
-        for b in 0..b_dim {
-            int8_matvec_2row(
-                yt.as_mut_ptr(),
-                qxt.as_ptr().add(b * cols),
-                sx[b],
-                w.as_ptr().add(r * cols),
-                scale.as_ptr().add(r),
-                cols,
-                n,
-            );
-            for i in 0..n {
-                y[(r + i) * b_dim + b] = yt[i];
+    debug_assert!(cols.is_multiple_of(32));
+    let mut b0 = 0usize;
+    while b0 < b_dim {
+        let nb = (b_dim - b0).min(MM_BATCH_CHUNK);
+        let qx = qxt.as_ptr().add(b0 * cols);
+        let sxp = sx.as_ptr().add(b0);
+        for (r, &sc) in scale.iter().enumerate().take(r1).skip(r0) {
+            let yr = y.as_mut_ptr().add(r * b_dim + b0);
+            let wr = w.as_ptr().add(r * cols);
+            match nb {
+                1 => int8_matmat_row::<1>(yr, wr, sc, qx, sxp, cols),
+                2 => int8_matmat_row::<2>(yr, wr, sc, qx, sxp, cols),
+                3 => int8_matmat_row::<3>(yr, wr, sc, qx, sxp, cols),
+                4 => int8_matmat_row::<4>(yr, wr, sc, qx, sxp, cols),
+                5 => int8_matmat_row::<5>(yr, wr, sc, qx, sxp, cols),
+                6 => int8_matmat_row::<6>(yr, wr, sc, qx, sxp, cols),
+                7 => int8_matmat_row::<7>(yr, wr, sc, qx, sxp, cols),
+                _ => int8_matmat_row::<8>(yr, wr, sc, qx, sxp, cols),
             }
         }
-        r += MM_TILE;
+        b0 += nb;
     }
 }
 
@@ -730,6 +770,47 @@ pub(crate) unsafe fn q4_0_matvec_qkv_slice(
     q4_0_matvec_2row(y.as_mut_ptr(), qx.as_ptr(), sx, w.as_ptr(), cols, out_dim);
 }
 
+/// Una fila de pesos Q4_0 contra `NB` activaciones: cada bloque se decodifica una
+/// sola vez y se acumula en `NB` registros con la misma secuencia de operaciones que
+/// `q4_0_block` (resta de `sumq`, `cvt`, `fmadd` por bloque y `hsum256_ps` final),
+/// por lo que el resultado es bit-identico a `NB` llamadas a `q4_0_matvec_*`.
+#[inline]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn q4_0_matmat_row<const NB: usize>(
+    yr: *mut f32,
+    wr: *const Q4_0Block,
+    nb: usize,
+    qxt: *const i8,
+    sx: *const f32,
+    sumq: &[[i32; QWEN_QACT_MAX / Q4_0_BLOCK_SIZE]; MM_BATCH_CHUNK],
+    cols: usize,
+) {
+    let lomask = _mm_set1_epi8(0x0F);
+    let ones = _mm256_set1_epi16(1);
+    let mut acc = [_mm256_setzero_ps(); NB];
+    for blk in 0..nb {
+        let bp = wr.add(blk);
+        _mm_prefetch::<_MM_HINT_T0>(wr.add(blk + 16) as *const i8);
+        let raw = _mm_loadu_si128((*bp).qs.as_ptr() as *const __m128i);
+        let lo = _mm_and_si128(raw, lomask);
+        let hi = _mm_and_si128(_mm_srli_epi16::<4>(raw), lomask);
+        let wq = set_m128i(_mm_unpackhi_epi8(lo, hi), _mm_unpacklo_epi8(lo, hi));
+        let sc = _mm256_set1_ps(f16_to_f32((*bp).scale_f16));
+        for (j, acc_j) in acc.iter_mut().enumerate() {
+            let a = _mm256_loadu_si256(qxt.add(j * cols + blk * Q4_0_BLOCK_SIZE) as *const __m256i);
+            let p = _mm256_madd_epi16(_mm256_maddubs_epi16(wq, a), ones);
+            let p = _mm256_sub_epi32(p, _mm256_set1_epi32(*sumq[j].get_unchecked(blk)));
+            *acc_j = _mm256_fmadd_ps(_mm256_cvtepi32_ps(p), sc, *acc_j);
+        }
+    }
+    for (j, acc_j) in acc.iter().enumerate() {
+        *yr.add(j) = hsum256_ps(*acc_j) * *sx.add(j);
+    }
+}
+
+/// `y[r, b] = W_q4_0[r, :] · x_b` para las filas `r0..r1` y `b_dim` columnas de lote.
+/// `sumq` se precalcula una vez por columna de lote y bloque; los pesos se leen una
+/// vez por grupo de `MM_BATCH_CHUNK` columnas (O1).
 #[allow(clippy::too_many_arguments)]
 #[target_feature(enable = "avx2,fma")]
 pub(crate) unsafe fn q4_0_matmat_slice(
@@ -742,26 +823,31 @@ pub(crate) unsafe fn q4_0_matmat_slice(
     cols: usize,
     b_dim: usize,
 ) {
-    const MM_TILE: usize = 8;
     let nb = cols / Q4_0_BLOCK_SIZE;
-    let mut yt = [0.0f32; MM_TILE];
-    let mut r = r0;
-    while r < r1 {
-        let n = (r1 - r).min(MM_TILE);
-        for b in 0..b_dim {
-            q4_0_matvec_2row(
-                yt.as_mut_ptr(),
-                qxt.as_ptr().add(b * cols),
-                sx[b],
-                w.as_ptr().add(r * nb),
-                cols,
-                n,
-            );
-            for i in 0..n {
-                y[(r + i) * b_dim + b] = yt[i];
+    let mut sumq = [[0i32; QWEN_QACT_MAX / Q4_0_BLOCK_SIZE]; MM_BATCH_CHUNK];
+    let mut b0 = 0usize;
+    while b0 < b_dim {
+        let nbat = (b_dim - b0).min(MM_BATCH_CHUNK);
+        let qx = qxt.as_ptr().add(b0 * cols);
+        let sxp = sx.as_ptr().add(b0);
+        for (j, sq) in sumq.iter_mut().enumerate().take(nbat) {
+            q4_0_sumq(qx.add(j * cols), nb, &mut sq[..nb]);
+        }
+        for r in r0..r1 {
+            let yr = y.as_mut_ptr().add(r * b_dim + b0);
+            let wr = w.as_ptr().add(r * nb);
+            match nbat {
+                1 => q4_0_matmat_row::<1>(yr, wr, nb, qx, sxp, &sumq, cols),
+                2 => q4_0_matmat_row::<2>(yr, wr, nb, qx, sxp, &sumq, cols),
+                3 => q4_0_matmat_row::<3>(yr, wr, nb, qx, sxp, &sumq, cols),
+                4 => q4_0_matmat_row::<4>(yr, wr, nb, qx, sxp, &sumq, cols),
+                5 => q4_0_matmat_row::<5>(yr, wr, nb, qx, sxp, &sumq, cols),
+                6 => q4_0_matmat_row::<6>(yr, wr, nb, qx, sxp, &sumq, cols),
+                7 => q4_0_matmat_row::<7>(yr, wr, nb, qx, sxp, &sumq, cols),
+                _ => q4_0_matmat_row::<8>(yr, wr, nb, qx, sxp, &sumq, cols),
             }
         }
-        r += MM_TILE;
+        b0 += nbat;
     }
 }
 
