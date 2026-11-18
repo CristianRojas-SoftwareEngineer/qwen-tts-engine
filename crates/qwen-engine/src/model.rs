@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::speech_decoder::SD_TILE_FROM_BLOCK;
+
 use qwen_core::config::{
     CODEBOOK_DIM, CODEBOOK_SIZE, CODEC_VOCAB_SIZE, CP_HEAD_DIM, CP_HIDDEN_SIZE,
     CP_INTERMEDIATE_SIZE, CP_KV_DIM, CP_NUM_LAYERS, CP_Q_DIM, DEC_HEAD_DIM,
@@ -490,6 +492,9 @@ pub struct SdResBlockWeights {
     pub snake1_beta: Option<F32Ref>,
     pub conv1_bias: Option<F32Ref>,
     pub conv1_wk: AlignedBuf<f32>,
+    /// `conv1` en disposición im2col `[out][k · in]` (una sola `sgemm` con `K = 7 · in`).
+    /// Solo en los bloques que el *streaming* procesa por tramos (`b >= SD_TILE_FROM_BLOCK`).
+    pub conv1_wcat: Option<AlignedBuf<f32>>,
     pub snake2_alpha: Option<F32Ref>,
     pub snake2_beta: Option<F32Ref>,
     pub conv2_weight: F32Ref,
@@ -1240,6 +1245,24 @@ fn quantize_matrix_q4(src: &[u16], rows: usize, cols: usize) -> QuantWeight {
     QuantWeight::Q4_0(quantize_bf16_to_q4_0(src, rows, cols))
 }
 
+/// Reordena `weight[out][in][k]` a la disposición im2col `[out][k · in + ic]`.
+fn conv_im2col_weight(
+    weight: &[f32],
+    out_ch: usize,
+    in_ch: usize,
+    kernel: usize,
+) -> AlignedBuf<f32> {
+    let mut wr = AlignedBuf::new_zeroed(out_ch * kernel * in_ch);
+    for oc in 0..out_ch {
+        for k in 0..kernel {
+            for ic in 0..in_ch {
+                wr[oc * kernel * in_ch + k * in_ch + ic] = weight[(oc * in_ch + ic) * kernel + k];
+            }
+        }
+    }
+    wr
+}
+
 fn conv_reorder_weight(
     weight: &[f32],
     out_ch: usize,
@@ -1985,6 +2008,8 @@ impl Model06B {
                     &format!("decoder.decoder.{bi}.block.{ri}.conv1.conv.weight"),
                 )?;
                 let conv1_wk = conv_reorder_weight(&conv1_weight, ch, ch, 7);
+                let conv1_wcat = (b >= SD_TILE_FROM_BLOCK)
+                    .then(|| conv_im2col_weight(&conv1_weight, ch, ch, 7));
                 Ok(SdResBlockWeights {
                     snake1_alpha: opt_f32(
                         store,
@@ -1999,6 +2024,7 @@ impl Model06B {
                         &format!("decoder.decoder.{bi}.block.{ri}.conv1.conv.bias"),
                     )?,
                     conv1_wk,
+                    conv1_wcat,
                     snake2_alpha: opt_f32(
                         store,
                         &format!("decoder.decoder.{bi}.block.{ri}.act2.alpha"),

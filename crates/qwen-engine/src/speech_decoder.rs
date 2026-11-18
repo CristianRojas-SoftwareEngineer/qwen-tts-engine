@@ -17,7 +17,8 @@ use crate::model::{
 };
 
 const SD_TILE_BYTES: usize = 256 * 1024;
-const SD_TILE_FROM_BLOCK: usize = 2;
+/// Primer bloque de upsample que el *streaming* procesa por tramos de `SD_TILE_BYTES`.
+pub(crate) const SD_TILE_FROM_BLOCK: usize = 2;
 
 #[inline]
 fn conv1d_out_len(in_len: usize, kernel: usize, stride: usize, pad_left: usize) -> usize {
@@ -963,6 +964,63 @@ fn cs_conv1d(
     conv_add_bias(out_s, b, out_ch, len);
 }
 
+/// Convolución causal k=7 de un tramo en *streaming* con una sola `sgemm` (im2col).
+///
+/// Monta `cols[(k · ch + ic), t] = [tail | input][ic, k · dilation + t]` y multiplica por
+/// `wcat` (`[ch][7 · ch]`). Con 96 o 192 canales, `K = 7 · ch` rinde mucho más en OpenBLAS
+/// que 7 `sgemm` con `K = ch`. La cola arranca a cero, así que el primer tramo no necesita
+/// un camino aparte.
+#[allow(clippy::too_many_arguments)]
+fn cs_conv1d_im2col(
+    runtime: &ComputeRuntime,
+    ws_cols: &mut AlignedBuf<f32>,
+    out: &mut AlignedBuf<f32>,
+    input: &[f32],
+    ch: usize,
+    len: usize,
+    dilation: usize,
+    wcat: &[f32],
+    b: Option<&[f32]>,
+    tail: &mut [f32],
+) {
+    const KERNEL: usize = 7;
+    let tail_cols = (KERNEL - 1) * dilation;
+    ws_cols.resize_zeroed(KERNEL * ch * len);
+    let cols = &mut ws_cols[..KERNEL * ch * len];
+    for k in 0..KERNEL {
+        let shift = k * dilation;
+        // Columnas que aún caen en la cola: t + shift < tail_cols.
+        let from_tail = tail_cols.saturating_sub(shift).min(len);
+        for ic in 0..ch {
+            let row = &mut cols[(k * ch + ic) * len..(k * ch + ic + 1) * len];
+            let tl = &tail[ic * tail_cols..(ic + 1) * tail_cols];
+            row[..from_tail].copy_from_slice(&tl[shift..shift + from_tail]);
+            // El resto empieza en input[ic, 0]: si quedan columnas, from_tail = tail_cols - shift.
+            row[from_tail..].copy_from_slice(&input[ic * len..ic * len + len - from_tail]);
+        }
+    }
+    cs_save_tail(tail, input, ch, len, tail_cols);
+
+    out.resize_zeroed(ch * len);
+    let out_s = &mut out[..ch * len];
+    runtime.blas.sgemm(
+        Transpose::NoTrans,
+        Transpose::NoTrans,
+        ch,
+        len,
+        KERNEL * ch,
+        1.0,
+        wcat,
+        KERNEL * ch,
+        cols,
+        len,
+        0.0,
+        out_s,
+        len,
+    );
+    conv_add_bias(out_s, b, ch, len);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cs_convt(
     runtime: &ComputeRuntime,
@@ -1072,7 +1130,6 @@ fn cs_res_tiled(
     let ub = &sd.upsample_blocks[b];
 
     let mut t0 = 0usize;
-    let mut ti = 0usize;
     while t0 < cur_len {
         let n = (cur_len - t0).min(tile_len);
         ws.pw1.resize_zeroed(cur_ch * n);
@@ -1085,8 +1142,10 @@ fn cs_res_tiled(
             }
         }
 
-        let warm = st.cs_warm || ti > 0;
         for (r, res_blk) in ub.res_blocks.iter().enumerate() {
+            let Some(wcat) = res_blk.conv1_wcat.as_deref() else {
+                unreachable!("conv1_wcat se carga para todo bloque b >= SD_TILE_FROM_BLOCK");
+            };
             ws.ct[..cur_ch * n].copy_from_slice(&ws.pw1[..cur_ch * n]);
             if let (Some(a1), Some(b1)) =
                 (res_blk.snake1_alpha.as_deref(), res_blk.snake1_beta.as_deref())
@@ -1105,21 +1164,17 @@ fn cs_res_tiled(
             } else {
                 &mut ws.a
             };
-            cs_conv1d(
+            cs_conv1d_im2col(
                 runtime,
                 &mut ws.ext,
-                &mut ws.xp,
                 free_buf,
                 &ws.pw1[..cur_ch * n],
                 cur_ch,
-                cur_ch,
                 n,
-                7,
                 DILS[r],
-                &res_blk.conv1_wk,
+                wcat,
                 res_blk.conv1_bias.as_deref(),
                 &mut st.cs_res_tail[b][r],
-                warm,
             );
             if let (Some(a2), Some(b2)) =
                 (res_blk.snake2_alpha.as_deref(), res_blk.snake2_beta.as_deref())
@@ -1159,7 +1214,6 @@ fn cs_res_tiled(
             }
         }
         t0 += n;
-        ti += 1;
     }
 }
 
