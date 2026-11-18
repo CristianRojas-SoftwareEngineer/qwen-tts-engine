@@ -880,7 +880,6 @@ pub struct SdStreamState {
     pub tmp_ffn_gate: Vec<f32>,
     pub tmp_ffn_up: Vec<f32>,
     pub tmp_ffn_down: Vec<f32>,
-    pub tmp_scores: Vec<f32>,
 }
 
 impl SdStreamState {
@@ -920,7 +919,6 @@ impl SdStreamState {
             tmp_ffn_gate: Vec::new(),
             tmp_ffn_up: Vec::new(),
             tmp_ffn_down: Vec::new(),
-            tmp_scores: Vec::new(),
         }
     }
 

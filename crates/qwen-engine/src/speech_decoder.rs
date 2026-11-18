@@ -1593,7 +1593,6 @@ pub fn speech_decoder_decode_streaming(
     let ffn_up = &mut st.tmp_ffn_up[..new_frames * DEC_INTERMEDIATE_SIZE];
     let ffn_down_out = &mut st.tmp_ffn_down[..new_frames * DEC_HIDDEN_SIZE];
     let scale = 1.0f32 / (DEC_HEAD_DIM as f32).sqrt();
-    let scores = &mut st.tmp_scores;
 
     for (layer_idx, l) in sd.pre_layers.iter().enumerate() {
         d.rms_norm(
@@ -1674,53 +1673,26 @@ pub fn speech_decoder_decode_streaming(
         st.k_cache[layer_idx][cache_off..cache_off + new_frames * qkv_dim].copy_from_slice(new_k);
         st.v_cache[layer_idx][cache_off..cache_off + new_frames * qkv_dim].copy_from_slice(new_v);
 
-        let kc = &st.k_cache[layer_idx];
-        let vc = &st.v_cache[layer_idx];
-        for sq in 0..new_frames {
-            let abs_sq = st.kv_len + sq;
-            let out = &mut attn_out[sq * qkv_dim..(sq + 1) * qkv_dim];
-            out.fill(0.0);
-            let sk_start = (abs_sq + 1).saturating_sub(window);
-            let sk_end = abs_sq;
-            let n_keys = sk_end - sk_start + 1;
-            if scores.len() < n_keys {
-                scores.resize(n_keys, 0.0);
-            }
-
-            for h in 0..DEC_NUM_HEADS {
-                let qh = &q[sq * qkv_dim + h * DEC_HEAD_DIM..][..DEC_HEAD_DIM];
-                let oh = &mut out[h * DEC_HEAD_DIM..(h + 1) * DEC_HEAD_DIM];
-                let mut max_score = -1e30f32;
-                for (j, sc_slot) in scores[..n_keys].iter_mut().enumerate() {
-                    let sk = sk_start + j;
-                    let kh = &kc[(sk - st.kv_base) * qkv_dim + h * DEC_HEAD_DIM..][..DEC_HEAD_DIM];
-                    let mut dot = 0.0f32;
-                    for dd in 0..DEC_HEAD_DIM {
-                        dot += qh[dd] * kh[dd];
-                    }
-                    let sc = dot * scale;
-                    *sc_slot = sc;
-                    if sc > max_score {
-                        max_score = sc;
-                    }
-                }
-                let mut sum_exp = 0.0f32;
-                for sc in &mut scores[..n_keys] {
-                    let e = (*sc - max_score).exp();
-                    *sc = e;
-                    sum_exp += e;
-                }
-                let inv_sum = 1.0f32 / sum_exp;
-                for (j, &sc) in scores[..n_keys].iter().enumerate() {
-                    let sk = sk_start + j;
-                    let vh = &vc[(sk - st.kv_base) * qkv_dim + h * DEC_HEAD_DIM..][..DEC_HEAD_DIM];
-                    let w = sc * inv_sum;
-                    for dd in 0..DEC_HEAD_DIM {
-                        oh[dd] += vh[dd] * w;
-                    }
-                }
-            }
-        }
+        // Atencion causal con ventana deslizante por el kernel compartido (O5): en
+        // coordenadas de la cache compactable, la consulta `sq` esta en
+        // `kv_len + sq - kv_base` y las claves validas son `0..kv_len + new_frames - kv_base`.
+        // La compactacion conserva `window - 1` posiciones, asi que la ventana nunca
+        // cae por debajo de `kv_base`.
+        let seq_k = st.kv_len + new_frames - st.kv_base;
+        d.causal_attention_windowed(
+            attn_out,
+            q,
+            &st.k_cache[layer_idx][..seq_k * qkv_dim],
+            &st.v_cache[layer_idx][..seq_k * qkv_dim],
+            new_frames,
+            seq_k,
+            DEC_NUM_HEADS,
+            DEC_NUM_HEADS,
+            DEC_HEAD_DIM,
+            scale,
+            st.kv_len - st.kv_base,
+            window,
+        );
 
         blas.sgemm(
             Transpose::NoTrans,
