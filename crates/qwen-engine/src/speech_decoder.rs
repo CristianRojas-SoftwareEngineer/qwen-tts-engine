@@ -1673,7 +1673,7 @@ pub fn speech_decoder_decode_streaming(
         st.k_cache[layer_idx][cache_off..cache_off + new_frames * qkv_dim].copy_from_slice(new_k);
         st.v_cache[layer_idx][cache_off..cache_off + new_frames * qkv_dim].copy_from_slice(new_v);
 
-        // Atencion causal con ventana deslizante por el kernel compartido (O5): en
+        // Atencion causal con ventana deslizante por el kernel compartido: en
         // coordenadas de la cache compactable, la consulta `sq` esta en
         // `kv_len + sq - kv_base` y las claves validas son `0..kv_len + new_frames - kv_base`.
         // La compactacion conserva `window - 1` posiciones, asi que la ventana nunca

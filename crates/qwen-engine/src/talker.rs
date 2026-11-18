@@ -53,7 +53,7 @@ pub fn talker_prefill(
 
     // Staging F32 de los pesos de una capa (BF16 -> F32 para `sgemm`), 60 MiB.
     // Es transitorio: vive solo durante el prefill y se libera al salir, de modo
-    // que no forma parte de la huella residente de `SessionScratch` (O10b).
+    // que no forma parte de la huella residente de `SessionScratch`.
     let mut wq_buf = AlignedBuf::<f32>::new_zeroed(Q_DIM * HIDDEN_SIZE);
     let mut wk_buf = AlignedBuf::<f32>::new_zeroed(KV_DIM * HIDDEN_SIZE);
     let mut wv_buf = AlignedBuf::<f32>::new_zeroed(KV_DIM * HIDDEN_SIZE);
