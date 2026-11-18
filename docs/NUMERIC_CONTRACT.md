@@ -54,6 +54,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | **`convnext_mlp` (`SpeechDecoder`)** | **LayerNorm de 2 pasadas** (`mean`, luego `var`) | La variante de una pasada altera la señal respecto al streaming validado. |
 | **Activación Snake (`SpeechDecoder`)** | `y = x + exp(-log_beta) * sin^2(exp(log_alpha) * x)` en `F32` | Los parámetros `{alpha, beta}` del checkpoint están en escala logarítmica. |
 | **`causal_conv1d` / `conv_transpose1d`** | `conv_transpose1d`: 1 `BlasBackend::sgemm` + dispersión en orden ascendente de `k`; `causal_conv1d` (`k>1`): `k` `sgemm` acumulados sobre `W_k` `[k][out][in]` | Elimina copias `im2col` manteniendo `SNR >= 96–98 dB`. |
+| **Atención con ventana deslizante (`SpeechDecoder`)** | Un único kernel `causal_attention_windowed` (*online softmax* + FMA) para streaming y decodificación completa; en streaming, consultas en coordenadas de la caché compactable (`q_offset = kv_len - kv_base`), que conserva `window - 1` posiciones | Streaming y completo comparten aritmética (`SNR >= 100 dB`); el bucle escalar previo difería en ±1 LSB de PCM16. |
 | **`CodePredictor` prefill** | **`PREFILL2`** (`matmat(B=2)`) cuando las 5 capas están cuantizadas | Lee cada matriz una vez para posiciones `0` y `1` con resultado idéntico al secuencial. |
 
 ---

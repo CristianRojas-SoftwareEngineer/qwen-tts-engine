@@ -48,8 +48,8 @@ Arc<VoiceBindings>  [Inmutable por voz — 0 B en preset, ~25 MB con WOVR]
      (Al cargar deltas de pesos `WDLT` desde un `.qvoice`, `load_voice_from_file` muta `Model06B` antes de envolverlo en `Arc`.)
 
 SessionScratch  [Mutable, exclusivo por worker o sesión — cero locks internos]
- ├── talker_kv / cp_kv                    // KV caches BF16 (Talker inicia en 1024 posiciones)
- ├── talker_bufs / cp_bufs                // AlignedBuf<64> + down_q2_rough opcional
+ ├── talker_kv / cp_kv                    // KV caches BF16 (Talker inicia en KV_INITIAL_POSITIONS = 256 y duplica bajo demanda)
+ ├── talker_bufs / cp_bufs                // AlignedBuf<64> + down_q2_rough opcional (el staging F32 de pesos del prefill es local y transitorio de talker_prefill)
  ├── sd_stream + sd_ws                    // colas/acarreos streaming + 8 ranuras DecoderWorkspace
  └── emb_lru + sampler + rng: LcgRng      // caché texto local + muestreador + RNG propio
 
@@ -81,7 +81,7 @@ RequestExecution  [Efímero por petición — se destruye al finalizar]
    - **Paso de generación**: fija `blas.set_threads(gen_blas)` antes de iniciar el hilo decodificador y lo mantiene constante hasta terminar el drenaje final.
    - **Paralelismo productor-consumidor (`std::thread::scope`)**:
      - **Hilo productor (`Talker + CodePredictor`)**: genera `[i32; 16]` por fotograma, comprueba `exec.abort.is_cancelled()` antes de cada paso y empuja los códigos a `DecoderQueue`.
-     - **Hilo consumidor (`SpeechDecoder`)**: agrupa tramos según el calendario creciente (`2` en el primer fragmento y `min(chunk_frames, 4 + 2 * (k / 8))` para `k = 0, 1, 2, ...` en los siguientes), ejecuta `speech_decoder_decode_streaming` con `DecoderWorkspace` + tiling en `up2`/`up3` (`256 KB`) y entrega PCM a `AudioSink`.
+     - **Hilo consumidor (`SpeechDecoder`)**: agrupa tramos según el calendario creciente (`2` en el primer fragmento y `min(chunk_frames, 4 + 2 * (k / 8))` para `k = 0, 1, 2, ...` en los siguientes), ejecuta `speech_decoder_decode_streaming` con `DecoderWorkspace` + tiling en `up2`/`up3` (`256 KB`) y la misma atención con ventana deslizante que la decodificación completa (`causal_attention_windowed` sobre la caché KV compactable), y entrega PCM a `AudioSink`.
      - Cualquier error de escritura en `AudioSink` activa `queue.aborted` de inmediato y `thread::scope` garantiza *join* limpio sin hilos huérfanos.
 
 ---
@@ -90,5 +90,5 @@ RequestExecution  [Efímero por petición — se destruye al finalizar]
 
 1. **Validación única**: `ValidatedTtsRequest::parse(body, ...)` valida todas las peticiones antes de encolar (HTTP `400` ante cualquier parámetro fuera de contrato) y `AbortGuard` acopla el ciclo de vida del socket a `AbortHandle::cancel()` vía `Drop`.
 2. **Trait `SynthesisScheduler`** con dos estrategias tras el mismo contrato:
-   - **`ContinuousBatchScheduler` (`--batch-size N`, recomendado en servidor)**: un hilo planificador (`run_continuous_batch`) comparte un único `ComputePool` y `BatchWorkspace` *ragged* para procesar hasta `N` peticiones simultáneas (WAV y streaming), derivando peticiones con markup multi-span o `rate != 1.0` a un hilo *fallback* dedicado.
+   - **`ContinuousBatchScheduler` (`--batch-size N`, recomendado en servidor)**: un hilo planificador (`run_continuous_batch`) comparte un único `ComputePool` y `BatchWorkspace` *ragged* (KV por slot bajo demanda: `kv_cap` crece desde `KV_INITIAL_POSITIONS` hasta `kv_max`) para procesar hasta `N` peticiones simultáneas (WAV y streaming), derivando peticiones con markup multi-span o `rate != 1.0` a un hilo *fallback* dedicado.
    - **`WorkerPoolScheduler` (`--workers N`)**: `N` hilos *worker* con `SessionScratch` y `ComputeRuntime` propios; divide el presupuesto de hilos por *worker* y desactiva el *spin-wait* (`spin_budget = 0`) cuando hay sobresuscripción frente a núcleos físicos.

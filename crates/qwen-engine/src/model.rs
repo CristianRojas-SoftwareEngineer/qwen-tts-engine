@@ -2064,3 +2064,36 @@ impl Model06B {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn talker_kv_grows_on_demand_and_preserves_contents() {
+        let mut kv = TalkerKvCache::new();
+        assert_eq!(kv.max_pos, KV_INITIAL_POSITIONS);
+        let used = 7usize;
+        for layer in 0..NUM_LAYERS {
+            let off = layer * kv.max_pos * KV_DIM;
+            for i in 0..used * KV_DIM {
+                kv.k[off + i] = (layer * 31 + i) as u16;
+                kv.v[off + i] = (layer * 17 + i) as u16;
+            }
+        }
+        kv.len = used;
+
+        kv.ensure_capacity(KV_INITIAL_POSITIONS + 1);
+        assert_eq!(kv.max_pos, 2 * KV_INITIAL_POSITIONS);
+        for layer in 0..NUM_LAYERS {
+            let off = layer * kv.max_pos * KV_DIM;
+            for i in 0..used * KV_DIM {
+                assert_eq!(kv.k[off + i], (layer * 31 + i) as u16);
+                assert_eq!(kv.v[off + i], (layer * 17 + i) as u16);
+            }
+            assert!(kv.k[off + used * KV_DIM..off + kv.max_pos * KV_DIM]
+                .iter()
+                .all(|&x| x == 0));
+        }
+    }
+}
