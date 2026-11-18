@@ -358,6 +358,7 @@ Las fases 2–4 originales priorizaban el servidor multi-cliente y el batch, est
 - **Paso 4.3 (barreras del CP): descartado (2026-11-18)**. La espera con carga es el 11,7 % del CP (6,9 % sin carga), pero los 4 despachos por capa (QKV fusionado, `wo`, `gate_up`, `down`) dependen cada uno del resultado completo del anterior: no hay despachos que fusionar. Repartir en más trozos ya estaba descartado (Anexo A de la Fase 0).
 - **Resultado del Paso 4.4 (2026-11-18)**: microkernel `matmat` INT8/Q4_0 en `cp_prefill2` (lee cada fila de pesos una vez para las 2 posiciones): `matmat` Q4_0 B=2 −40 a −50 %; RTF corta 0,72 → 0,69, larga 0,67 → 0,66; audio bit-idéntico.
 - **Criterio de cierre**: metas de RTF en el A/B E2E y en `/v1/tts/stream`; códigos códec bit-idénticos y PCM bit-idéntico o `SNR >= 100 dB` documentado; TTFA y commit sin regresión.
+- **Cierre (2026-11-18, HEAD `3cba746`)**: **cerrada con la meta ajustada por el usuario** a RTF ≤ 0,70 sin carga y ≤ 1,00 con carga (la original, 0,55 / 0,85, no se alcanzó). A/B intercalado frente al cierre de la Fase 3: RTF 0,71 → 0,68 / 0,64 → 0,68 sin carga (la larga, deriva del equipo: el Talker, sin cambios, también se frenó) y 1,04 → 1,00 / 1,01 → 0,99 con carga; decoder −3 a −8 %; drenaje hasta −38 %; audio SNR ≥ 104 dB. **Palanca pendiente**: el ritmo lo marca el Code Predictor, que con carga pasa de ~35 a ~54 ms/f porque relee sus pesos 15 veces por fotograma; bajar el RTF con carga exige que lea menos bytes.
 
 ---
 
