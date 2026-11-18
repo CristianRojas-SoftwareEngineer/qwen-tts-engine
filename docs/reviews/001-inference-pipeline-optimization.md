@@ -19,7 +19,7 @@
 > - **RTF (*Real-Time Factor*)**: `tiempo_total_proceso / duración_audio_generado`. Valores `< 1.0` indican síntesis más rápida que el tiempo real.
 > - **TTFA (*Time To First Audio*)**: latencia desde el inicio de la petición hasta la emisión del primer fragmento PCM en modo streaming.
 
-El diseño actual ya incorpora optimizaciones clave para CPU: cuantización `Q4_0`/`INT8` con intrínsecos `AVX2+FMA`, pesos `safetensors` inmutables sobre `mmap` compartidos vía `Arc<Model06B>`, activación `FTZ/DAZ` (`MXCSR`/`FPCR`), un pool de hilos propio (`ComputePool`) y *tiling* L2 de `256 KB` en el vocoder. Sin embargo, el análisis estático del código fuente y del grafo de llamadas identifica **12 oportunidades concretas las doce oportunidades** agrupadas en tres frentes:
+El diseño actual ya incorpora optimizaciones clave para CPU: cuantización `Q4_0`/`INT8` con intrínsecos `AVX2+FMA`, pesos `safetensors` inmutables sobre `mmap` compartidos vía `Arc<Model06B>`, activación `FTZ/DAZ` (`MXCSR`/`FPCR`), un pool de hilos propio (`ComputePool`) y *tiling* L2 de `256 KB` en el vocoder. Sin embargo, el análisis estático del código fuente y del grafo de llamadas identifica **12 oportunidades concretas** agrupadas en tres frentes:
 
 1. **Ancho de banda de memoria (cuello de botella principal)**:
    - `int8_matmat_slice` y `q4_0_matmat_slice` (`crates/qwen-kernels/src/simd/avx2.rs`) iteran `for b in 0..b_dim` llamando a `matvec`, releyendo los mismos pesos `b_dim` veces (impacta a `cp_prefill2` con `B=2` en cada fotograma y a todo `ContinuousBatchScheduler`).
@@ -136,7 +136,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 
 ---
 
-## 4. Hallazgos detallados y oportunidades de optimización las doce oportunidades
+## 4. Hallazgos detallados y oportunidades de optimización
 
 ### 4.1 Ancho de banda de memoria (RAM ↔ Cachés ↔ CPU)
 
@@ -146,7 +146,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Impacto**: Ahorra **`~55.3 MiB/frame`** en `cp_prefill2` (`B=2`) y reduce el tráfico de `B` relecturas a **1** (techo teórico `B×`). Medido: **1.26×** E2E en `--batch-bench` y **1.2–1.7×** en microbanco `INT8`/`INT4`. `matmat_bf16` queda fuera de alcance: **0.76–0.97×** en este hardware y descartado en el gemelo C. **Fundamento**: `Anexo A de phase-0/estado.md`.
 - **Propuesta**: Escribir microkernels `AVX2+FMA` especializados para `B=2, 4, 8`: cargar 32 bytes de peso (`INT8` o un `Q4_0Block`), decodificar nibbles una sola vez y acumular `B` vectores `a_b` en registros YMM independientes, precalculando `sumq[0..b_dim]` una vez por bloque. Mantener equivalente estructurado en `simd/scalar.rs` para ARM64 y *fallback* x86.
 - **Contrato numérico**: **Compatible 100 %** (`L2_rel == 0.0` en `INT8`, `L2_rel <= 1e-6` en `Q4_0` en `--self-test`).
-- **Estado**: `vigente` con **alcance local**: `cp_prefill2` del Code Predictor (B=2 por frame, en toda síntesis). El escalado batch (`B = 4, 8`) queda **fuera de alcance** → [`ROADMAP.md`](../../ROADMAP.md), «Microkernels `matmat` que lean los pesos una sola vez por lote». **Fundamento**: `.work/plans/optimizations/phase-0/estado.md`. **Si se pierde**: `cp_prefill2` lee cada matriz dos veces por frame.
+- **Estado**: `vigente` con **alcance local**: `cp_prefill2` del Code Predictor (B=2 por frame, en toda síntesis). El escalado batch (`B = 4, 8`) queda **fuera de alcance** → [`ROADMAP.md`](../../ROADMAP.md), «Microkernels `matmat` que lean los pesos una sola vez por lote». **Fundamento**: `.work/plans/optimizations/phase-0/estado.md`. Plan: **Fase 4, Paso 4.4**; techo según el perfil del 2026-11-18: ~6 % del CP (`cp_prefill2` es 1 de cada 16 pasadas de pesos por frame). **Si se pierde**: `cp_prefill2` lee cada matriz dos veces por frame.
 
 #### Eliminar la doble transposición en `batch_proj_q` + `quantize_act_int8_cols`
 - **Ubicación**: `crates/qwen-engine/src/batch.rs:53-115` y `crates/qwen-kernels/src/dispatch.rs:357-379`.
@@ -160,7 +160,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Problema**: En cada fotograma lee `6.0 MiB` (`3072 × 1024 × 2 B`) en `BF16` con FMA de coma flotante.
 - **Propuesta**: Soportar `QuantWeight::Int8` para `codec_head` (baja a **`3.0 MiB/frame`** con aritmética entera `maddubs`), manteniendo el criterio conservador de [`NUMERIC_CONTRACT.md`](../NUMERIC_CONTRACT.md) §1.3 de evitar `Q4_0` en cabezas de salida salvo validación explícita.
 - **Contrato numérico**: **Modifica [`NUMERIC_CONTRACT.md`](../NUMERIC_CONTRACT.md) §1.3** (cambia la precisión de logits `code0`); requiere evaluación A/B de calidad.
-- **Estado**: `pendiente`. **Efecto medido**: sin medir en Fase 0. **Fundamento**: `codec_head` lee `6.0 MiB/frame` en `BF16`; `INT8` los reduce a `3.0 MiB/frame`.
+- **Estado**: `descartado` (reestructuración del 2026-11-18). **Fundamento**: `codec_head` lee `6.0 MiB/frame` en `BF16`; `INT8` los reduce a `3.0 MiB/frame`, el 0,6 % del tráfico por frame, y obliga a cambiar `NUMERIC_CONTRACT.md`: el techo no compensa el riesgo.
 
 #### Prefill cuantizado o conversión `BF16→F32` por bloques L2 en `talker_prefill`
 - **Ubicación**: `crates/qwen-engine/src/talker.rs:64-82` y `crates/qwen-kernels/src/dispatch.rs:1268-1341`.
@@ -169,7 +169,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
   - *Opción A (bit-exacta en F32)*: convertir `BF16→F32` en bloques pequeños de L2 dentro de `sgemm` sin materializar la capa completa (conserva `F32` exacto y libera `60 MiB` de `TalkerBuffers`).
   - *Opción B (cuantizada)*: `descartado`. No habilitar `matmat_q4_0` en el prefill bajo `--quant-mixed`.
 - **Contrato numérico**: Opción A es **compatible**; Opción B altera la precisión del prefill y requiere validación en `NUMERIC_CONTRACT.md`.
-- **Estado**: Opción A `vigente`, Opción B `descartado`. **Efecto medido**: la Opción B produce `+4.7 st` en `ryan`, WER `+1.8/+2.7 pp` y prefill largo `+41 %`. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`. **Si se pierde**: regenerar audio con el tono alterado.
+- **Estado**: Opción A `vigente` (**Fase 3, Paso 3.1**), Opción B `descartado`. **Perfil del 2026-11-18**: la conversión `BF16→F32` cuesta 127 / 133 ms y `sgemm` 199 / 248 ms (corta / larga) de un prefill de 346 / 417 ms, que es el 57 % del TTFA; techo de la Opción A: −100 a −200 ms. **Efecto medido**: la Opción B produce `+4.7 st` en `ryan`, WER `+1.8/+2.7 pp` y prefill largo `+41 %`. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`. **Si se pierde**: regenerar audio con el tono alterado.
 
 ---
 
@@ -180,14 +180,14 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Problema**: `speech_decoder_decode` (no streaming) usa `d.causal_attention_windowed` (`avx2.rs:1020-1078`), mientras `speech_decoder_decode_streaming` usa bucles escalares `for dd in 0..DEC_HEAD_DIM` y `exp()` escalar sobre hasta `72` claves × `16` cabezas × `8` capas.
 - **Propuesta**: Reutilizar `d.causal_attention_windowed` (adaptando el offset de base del KV cache compactable `st.kv_base`).
 - **Contrato numérico**: **Compatible (`SNR >= 100 dB`)**.
-- **Estado**: `implementado` (Paso 1.5). **Efecto medido**: consolidación del camino canónico, con rendimiento **neutro**. A/B intercalado (3 pares × corta/larga): `decoder_ms` (tiempo de cómputo puro del decoder) −13 ms en la corta y +163 ms en la larga (pares +771 / +163 / −54; el control del par 1 fue anómalo), `drain` −5 / −5 ms, RTF −0,01 / +0,02. La atención (16 cabezas × ≤72 claves × 64 × 8 capas ≈ 1,2 MFLOP/frame) no es el punto caliente del decoder: su coste está en las convoluciones del vocoder (vocoder AVX2 y espera de `sd_pool`). Paridad: códigos idénticos (mismo número de frames, decoder aguas abajo y sin realimentación); PCM con SNR 101,5 / 101,1 dB frente a `baseline_*.wav` (solo ±1 LSB), bit-idéntico entre corridas, también con compactación (`kv_base > 0`, texto de 417 frames: 99,7 dB frente al binario viejo, 379 muestras de 800 640 con ±1 LSB, en el suelo de cuantización PCM16); `test_decoder_streaming_equivalence` (SNR ≥ 100 dB en f32) en verde. **Consecuencia**: el KPI de `decoder_ms` −10 % de la Fase 1 no lo puede aportar atención del decoder por kernel compartido; se traslada a vocoder AVX2 y espera de `sd_pool` (vocoder AVX2, Fase 3). **Fundamento**: `.work/plans/optimizations/phase-1/estado.md` (Paso 1.5), `Anexo A §A.4 de phase-0/estado.md`.
+- **Estado**: `implementado` (Paso 1.5). **Efecto medido**: consolidación del camino canónico, con rendimiento **neutro**. A/B intercalado (3 pares × corta/larga): `decoder_ms` (tiempo de cómputo puro del decoder) −13 ms en la corta y +163 ms en la larga (pares +771 / +163 / −54; el control del par 1 fue anómalo), `drain` −5 / −5 ms, RTF −0,01 / +0,02. La atención (16 cabezas × ≤72 claves × 64 × 8 capas ≈ 1,2 MFLOP/frame) no es el punto caliente del decoder: su coste está en las convoluciones del vocoder. Paridad: códigos idénticos (mismo número de frames, decoder aguas abajo y sin realimentación); PCM con SNR 101,5 / 101,1 dB frente a `baseline_*.wav` (solo ±1 LSB), bit-idéntico entre corridas, también con compactación (`kv_base > 0`, texto de 417 frames: 99,7 dB frente al binario viejo, 379 muestras de 800 640 con ±1 LSB, en el suelo de cuantización PCM16); `test_decoder_streaming_equivalence` (SNR ≥ 100 dB en f32) en verde. **Consecuencia**: el KPI de `decoder_ms` −10 % de la Fase 1 no lo puede aportar atención del decoder por kernel compartido; se traslada al vocoder vectorizado (Fase 4). **Fundamento**: `.work/plans/optimizations/phase-1/estado.md` (Paso 1.5), `Anexo A §A.4 de phase-0/estado.md`.
 
 #### Vectorizar `swiglu_inplace`, `silu` y `convnext_mlp` GELU con `AVX2+FMA`
 - **Ubicación**: `crates/qwen-kernels/src/dispatch.rs:1204-1224`, `crates/qwen-engine/src/speech_decoder.rs:219-221, 1786-1788`.
 - **Problema**: `swiglu_inplace` ejecuta ~`331,776` `expf()` escalares/frame en Talker + CP; `speech_decoder_decode_streaming` ejecuta `expf()` y `erff()` escalares en FFN y `convnext_mlp`.
 - **Propuesta**: Despachar `swiglu_inplace` y `silu` por `KernelDispatch` con aproximación polinomial `AVX2+FMA` de `expf` (8 lanes, similar a `vsin2_avx2` en `avx2.rs:1245`), y vectorizar GELU + LayerNorm en `convnext_mlp`.
 - **Contrato numérico**: Diferencias de 1 ULP en `expf()` pueden variar desempates en muestreo respecto a `libm`; requiere medir ULP/SNR y validar que no degrada pruebas de regresión.
-- **Estado**: `condicionado`. **Efecto medido**: SwiGLU es el **1.7 %** del CP en el gemelo C; repartirlo entre hilos ahorró **0.68 ms/f**. Ahorro esperado ≤1 ms/f: `gate_up` (37 %) y QKV (27 %) concentran el coste del CP. **Fundamento**: `Anexo A §A.1 de phase-0/estado.md`.
+- **Estado**: `descartado` para SwiGLU/SiLU y para la fusión `swiglu + quantize_act_int8` (reestructuración del 2026-11-18); GELU/LayerNorm de `convnext_mlp` entra en el vocoder vectorizado (Fase 4, Paso 4.2) solo si su perfil supera el 5 % del decoder (ConvNeXt completo: 5–7 %). **Efecto medido**: SwiGLU es el **1.7 %** del CP en el gemelo C; repartirlo entre hilos ahorró **0.68 ms/f**. Ahorro esperado ≤1 ms/f: `gate_up` (37 %) y QKV (27 %) concentran el coste del CP. **Fundamento**: `Anexo A §A.1 de phase-0/estado.md`.
 
 #### Reducir barreras de `ComputePool`, eliminar `ftz_on()` en `matvec_*` y paralelizar batch unificado
 - **Ubicaciones**:
@@ -196,23 +196,23 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
   3. `crates/qwen-engine/src/code_predictor.rs:206-360`: ~325 barreras por fotograma sobre matrices de `1024`–`3072` filas.
 - **Propuestas**:
   - ~~Dejar `ftz_on()` solo al inicializar hilos/runtimes~~ (**descartado por evidencia**, Fase 1 Paso 1.6): `ftz_on()` es `stmxcsr` + comparación (el `ldmxcsr` solo se ejecuta si FTZ/DAZ está apagado): ~466 llamadas/frame ≈ 5 k ciclos ≈ 2 µs/frame frente a ~45 ms/frame (≈ 0,005 %, por debajo de cualquier resolución de A/B). La auditoría de hilos muestra que `qwen-batch-sched` y `qwen-http-single` (`scheduler.rs`) usan el `ComputeRuntime` creado en `main` y no activan FTZ al nacer: para ellos, la llamada en la entrada del kernel es la única garantía. Retirarla obligaría a añadir `ftz_on()` en cada `spawn` (más superficie de error, con riesgo de denormales) a cambio de nada medible.
-  - Ajustar el umbral de paralelización en `CodePredictor` para reducir salidas del pool (y combinar la fusión `swiglu + quantize_act_int8` en `down_proj` junto con activaciones vectorizadas (SwiGLU/SiLU/GELU) en la **Fase 3**).
+  - Ajustar el umbral de paralelización en `CodePredictor` para reducir salidas del pool (Fase 4, Paso 4.3).
 - **Contrato numérico**: **Bit-idéntico**.
-- **Estado**: parte `ftz_on()` `descartado` (Paso 1.6); parte batch **fuera de alcance** ([`ROADMAP.md`](../../ROADMAP.md), «Compactar los slots activos y usar una sola barrera de atención por capa»); parte Code Predictor `vigente` (Paso 2.2). **Fundamento**: el gemelo C registra ~495 despachos al pool por fotograma. **Si se pierde**: barreras redundantes en el CP.
+- **Estado**: parte `ftz_on()` `descartado` (Paso 1.6); parte batch **fuera de alcance** ([`ROADMAP.md`](../../ROADMAP.md), «Compactar los slots activos y usar una sola barrera de atención por capa»); parte Code Predictor `vigente` (**Fase 4, Paso 4.3**). **Perfil del 2026-11-18**: 325 despachos al pool por frame; la espera en la barrera es el 6,5 % / 4,2 % del CP sin carga (1,4–2,2 ms/frame); falta medirla con carga, primera tarea del paso. **Fundamento**: el gemelo C registra ~495 despachos al pool por fotograma. **Si se pierde**: barreras redundantes en el CP.
 
 #### Presupuesto de espera en `sd_pool` y vectorizar convoluciones del `SpeechDecoder`
 - **Ubicación**: `crates/qwen-kernels/src/dispatch.rs:1411-1417`, `crates/qwen-engine/src/speech_decoder.rs:32-43, 505-525, 1013-1057, 1366-1383`.
 - **Problema**: `sd_pool` hereda un presupuesto de espera activa; `cs_dwconv`, `final_conv`, `conv_add_bias` y `add_residual_scaled` son escalares.
 - **Propuesta**: mantener la espera activa acotada en `sd_pool` (medido `0` frente a `4 096` en la Fase 1: **descartado**, ver Estado); vectorizar en AVX2 `cs_dwconv`, `final_conv` y `add_residual_scaled` sobre el eje temporal `t`.
 - **Contrato numérico**: **Compatible (`SNR >= 100 dB`)**.
-- **Estado**: presupuesto de espera `descartado` (Fase 1 Paso 1.7: A/B intercalado (3 pares × corta/larga, variante con `sd_pool = ComputePool::with_spin_budget(sd_nt, 0)`): `decoder_ms` **+44 / +110 ms** (pares cortos +51 / +44 / +2), Talker +0,2 / +0,1 ms/f, CP +0,7 / +0,1 ms/f, RTF +0,01 / 0,00; `drain` −5 / −8 ms. Paridad 12/12 (bit-idéntico). Confirma el prior del motor C: en Windows, dormir el pool cuesta más que la espera activa acotada (4 096).); vocoder AVX2 `vigente` (Paso 3.3). **Efecto medido (gemelo C)**: dormir el pool cuesta **3–4 %** de RTF (0.76 → 0.79 sin carga; 0.87 → 0.91 con 4 núcleos); `4 096` rinde más que `0` y que `20 000`. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`. **Si se pierde**: regresión silenciosa en Windows.
+- **Estado**: presupuesto de espera `descartado` (Fase 1 Paso 1.7: A/B intercalado (3 pares × corta/larga, variante con `sd_pool = ComputePool::with_spin_budget(sd_nt, 0)`): `decoder_ms` **+44 / +110 ms** (pares cortos +51 / +44 / +2), Talker +0,2 / +0,1 ms/f, CP +0,7 / +0,1 ms/f, RTF +0,01 / 0,00; `drain` −5 / −8 ms. Paridad 12/12 (bit-idéntico). Confirma el prior del motor C: en Windows, dormir el pool cuesta más que la espera activa acotada (4 096).); vocoder vectorizado `vigente` (**Fase 4, Pasos 4.1–4.2**). **Perfil del 2026-11-18**: los 4 bloques de upsample son el 78 % / 83 % del decoder; ConvNeXt 7 % / 5 %; VQ + transformer 11 % / 8 %. El decoder y el productor van empatados (RTF ~0,56 cada uno en la larga): el RTF solo baja si bajan los dos. **Efecto medido (gemelo C)**: dormir el pool cuesta **3–4 %** de RTF (0.76 → 0.79 sin carga; 0.87 → 0.91 con 4 núcleos); `4 096` rinde más que `0` y que `20 000`. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`. **Si se pierde**: regresión silenciosa en Windows.
 
 #### Contención global de `openblas_set_num_threads` en `WorkerPoolScheduler`
 - **Ubicación**: `crates/qwen-kernels/src/blas.rs:161-175` y `crates/qwen-app/src/server/scheduler.rs:92-109`.
 - **Problema**: `FfiBlas::set_threads` modifica el estado global de proceso de OpenBLAS. Con `--workers N > 1`, múltiples workers se pisan entre prefill y generación. Un `OMP_NUM_THREADS` ausente en el lanzador compromete los hilos de OpenMP antes de `main`.
 - **Propuesta**: fijar `OMP_NUM_THREADS = -j` en el lanzador y `openblas_set_num_threads` una sola vez al iniciar cuando `n_workers > 1` (sin reconfigurar por petición). `OPENBLAS_NUM_THREADS` permanece sin definir. `--batch-size N` (o `faer-blas`) es la opción preferente en concurrencia.
 - **Contrato numérico**: **Bit-idéntico** por petición con el mismo número de hilos efectivo.
-- **Estado**: parte lanzador (`OMP_NUM_THREADS = -j`) `vigente` (Paso 2.3, aplica a toda síntesis); parte multi-worker (`openblas_set_num_threads` con `n_workers > 1`) **fuera de alcance** → [`ROADMAP.md`](../../ROADMAP.md), «Configurar los hilos de OpenBLAS una sola vez con varios workers». **Efecto medido (gemelo C)**: en Windows `OMP_NUM_THREADS = -j` reduce **1 410 MiB** comprometidos y el tiempo un **6 %**, sin cambiar el audio. **Fundamento**: `Anexo A §A.6 de phase-0/estado.md`.
+- **Estado**: parte lanzador (`OMP_NUM_THREADS = -j`) `vigente` (**Fase 2**, aplica a toda síntesis; su coste en este motor sin la variable está sin medir: Paso 2.1); parte multi-worker (`openblas_set_num_threads` con `n_workers > 1`) **fuera de alcance** → [`ROADMAP.md`](../../ROADMAP.md), «Configurar los hilos de OpenBLAS una sola vez con varios workers». **Efecto medido (gemelo C)**: en Windows `OMP_NUM_THREADS = -j` reduce **1 410 MiB** comprometidos y el tiempo un **6 %**, sin cambiar el audio. **Fundamento**: `Anexo A §A.6 de phase-0/estado.md`.
 
 ---
 
@@ -240,41 +240,42 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Problema**: `quantize_bf16_to_q4_0_into` y `quantize_bf16_to_int8_into` se ejecutan secuencialmente en un hilo durante `Model06B::load`.
 - **Propuesta**: Paralelizar por capas/filas sobre `runtime.pool` durante la carga (acelera ~3–4× el startup en `--quant-mixed`).
 - **Contrato numérico**: **Bit-idéntico**.
-- **Estado**: `pendiente`. **Efecto medido**: sin medir en Fase 0; la carga del modelo osciló entre 4 400 y 5 397 ms. **Fundamento**: `.work/plans/optimizations/phase-0/estado.md`.
+- **Estado**: `descartado` (reestructuración del 2026-11-18): el uso real es un servidor residente que carga el modelo una sola vez. **Efecto medido**: sin medir en Fase 0; la carga del modelo osciló entre 4 400 y 5 397 ms. **Fundamento**: `.work/plans/optimizations/phase-0/estado.md`.
 
 ---
 
 ## 5. Matriz de priorización y dependencias
 
-| Prioridad | Estado | Optimización | Recurso | Dependencias | Riesgo numérico | Esfuerzo |
-|---|---|---|---|---|---|---|
-| **1** | `implementado` (neutro en RTF; camino único) | `causal_attention_windowed` en `SpeechDecoder` streaming | **CPU** | Ninguna | Ninguno (`SNR >= 100 dB`) | Bajo |
-| **2** | `vigente` (alcance local: `cp_prefill2`; batch → ROADMAP.md) | Microkernels `matmat_int8` / `matmat_q4_0` reales (sin `bf16`) | **Ancho de banda + CPU** | Ninguna | Ninguno (bit-idéntico) | Medio |
-| **3** | `fuera de alcance` (ROADMAP.md) | Eliminar doble transposición en `batch_proj_q` | **Ancho de banda + CPU** | Depende de microkernels `matmat` INT8/Q4_0 | Ninguno (bit-idéntico) | Bajo–Medio |
-| **4** | `implementado` (KV inicial de 256 posiciones/staging F32 del prefill transitorio/KV de `BatchWorkspace` bajo demanda) | `KV_INITIAL_POSITIONS`, staging `pref_*_f32` transitorio, KV de `BatchWorkspace` bajo demanda | **RAM** | Ninguna | Ninguno (bit-idéntico) | Bajo |
-| **5** | `implementado` | Snapshot compacto de KV en `generate_batch_multi` (CLI batch) | **RAM** | Ninguna | Ninguno (bit-idéntico) | Bajo |
-| **6** | CP `vigente`; `ftz_on` descartado; batch fuera de alcance (ROADMAP.md) | Barreras del Code Predictor | **CPU + Ancho de banda** | Ninguna (mejor tras microkernels `matmat` INT8/Q4_0) | Ninguno (bit-idéntico) | Bajo–Medio |
-| **7** | lanzador `vigente`; multi-worker fuera de alcance (ROADMAP.md) | Fijar `OMP_NUM_THREADS = -j` en el lanzador | **CPU + RAM** | Ninguna | Ninguno | Bajo |
-| **8** | `pendiente` | Cuantización paralela en `Model06B::load` | **Tiempo de carga** | Ninguna | Ninguno (bit-idéntico) | Bajo |
-| **9** | `condicionado` | Vectorizar `swiglu_inplace`, `silu`, GELU en `AVX2+FMA` | **CPU** | Ninguna | Revisar ULP vs `libm` | Medio |
-| **10** | `pendiente` | Cuantizar `talker.codec_head` a `INT8` | **Ancho de banda** | Ninguna | Requiere `NUMERIC_CONTRACT.md` | Bajo |
-| **11** | `vigente` / `descartado` | Opción A: tiling L2 en `F32`; Opción B: `matmat_q4_0` en prefill | **Ancho de banda + RAM RSS** | Opción B depende de microkernels `matmat` INT8/Q4_0 | Opción A: ninguno; Opción B: requiere contrato | Medio–Alto |
-| **12** | espera `descartado`; vocoder `vigente` | Presupuesto de espera en `sd_pool` + convoluciones vocoder AVX2 | **CPU** | Ninguna | Ninguno (`SNR >= 100 dB`) | Bajo–Medio |
+Prioridades para el uso real (servidor residente, una petición cada vez por `/v1/tts/stream`, laptop solo CPU, multiplataforma), ordenadas por impacto medido en el perfil fino del 2026-11-18 (`.work/plans/optimizations/perfil-reestructuracion/perfil.md`). El servidor con varios clientes y el batch están fuera de alcance: [`ROADMAP.md`](../../ROADMAP.md).
 
-**Fundamento de los estados**: `Anexo A §A.3 de phase-0/estado.md`. La espera de `sd_pool` se ejecuta en último lugar y prefill cuantizado no se habilita.
+| Prioridad | Optimización | Objetivo al que sirve | Techo | Riesgo numérico | Esfuerzo | Fase |
+|---|---|---|---|---|---|---|
+| **1** | Hilos de OpenMP fijados por el binario (`OMP_NUM_THREADS = -j`) | Menos RAM; menos hilos compitiendo con carga | ~1,4 GB de commit y −6 % de tiempo en el motor C; en este motor, sin medir | Ninguno | Bajo | 2 |
+| **2** | Prefill por bloques `BF16→F32` (Opción A) | Oír la voz antes | −100 a −200 ms de TTFA (conversión 127–133 ms más la relectura) | Ninguno esperado (bit-idéntico) | Medio | 3.1 |
+| **3** | Primer fragmento del decoder en caliente | Oír la voz antes | ~90 ms de TTFA, si el arranque en frío persiste en el servidor | Ninguno | Bajo | 3.2 |
+| **4** | Vocoder vectorizado (bloques de upsample) | Audio sin cortes con carga | Bloques de upsample = 78–83 % del decoder, que limita el RTF junto al productor | `SNR >= 100 dB` | Medio | 4.1–4.2 |
+| **5** | Barreras del Code Predictor | Audio sin cortes con carga | 4–7 % del CP sin carga; mayor con carga (por medir) | Ninguno (bit-idéntico) | Bajo–Medio | 4.3 |
+| **6** | Microkernel `matmat` INT8/Q4_0 en `cp_prefill2` | Audio sin cortes con carga | ~6 % del CP; parche exacto listo | Ninguno (bit-idéntico) | Bajo | 4.4 |
+| **7** | Kernels NEON (`matvec` INT8/Q4_0, conversión `BF16→F32`, vocoder) | Rendimiento en macOS/ARM64 | Toda la ruta ARM64 es hoy escalar | Contrato frente a la ruta escalar | Alto | 5 |
+
+**Descartados** (evidencia en §4): SwiGLU/SiLU vectorizados y su fusión con la cuantización de `down_proj` (1,7 % del CP, ≤ 0,68 ms/f); `codec_head` en INT8 (0,6 % del tráfico y cambia el contrato); cuantización paralela en la carga (el servidor carga una vez); prefill cuantizado (Opción B: +4,7 st de tono); espera de `sd_pool` a 0 (Paso 1.7) y retirada de `ftz_on()` (Paso 1.6).
+
+**Historial (implementado en la Fase 1)**: KV inicial de 256 posiciones, snapshot compacto de KV, staging F32 del prefill transitorio, KV de `BatchWorkspace` bajo demanda y atención del decoder por kernel compartido.
+
+**Fundamento de los estados**: `Anexo A §A.3 de phase-0/estado.md` y el perfil fino citado arriba.
 
 ---
 
 ## 6. Planificación de implementación progresiva (Fases y Pasos)
 
-Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar ajustes de memoria, microkernels SIMD y cambios de precisión numérica dificultaría aislar regresiones de determinismo o concurrencia. El plan se estructura en dos niveles coherentes:
+Las mejoras **no deben aplicarse en un único cambio monolítico**: mezclar ajustes de memoria, microkernels SIMD y cambios de precisión numérica dificultaría aislar regresiones de determinismo o concurrencia. El plan se estructura en dos niveles coherentes:
 
-- **Nivel Mapa (Fases 0–4)**: agrupan los cambios por tipo de riesgo y dependencias técnicas, con un criterio de cierre claro por etapa.
+- **Nivel Mapa (Fases 0–5)**: agrupan los cambios por el objetivo de uso que persiguen (RAM, primer audio, RTF con carga, ARM64), con un criterio de cierre medible por fase.
 - **Nivel Ejecución (Pasos `X.Y`)**: dentro de cada Fase, cada mejora o sub-mejora se ejecuta como **1 Paso aislado** siguiendo siempre el mismo bucle de 5 reglas:
   1. **Chequeo previo**: confirmar archivos exactos, invariantes de [`NUMERIC_CONTRACT.md`](../NUMERIC_CONTRACT.md) y riesgos de borde antes de editar.
   2. **Implementar solo ese Paso**: sin mezclar cambios de otros pasos.
   3. **Compuerta de exactitud**: ejecutar `clippy`, `cargo test --workspace --release`, `--self-test` y comparar paridad frente al paso anterior o línea base.
-  4. **Compuerta de rendimiento (A/B)**: medir mediana de 3 corridas con parámetros fijos frente al estado inmediatamente anterior.
+  4. **Compuerta de rendimiento**: verificación mínima suficiente del efecto del Paso (microbanco, corrida de commit o 3 corridas sueltas si el efecto supera con holgura el ruido); el A/B E2E intercalado se hace una sola vez, al cierre de la fase (§7).
   5. **Decisión binaria**: `commit` si aporta mejora comprobada sin regresiones; revertir de inmediato si no aporta ganancia o degrada otra métrica.
 
 ---
@@ -286,7 +287,7 @@ Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar a
   - **Paso 0.2 (Perfilado 80/20)**: contrastar qué bloque domina el tiempo real de pared para validar el orden de los pasos siguientes y detectar mejoras cuyo peso sea marginal (`< 2–3 %`).
 - **Criterio de cierre**: tabla de métricas base documentada y archivos de referencia guardados.
 
-**Techo del consumidor**: con `prefill 475`, productor `9 666`, `SpeechDecoder 10 185` y `drain 388` ms, un CP −20 % sin tocar el decoder deja el wall gobernado por el decoder (RTF ≈ **0.68–0.70**, −3 %); el mismo CP −20 % con decoder −20 % da RTF ≈ **0.59–0.60** (−18 %). Para que el ahorro del productor de las Fases 2–3 no se traslade al `drain`, hace falta acelerar el decoder; la Fase 1 midió que su coste está en el vocoder (vocoder AVX2 y espera de `sd_pool`, Paso 3.3) y no en la atención (atención del decoder por kernel compartido, implementado y neutro). **Fundamento**: `Anexo A §A.4 de phase-0/estado.md`.
+**Techo del consumidor**: con `prefill 475`, productor `9 666`, `SpeechDecoder 10 185` y `drain 388` ms, un CP −20 % sin tocar el decoder deja el wall gobernado por el decoder (RTF ≈ **0.68–0.70**, −3 %); el mismo CP −20 % con decoder −20 % da RTF ≈ **0.59–0.60** (−18 %). Para que el ahorro del productor no se traslade al `drain`, hace falta acelerar el decoder; la Fase 1 midió que su coste está en el vocoder (Fase 4, Pasos 4.1–4.2) y no en la atención (atención del decoder por kernel compartido, implementado y neutro). **Fundamento**: `Anexo A §A.4 de phase-0/estado.md`.
 
 ---
 
@@ -298,7 +299,7 @@ Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar a
   - **Paso 1.2 (snapshot compacto de KV)**: **Qué cambia**: sustituir el snapshot completo de `generate_batch_multi` por un snapshot compacto `(layer × pl) × KV_DIM` cargado por la ruta única `load_slot_kv(b, sk, sv, pl, pl)` (`crates/qwen-engine/src/batch.rs`); `run_continuous_batch` (servidor `--batch-size`) no usa snapshots y no se modifica. **Por qué**: reducir el pico de privados del modo batch del CLI (el pico del servidor lo gobierna `BatchWorkspace`, ~488 MiB committed con `kv_max=1116`). **Riesgo a vigilar**: offsets de capa/stride (`layer * src_stride * KV_DIM` en origen). **Compuerta**: hashes bit-idénticos y Δ de pico privado pareado en banda (medido: −206,0 MiB corto pl=21, −169,5 MiB largo pl=44; servidor ± commit exacto). **Decisión**: conservado (implementado).
   - **Paso 1.3 (staging F32 del prefill transitorio)**: **Qué cambia**: el staging F32 de pesos del prefill (`60.0 MiB`) sale de `TalkerBuffers` y pasa a ser local y transitorio de `talker_prefill` (`crates/qwen-engine/src/talker.rs`). **Por qué**: el pico de commit ocurre en el decoder, después del prefill; liberar el staging lo baja (CLI −60 MiB, workers4 −241 MiB, batch4 −120 MiB). **Compuerta**: pico de commit CLI y servidor; `prefill_ms` y RTF ±3 %. **Decisión**: `implementado`.
   - **Paso 1.4 (KV de `BatchWorkspace` bajo demanda)**: **Qué cambia**: el KV de `BatchWorkspace` (`crates/qwen-engine/src/batch.rs`) separa `kv_max` (límite) de `kv_cap` (posiciones asignadas, inicial `KV_INITIAL_POSITIONS`) y crece bajo demanda con `ensure_kv_capacity`, en bloques por slot. Los `tmp_*` de `SdStreamState` se descartan (≈ 444 KiB/slot). **Por qué**: el KV preasignado a 1 116 posiciones (122 MiB/slot) era el driver del pico batch. **Compuerta**: pico de commit batch4 y BatchMulti; WS y RTF sin regresión; hashes idénticos. **Decisión**: `implementado` (batch4 −377 MiB).
-  - **Paso 1.5 (atención del decoder por kernel compartido)**: **Qué cambia**: reemplazar la atención escalar de `speech_decoder_decode_streaming` (`crates/qwen-engine/src/speech_decoder.rs:1679-1723`) por `d.causal_attention_windowed` con `q_offset = st.kv_len - st.kv_base` y `seq_k = st.kv_len + new_frames - st.kv_base`. **Por qué**: el decoder gobierna el wall cuando mejora el productor. **Riesgo a vigilar**: compactación con `st.kv_base > 0`. **Compuerta**: paridad (`SNR >= 100 dB`, bit-identidad entre corridas) y `decoder_ms`/`drain` sin regresión. **Decisión**: `implementado`; rendimiento neutro: la atención no es el punto caliente del decoder, cuyo coste está en vocoder AVX2 y espera de `sd_pool`.
+  - **Paso 1.5 (atención del decoder por kernel compartido)**: **Qué cambia**: reemplazar la atención escalar de `speech_decoder_decode_streaming` (`crates/qwen-engine/src/speech_decoder.rs:1679-1723`) por `d.causal_attention_windowed` con `q_offset = st.kv_len - st.kv_base` y `seq_k = st.kv_len + new_frames - st.kv_base`. **Por qué**: el decoder gobierna el wall cuando mejora el productor. **Riesgo a vigilar**: compactación con `st.kv_base > 0`. **Compuerta**: paridad (`SNR >= 100 dB`, bit-identidad entre corridas) y `decoder_ms`/`drain` sin regresión. **Decisión**: `implementado`; rendimiento neutro: la atención no es el punto caliente del decoder, cuyo coste está en el vocoder.
   - **Paso 1.6 (`ftz_on()` redundante)**: **Decisión**: `descartado` sin cambio de código. `ftz_on()` es `stmxcsr` + comparación (el `ldmxcsr` solo se ejecuta si FTZ/DAZ está apagado): ~466 llamadas/frame ≈ 5 k ciclos ≈ 2 µs/frame frente a ~45 ms/frame (≈ 0,005 %, por debajo de cualquier resolución de A/B). La auditoría de hilos muestra que `qwen-batch-sched` y `qwen-http-single` (`scheduler.rs`) usan el `ComputeRuntime` creado en `main` y no activan FTZ al nacer: para ellos, la llamada en la entrada del kernel es la única garantía. Retirarla obligaría a añadir `ftz_on()` en cada `spawn` (más superficie de error, con riesgo de denormales) a cambio de nada medible.
   - **Paso 1.7 (espera de `sd_pool`)**: **Qué cambia**: medir `spin_budget = 0` frente a `4 096` en `sd_pool` (`crates/qwen-kernels/src/dispatch.rs:1417, 1440`). **Por qué**: el valor por defecto rinde más en Windows. **Riesgo a vigilar**: `decoder_ms` y `drain` saturan. **Compuerta**: sin regresión en ambas condiciones. **Decisión**: `descartado` (revertido). A/B intercalado (3 pares × corta/larga, variante con `sd_pool = ComputePool::with_spin_budget(sd_nt, 0)`): `decoder_ms` **+44 / +110 ms** (pares cortos +51 / +44 / +2), Talker +0,2 / +0,1 ms/f, CP +0,7 / +0,1 ms/f, RTF +0,01 / 0,00; `drain` −5 / −8 ms. Paridad 12/12 (bit-idéntico). Confirma el prior del motor C: en Windows, dormir el pool cuesta más que la espera activa acotada (4 096).
 - **Criterio de cierre de Fase 1**:
@@ -306,51 +307,59 @@ Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar a
   2. **Códigos códec** (`Talker + CodePredictor`) **bit-idénticos** frente a la Fase 0 con `--seed 4`; **audio PCM** del `SpeechDecoder` con **`SNR >= 100 dB`** (Paso 1.5) y **bit-idéntico entre corridas** del nuevo binario.
   3. Pico `--batch-size 4` ≤**2 250 MiB** y `--workers 4` ≤**2 100 MiB**; RSS CLI ≤**2 070 MiB**; `decoder_ms` largo ≤**9 150 ms**, `drain` ≤**350 ms**; RTF corta ≤**0.78** sin regresión en larga.
   4. Compuerta con 1 hilo copiando 256 MB: el RTF no empeora respecto a la Fase 0 en la misma condición.
-- **Resultado del cierre (2026-11-18)**: KV inicial de 256 posiciones, snapshot compacto de KV, staging F32 del prefill transitorio, KV de `BatchWorkspace` bajo demanda y atención del decoder por kernel compartido implementados; `ftz_on()` redundante (`ftz_on`) descartado y espera de `sd_pool` (espera de `sd_pool`) revertido. Frente al binario de Fase 0 en A/B intercalado: pico de commit CLI −144 MiB; `--workers 4` 2 213 → 1 638 MiB; `--batch-size 4` 3 172 → 2 506 MiB; WS sin regresión; RTF neutro (0,66 / 0,64; −1,5 % / +1,6 %; L1 sin regresión); `drain` 297 / 326 ms. Los umbrales de RSS de este criterio se fijaron en working set; el ahorro es commit diferido (métrica primaria adoptada en la Fase 1). El objetivo de `decoder_ms` no se cumple (9 151 ms): su coste está en el vocoder (vocoder AVX2 y espera de `sd_pool`, Paso 3.3), no en la atención (atención del decoder por kernel compartido, neutro). **El cierre de la Fase 1 es la línea base única de las Fases 2–4** (tiempos, RAM y audio de referencia). **Fundamento**: `.work/plans/optimizations/phase-1/estado.md`.
+- **Resultado del cierre (2026-11-18)**: KV inicial de 256 posiciones, snapshot compacto de KV, staging F32 del prefill transitorio, KV de `BatchWorkspace` bajo demanda y atención del decoder por kernel compartido implementados; `ftz_on()` redundante (`ftz_on`) descartado y espera de `sd_pool` (espera de `sd_pool`) revertido. Frente al binario de Fase 0 en A/B intercalado: pico de commit CLI −144 MiB; `--workers 4` 2 213 → 1 638 MiB; `--batch-size 4` 3 172 → 2 506 MiB; WS sin regresión; RTF neutro (0,66 / 0,64; −1,5 % / +1,6 %; L1 sin regresión); `drain` 297 / 326 ms. Los umbrales de RSS de este criterio se fijaron en working set; el ahorro es commit diferido (métrica primaria adoptada en la Fase 1). El objetivo de `decoder_ms` no se cumple (9 151 ms): su coste está en el vocoder (Fase 4, Pasos 4.1–4.2), no en la atención (atención del decoder por kernel compartido, neutro). **El cierre de la Fase 1 es la línea base única de la Fase 2 en adelante** (tiempos, RAM y audio de referencia). **Fundamento**: `.work/plans/optimizations/phase-1/estado.md`.
 
 ---
 
-### Fase 2 — Code Predictor y microkernels para la síntesis individual
-- **Línea base (única para las Fases 2–4)**: el cierre de la Fase 1 (`.work/plans/optimizations/00-estado.md`, fila «Cierre Fase 1»; audio `phase-1/baseline_fase1_{short,long}.wav`). Cada fase se compara contra el cierre de la anterior; la Fase 0 es histórico.
-- **Alcance**: microkernels `matmat` INT8/Q4_0 en `cp_prefill2` (solo `INT8`/`Q4_0`; `matmat_bf16` queda fuera), barreras de `ComputePool` en el Code Predictor y hilos de OpenBLAS en el lanzador. Las optimizaciones de servidor concurrente y batch están **fuera de alcance** ([`ROADMAP.md`](../../ROADMAP.md)).
-- **Prerequisitos**: Fase 1 completada.
-- **Pasos**:
-  - **Paso 2.1 (microkernels `matmat` INT8/Q4_0)**: microkernel `matmat` INT8/Q4_0 que lee cada fila de pesos una vez y acumula las columnas de lote en registros (`crates/qwen-kernels/src/simd/avx2.rs`), usado por `cp_prefill2` (B=2 en cada frame del CP).
-  - **Paso 2.2 (barreras del Code Predictor)**: reducir las barreras de `ComputePool` en el `CodePredictor` (`crates/qwen-engine/src/code_predictor.rs`), tras medir su coste real en una corrida instrumentada.
-  - **Paso 2.3 (hilos de OpenMP en el lanzador)**: garantizar `OMP_NUM_THREADS = -j` antes de inicializar OpenBLAS. `OPENBLAS_NUM_THREADS` permanece sin definir.
-- **Criterio de cierre de Fase 2**:
-  1. `qwen_tts --self-test` con `L2_rel == 0.0` (`INT8`) y `L2_rel <= 1e-6` (`Q4_0`) entre `matmat` y `matvec`; `--batch-test` aprobado.
-  2. Salida E2E **bit-idéntica** a `baseline_fase1_{short,long}.wav`.
-  3. `cp_ms` (ms/f) más bajo que en la línea base y RTF de la síntesis individual sin regresión; commit del CLI sin regresión.
-  4. `decoder_ms` y `drain` sin regresión.
+### Reestructuración de las fases pendientes (2026-11-18)
+Las fases 2–4 originales priorizaban el servidor multi-cliente y el batch, estaban ordenadas por técnica y partían de dos supuestos que el perfil refutó: el coste del decoder no está en su atención, sino en los bloques de upsample del vocoder, y el primer audio lo gobierna el **prefill**, no el Code Predictor. Se sustituyen por fases ordenadas por el efecto que nota el usuario. **Línea base única**: el cierre de la Fase 1 (`.work/plans/optimizations/00-estado.md`, fila «Cierre Fase 1»; audio `phase-1/baseline_fase1_{short,long}.wav`); cada fase se compara contra el cierre de la anterior.
+
+**Hallazgos del perfil fino** (`.work/plans/optimizations/perfil-reestructuracion/perfil.md`, corta / larga):
+- TTFA 602 / 663 ms = prefill 346 / 417 ms + 2 frames de Talker y CP ~72 ms + primer fragmento del decoder 190 / 179 ms (~90 ms de arranque en frío sobre el régimen).
+- Prefill: conversión `BF16→F32` 37 % / 32 %, `sgemm` 57 % / 59 %.
+- Code Predictor: 325 despachos al pool por frame; espera en barreras 6,5 % / 4,2 % del CP.
+- Decoder: bloques de upsample 78 % / 83 %; productor y decoder empatados (RTF ~0,56 cada uno).
 
 ---
 
-### Fase 3 — Vectorización SIMD de activaciones, convoluciones y carga paralela
-- **Alcance**: activaciones vectorizadas (SwiGLU/SiLU/GELU), fusión SwiGLU + cuantización en `down_proj`, vocoder AVX2 (`cs_dwconv`, `final_conv`, `add_residual_scaled`) y cuantización paralela en la carga. El ahorro esperado de activaciones vectorizadas (SwiGLU/SiLU/GELU) es ≤1 ms/f: el coste del CP se concentra en `gate_up` (37 %) y QKV (27 %), no en SwiGLU (1.7 %). **Fundamento**: `Anexo A §A.1 de phase-0/estado.md`.
-- **Prerequisitos**: Fases 1–2 estabilizadas (para aislar cualquier variación ULP introducida por activaciones vectorizadas (SwiGLU/SiLU/GELU) sin tocar `swiglu` en fases previas).
+### Fase 2 — Hilos de OpenMP fijados por el binario
+- **Objetivo**: con el servidor arrancado sin variables de entorno, el pico de commit queda dentro de ±20 MiB del medido con `OMP_NUM_THREADS=4`.
+- **Por qué primero**: es el cambio más barato con el mayor techo conocido y fija las condiciones reales de medición del resto del plan.
 - **Pasos**:
-  - **Paso 3.1 (SwiGLU/SiLU vectorizados)**: despachar `swiglu_inplace` y `silu` por `KernelDispatch` con `expf` polinomial `AVX2+FMA` (`avx2.rs` y `dispatch.rs`).
-  - **Paso 3.2 (fusión SwiGLU + cuantización en `down_proj`)**: fusionar `swiglu + quantize_act_int8` para `down_proj` reutilizando la implementación de `Paso 3.1`.
-  - **Paso 3.3 (vocoder vectorizado (GELU/LayerNorm y convoluciones))**: vectorizar `convnext_mlp` (GELU/LayerNorm), `cs_dwconv`, `final_conv` y `add_residual_scaled` (`crates/qwen-engine/src/speech_decoder.rs` y `avx2.rs`).
-  - **Paso 3.4 (cuantización paralela en la carga)**: paralelizar la cuantización durante `Model06B::load` sobre `runtime.pool` (`crates/qwen-engine/src/model.rs` y `crates/qwen-kernels/src/quant.rs`).
-- **Criterio de cierre de Fase 3**:
-  1. Error máximo relativo de `swiglu_inplace` / `silu` / GELU AVX2 frente a `libm` `< 1e-6`.
-  2. `SNR >= 100 dB` en `SpeechDecoder` streaming vs full, determinismo E2E **bit-idéntico** entre corridas del mismo binario, y validación auditiva/métrica en frases cortas, medias y largas frente a la línea base vigente (cierre de la fase anterior).
-  3. Reducción medible de `talker_ms`, `cp_ms`, `decoder_ms` y tiempo de carga de modelo.
+  - **Paso 2.1 (medir el coste de no fijar `OMP_NUM_THREADS`)**: servidor con la variable sin definir y con `=4`, una petición por `/v1/tts/stream`: pico y reposo de commit, número de hilos y RTF. Si la diferencia es < 50 MiB y el RTF no cambia más de un 3 %, la fase se cierra sin cambio de código.
+  - **Paso 2.2 (fijar los hilos desde el binario)**: hilos de OpenMP = `-j` antes de la primera región paralela de OpenBLAS (`crates/qwen-kernels/src/blas.rs`); `OPENBLAS_NUM_THREADS` del usuario mantiene la prioridad; macOS (Accelerate) no cambia. Verificación: repetir la corrida del Paso 2.1.
+- **Criterio de cierre**: objetivo cumplido; audio bit-idéntico; A/B E2E de la fase sin regresión de RTF, sin carga y con carga.
 
 ---
 
-### Fase 4 — Cambios con impacto en `NUMERIC_CONTRACT.md` (Ancho de banda Talker / Prefill)
-- **Alcance**: prefill por bloques BF16→F32 (*tiling* L2 `BF16→F32` sin cambio numérico) y `codec_head` en INT8. Prefill cuantizado (prefill con `matmat_q4_0`) está `descartado` y no se habilita. La atención del Code Predictor permanece en `INT8`: su cuantización a `Q4_0` produce `+2–7 st` de tono. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`.
-- **Prerequisitos**: Fase 2 completada.
+### Fase 3 — Primer audio antes
+- **Objetivo**: TTFA ≤ 420 ms (corta) y ≤ 500 ms (larga), hoy 570 / 678 ms, sin carga y con carga.
 - **Pasos**:
-  - **Paso 4.1 (prefill por bloques BF16→F32)**: convertir `BF16→F32` por bloques L2 dentro de `talker_prefill` (`crates/qwen-engine/src/talker.rs`) sin materializar la capa completa.
-  - **Paso 4.2 (`codec_head` en INT8)**: añadir soporte `QuantWeight::Int8` en `talker.codec_head` (`model.rs`, `pipeline.rs`) tras evaluación A/B.
-  - **Paso 4.3 (prefill cuantizado)**: `descartado`. No habilitar prefill cuantizado bajo `--quant-mixed`: `+4.7 st` en `ryan`, WER `+1.8/+2.7 pp` y prefill largo `+41 %`.
-- **Criterio de cierre de Fase 4**:
-  1. Evaluación A/B con pesos reales de `0.6B` (`CustomVoice` y `Base` con clonación): comparación de códigos generados, SNR/calidad perceptual, ausencia de artefactos al inicio/fin y medición de `prefill_ms`, RSS y RTF final.
-  2. Actualización documentada de [`NUMERIC_CONTRACT.md`](../NUMERIC_CONTRACT.md) antes de habilitar cualquier cambio de precisión por defecto.
+  - **Paso 3.1 (prefill por bloques `BF16→F32`)**: en `talker_prefill` (`crates/qwen-engine/src/talker.rs`), convertir por bloques de filas del tamaño de L2 y lanzar `sgemm` por bloque, sin materializar la capa en F32. Verificación: hashes de audio y `prefill_ms` de 3 corridas sueltas.
+  - **Paso 3.2 (primer fragmento del decoder en caliente)**: medir el primer fragmento en la segunda petición del servidor; si el arranque en frío persiste (> 30 ms sobre el régimen), dejar el decoder dimensionado y calentado al arrancar el servidor. Verificación: log de dos peticiones consecutivas y audio bit-idéntico.
+- **Criterio de cierre**: metas de TTFA en el A/B E2E y en `/v1/tts/stream`; audio bit-idéntico (o `SNR >= 100 dB` documentado en `NUMERIC_CONTRACT.md`); RTF y commit sin regresión.
+
+---
+
+### Fase 4 — Síntesis estable con la laptop ocupada
+- **Objetivo**: RTF ≤ 0,85 con 1 hilo copiando 256 MiB (hoy 1,06 / 0,98) y ≤ 0,55 sin carga (hoy 0,66 / 0,64). Como productor y decoder van empatados, la fase baja los dos.
+- **Pasos**:
+  - **Paso 4.1 (perfil interno de los bloques de upsample)**: reparto entre *snake*, convolución transpuesta y convoluciones dilatadas, y uso de hilos; instrumentación temporal, una corrida por texto.
+  - **Paso 4.2 (vocoder vectorizado)**: vectorizar en AVX2, con equivalente escalar, la parte caliente que señale el Paso 4.1 (`speech_decoder.rs`, `simd/avx2.rs`). Verificación: `test_decoder_streaming_equivalence`, `SNR >= 100 dB` y `decoder_ms` de 3 corridas.
+  - **Paso 4.3 (barreras del Code Predictor)**: medir la espera con carga; si supera el 8 % del CP, fusionar despachos del pool sin dependencia de datos dentro de cada capa (`crates/qwen-engine/src/code_predictor.rs`). Bit-idéntico.
+  - **Paso 4.4 (microkernel `matmat` INT8/Q4_0 en `cp_prefill2`)**: aplicar el parche exacto ya verificado (`--self-test` `L2_rel = 0`). Verificación: `--matmat-bench` (B=2) y audio bit-idéntico.
+- **Criterio de cierre**: metas de RTF en el A/B E2E y en `/v1/tts/stream`; códigos códec bit-idénticos y PCM bit-idéntico o `SNR >= 100 dB` documentado; TTFA y commit sin regresión.
+
+---
+
+### Fase 5 — Kernels NEON para macOS/ARM64
+- **Objetivo**: RTF < 1 sin carga en ARM64 (hoy todo pasa por `simd/scalar.rs`).
+- **Prerrequisito**: una máquina ARM64 con el modelo; compilar en cruzado no verifica ni exactitud ni velocidad.
+- **Pasos**:
+  - **Paso 5.1 (línea base en ARM64)**: tiempos por etapa, TTFA, RTF y hashes con la ruta escalar.
+  - **Paso 5.2 (`matvec` INT8 y Q4_0 en NEON)**: kernels del Talker y del Code Predictor. Verificación: `--self-test` en ARM64.
+  - **Paso 5.3 (conversión `BF16→F32` y vocoder en NEON)**: incluye los kernels nuevos de las Fases 3–4. Verificación: `SNR >= 100 dB` frente a la ruta escalar.
+- **Criterio de cierre**: `--self-test` y `cargo test` verdes en ARM64; A/B E2E escalar frente a NEON con RTF < 1.
 
 ---
 
@@ -383,8 +392,12 @@ cargo test --workspace --release --target x86_64-pc-windows-gnu
 .\target\x86_64-pc-windows-gnu\release\qwen_tts.exe --batch-bench -d models\qwen3-tts-0.6b --quant-mixed
 ```
 
-Para registrar el progreso real de cada Fase y Paso, medir antes y después con el mismo texto, semilla (`--seed 4`) e hilos (`-j 4 --quant-mixed`), en **CLI** (el servidor concurrente está fuera de alcance, ver [`ROADMAP.md`](../../ROADMAP.md)):
-- **Latencia y RTF**: `Prefill (ms)`, `Talker step (ms/f)`, `Code Predictor (ms/f)`, `Speech decoder (ms)`, `drain (ms)`, `TTFA (ms)` y `RTF`.
-- **Condición con carga**: además del equipo libre, 1 hilo copiando 256 MB en bucle durante toda la serie; su mediana se registra por separado. Las ganancias de ancho de banda aparecen en esta condición y aquí se verifica el requisito de RTF < 1.
-- **Memoria**: pico de commit privado (`PeakPagefileUsage`, métrica primaria desde la Fase 1) y pico de *working set* (no regresión) del proceso en CLI (frase corta, frase larga, ICL).
-- **Pico durante reasignación**: en Pasos que modifiquen capacidades iniciales, registrar el pico *durante* `ensure_capacity`, no solo el de régimen.
+**Método** (detalle en `.work/plans/optimizations/00-plan.md`, §3):
+- **Predecir antes de medir** y perfilar antes de optimizar algo cuyo coste no se conoce (instrumentación temporal que no se commitea).
+- **Verificación por Paso con la herramienta mínima suficiente**: los comandos de arriba, hashes de audio, una corrida de commit para la RAM (determinista) o 3 corridas sueltas cuando el efecto esperado supera con holgura el ruido (±5 %). Prohibida la verificación por fuerza bruta.
+- **Un único A/B E2E por fase**, al cierre, contra el cierre de la fase anterior: CLI `--stream`, `--seed 4 --quant-mixed -j 4`, textos de referencia corto y largo, warmups descartados, mediana de 3 pares en orden ABBA (cancela la deriva térmica), más una corrida del servidor por `POST /v1/tts/stream`.
+- **Condición con carga**: el A/B se repite con 1 hilo copiando 256 MiB en bucle; ahí se verifica el requisito de RTF < 1.
+- **Métricas**: `Prefill (ms)`, `Talker step (ms/f)`, `Code Predictor (ms/f)`, `Speech decoder (ms)`, `drain (ms)`, `TTFA (ms)` y `RTF`; pico de commit privado (`PeakPagefileUsage`, métrica primaria de RAM) y pico de *working set* (no regresión), en CLI y en el servidor en reposo y en pico.
+- **Pico durante reasignación**: en Pasos que cambien capacidades iniciales, registrar el pico *durante* `ensure_capacity`.
+- Nunca compilar ni lanzar tests en paralelo con una medición; los procesos del motor se lanzan con la salida redirigida a fichero.
+
