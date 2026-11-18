@@ -81,6 +81,10 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | **Kernels `bf16`** (`--self-test`) | `matvec_bf16` vs `f32` ref | `max_rel < 1e-2` |
 | | `matmat_bf16(B=8)` vs `B × matvec_bf16` | `L2_rel < 1e-4` |
 | **Speech Decoder aislado** | Streaming vs decodificación completa | **`SNR >= 100 dB`** |
-| **Pipeline E2E** (misma semilla/params) | 2 corridas independientes | **Bit-idéntico** en CLI, `/v1/tts` y `/v1/tts/stream` |
+| **Pipeline E2E** (misma semilla/params) | 2 corridas independientes | **Bit-idéntico** entre corridas en cada modo. Sin *streaming*, CLI y `/v1/tts` dan el mismo PCM; con *streaming*, CLI `--stream` y `/v1/tts/stream` dan el mismo PCM. Entre los dos grupos, `encode_wav_bytes` aplica al WAV completo una rampa de entrada de 5 ms y otra de salida de 40 ms; el *streaming* emite el PCM por fragmentos sin ellas. Fuera de las rampas difieren ±1 LSB (SNR ≥ 98,6 dB en PCM16, por la diferencia de decoder de la fila anterior). Es igual con y sin carga. |
 
-**Audio de referencia vigente** (desde el prefill por bloques, 2026-11-18; `--seed 4 --quant-mixed -j 4 -s ryan -l English`, textos corto y largo de `.work/plans/optimizations/phase-1/harness_f1.ps1`): `.work/plans/optimizations/phase-3/baseline_fase3_{short,long}.wav`, SHA-256 `BE0EB0B1…23335083` / `FD9B8968…3FD10643`. El audio anterior (`phase-1/baseline_fase1_*`) queda como histórico. Los cambios del decoder posteriores se comparan contra esa referencia por SNR (≥ 100 dB): el im2col de la Fase 4 da SHA-256 `1726C09A…` / `7F95D8BE…`, deterministas.
+**Audio de referencia vigente** (desde el im2col del decoder, Paso 4.2, 2026-11-18; `--seed 4 --quant-mixed -j 4 --stream -s ryan -l English`, textos corto y largo de `.work/plans/optimizations/phase-1/harness_f1.ps1`): `.work/plans/optimizations/phase-4/baseline_fase4_{short,long}.wav`. SHA-256 del fichero: `1726C09A…F6D6E4EE` / `7F95D8BE…04CF045D`. Los harness la usan con `-Baseline fase4`. Se conservan como histórico:
+- `phase-3/baseline_fase3_*` (prefill por bloques), `BE0EB0B1…23335083` / `FD9B8968…3FD10643`. El im2col la reproduce con SNR ≥ 100 dB.
+- `phase-1/baseline_fase1_*`.
+
+La verificación especulativa del Code Predictor (Paso 4.5) no cambió el audio. La matriz completa de referencias (voces `default` clonada, `ryan` y `vivian`; español e inglés; frase corta y larga; los cuatro modos) está en `.work/plans/optimizations/phase-4/baseline_post_k1/baseline.md`.

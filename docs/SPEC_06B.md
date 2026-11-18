@@ -85,7 +85,7 @@ Secuencia binaria en `qwen-core/src/qvoice.rs`:
    - `enc_dim`: `u32` (`1024` en `0.6B`)
    - `speaker_embedding`: `enc_dim × f32` (`4096 B`)
    - `ref_text_len`: `u32` + `ref_text_len` bytes UTF-8 (sin `\0`)
-   - `n_ref_frames`: `u32` (`<= 1_000_000`) + `n_ref_frames × 16 × i32` (`cached_ref_codes`)
+   - `n_ref_frames`: `u32` (`<= 1_000_000`) + `n_ref_frames × 16 × i32` (`QVoiceFile::ref_codes`)
 2. **Sección `META`** (opcional): `"META"` (`4 B`), `lang_id` (`u32`), `lang_name` (`[u8; 16]`), `model_size` (`u32`, `1024` en `0.6B`), `enc_dim` (`u32`), `ref_dur` (`f32`), `voice_name` (`[u8; 64]`), `flags` (`u32`: bit0=`xvector_only`, bit1=`has_icl`, bit2=`is_base_model`).
 3. **Sección `TPAD`** (opcional): `"TPAD"` (`4 B`), `hidden` (`u32=1024`), `tts_pad_embed` (`1024×f32`), `tts_bos_embed` (`1024×f32`), `tts_eos_embed` (`1024×f32`).
 4. **Sección `WOVR`** (opcional; se carga también con `--icl-only`, salvo `QWEN_GRAFT_NO_WOVR`): `"WOVR"` (`4 B`), `wh` (`u32=1024`), `wth` (`u32=2048`), `wcv` (`u32=2048`; rango válido `1..=6144`), seguido de `fc1` (`2048×2048×u16`), `fc1_bias` (`2048×f32`), `fc2` (`1024×2048×u16`), `fc2_bias` (`1024×f32`), `codec_emb[0..2048]` (`2048×1024×u16`). Si falta `TPAD`, recalcula `tts_pad/bos/eos`.

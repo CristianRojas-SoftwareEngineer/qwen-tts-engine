@@ -26,7 +26,7 @@
 |---|---|---:|---|
 | **Modelo y texto** | `-d, --model-dir <path>` | *(obligatorio con modelo)* | Directorio del modelo `0.6B` (`CustomVoice` o `Base`). Rechaza `1.7B` y `VoiceDesign` (`exit 1`). |
 | | `-t, --text <string>` | `None` | Obligatorio salvo `--serve`, `--compose`, `--save-voice` sin texto (con `--ref-audio`), `--batch-test` o `--batch-bench`. |
-| | `-o, --output <path>` | `output.wav` | Ruta de salida WAV (24 kHz, PCM s16le mono). |
+| | `-o, --output <path>` | `output.wav` | Ruta de salida WAV (24 kHz, PCM s16le mono). Sin `--stream`, el WAV completo lleva una rampa de entrada de 5 ms y otra de salida de 40 ms (`encode_wav_bytes`); con `--stream` se escribe sin rampas. |
 | **Voz e idioma** | `-s, --speaker <name>` | `ryan` (`3061`) | Presets: `ryan`, `vivian`, `serena`, `aiden`, `eric`, `dylan`, `uncle_fu`, `ono_anna`, `sohee`. Nombre desconocido → `exit 1`. |
 | | `-l, --language <name>` | `English` (`2050`) *(o `META` en `--load-voice`)* | Acepta 12 idiomas *case-insensitive*: `english`, `german`, `spanish`, `chinese`, `japanese`, `french`, `sichuan_dialect`, `korean`, `russian`, `italian`, `portuguese`, `beijing_dialect`. Con `--load-voice`, si se omite usa `META.lang_id` si es `> 0`. Desconocido → `exit 1`. |
 | **Muestreo** | `-T, --temperature <f>` | `0.325` | Rango `[0.0, 2.0]`; `0.0` = greedy. Si hay sustitución paralingüística inline sin `-T`, usa la `T` de la etiqueta (`1.1`, o `1.0` en `[scoff]`). |
@@ -117,7 +117,7 @@
 |---|---|---|---|
 | `GET /v1/health` | — | `200` `{"status":"ok"}` | Comprobación de disponibilidad. |
 | `GET /v1/speakers` | — | `200` `{"speakers":[...]}` | Lista los 9 presets `{name, language, gender}`. |
-| `POST /v1/tts` | JSON TTS | `200` `audio/wav` (24 kHz s16le mono) | Usa `DEFAULT_CHUNK_FRAMES = 10`; `max_tokens = 8192` en `WorkerPoolScheduler`/fallback, o `600` (y prompt `<= 512`) en `ContinuousBatchScheduler`. |
+| `POST /v1/tts` | JSON TTS | `200` `audio/wav` (24 kHz s16le mono) | WAV completo con rampas de 5 ms (entrada) y 40 ms (salida), como la CLI sin `--stream`; usa `DEFAULT_CHUNK_FRAMES = 10`; `max_tokens = 8192` en `WorkerPoolScheduler`/fallback, o `600` (y prompt `<= 512`) en `ContinuousBatchScheduler`. |
 | `POST /v1/audio/speech` | JSON OpenAI (`input`, `voice`, ...) | `200` `audio/wav` | Alias completo de `POST /v1/tts` (`input` → `text`, `voice` → `speaker`). |
 | `POST /v1/tts/stream` | JSON TTS | `200` `audio/pcm` (`Transfer-Encoding: chunked`) | Cabeceras: `X-Sample-Rate: 24000`, `X-Sample-Format: s16le`, `X-Channels: 1`. Rechaza `rate != 1.0` (`400`); `max_tokens = 8192` / `600` en *continuous batching*. |
 

@@ -12,7 +12,7 @@
 
 ## 1. Resumen ejecutivo y contexto
 
-**Qwen TTS Engine** (`qwen-tts-engine`) ejecuta síntesis de texto a voz a `24 kHz` en CPU sin aceleración GPU ([`SPEC_06B.md`](../SPEC_06B.md)). En su configuración de producción recomendada (`--quant-mixed`, que combina `Q4_0` en el Talker y FFN del Code Predictor con `INT8` en atención y cabezas del Code Predictor), la línea base medida en el hardware objetivo con `4` hilos y `OpenBLAS` es `RTF 0.82` en frase corta y `0.72` en frase larga (`--seed 4 --quant-mixed -j 4 --stream`), registrada en `.work/plans/optimizations/phase-0/estado.md`. La estrategia BLAS se documenta en [ADR-002](../adr/002-blas-strategy.md).
+**Qwen TTS Engine** (`qwen-tts-engine`) ejecuta síntesis de texto a voz a `24 kHz` en CPU sin aceleración GPU ([`SPEC_06B.md`](../SPEC_06B.md)). En su configuración de producción recomendada (`--quant-mixed`, que combina `Q4_0` en el Talker y FFN del Code Predictor con `INT8` en atención y cabezas del Code Predictor), la línea base medida en el hardware objetivo con `4` hilos y `OpenBLAS` es `RTF 0.82` en frase corta y `0.72` en frase larga (`--seed 4 --quant-mixed -j 4 --stream`), registrada en `.work/plans/optimizations/phase-0/estado.md`. Es la línea base de partida del review: la vigente, tras las Fases 1–4 y el Paso 4.5, está en §3.0. La estrategia BLAS se documenta en [ADR-002](../adr/002-blas-strategy.md).
 
 > **Definiciones operativas**:
 > - **Fotograma (*frame*)**: unidad de `16` códigos acústicos (`code0` del Talker + `codes[1..15]` del Code Predictor) equivalente a `80 ms` de audio (`FRAME_RATE = 12.5 Hz`, `HOP_SAMPLES = 1920` muestras a `24 kHz`).
@@ -22,7 +22,7 @@
 El diseño actual ya incorpora optimizaciones clave para CPU: cuantización `Q4_0`/`INT8` con intrínsecos `AVX2+FMA`, pesos `safetensors` inmutables sobre `mmap` compartidos vía `Arc<Model06B>`, activación `FTZ/DAZ` (`MXCSR`/`FPCR`), un pool de hilos propio (`ComputePool`) y *tiling* L2 de `256 KB` en el vocoder. Sin embargo, el análisis estático del código fuente y del grafo de llamadas identifica **12 oportunidades concretas** agrupadas en tres frentes:
 
 1. **Ancho de banda de memoria (cuello de botella principal)**:
-   - `int8_matmat_slice` y `q4_0_matmat_slice` (`crates/qwen-kernels/src/simd/avx2.rs`) iteran `for b in 0..b_dim` llamando a `matvec`, releyendo los mismos pesos `b_dim` veces (impactaba al prefill de 2 posiciones del Code Predictor, hoy `cp_step2`, en cada fotograma y a todo `ContinuousBatchScheduler`).
+   - `int8_matmat_slice` y `q4_0_matmat_slice` (`crates/qwen-kernels/src/simd/avx2.rs`) iteraban `for b in 0..b_dim` llamando a `matvec` y releían los mismos pesos `b_dim` veces. Afectaba al prefill de 2 posiciones del Code Predictor en cada fotograma y a todo `ContinuousBatchScheduler`. Desde el Paso 4.4, un microkernel lee cada fila una vez por grupo de hasta 8 columnas (`MM_BATCH_CHUNK`).
    - `batch_proj_q` (`crates/qwen-engine/src/batch.rs`) realiza una doble transposición (`batch_gather` y `quantize_act_int8_cols`) más `batch_scatter` (solo en el camino batch: fuera de alcance, ver [`ROADMAP.md`](../../ROADMAP.md)).
    - `talker_prefill` (`crates/qwen-engine/src/talker.rs`) expande las 28 capas `BF16` a `F32` (`60.0 MiB`/capa = `3.36 GiB` de escritura+relectura extra en todo el prefill) y provoca el *page-in* de `840 MiB` `BF16` desde disco aunque el modelo corra cuantizado.
    - `talker.codec_head_bf16` (`3072 × 1024`, `6.0 MiB`) permanece en `BF16` sin cuantizar.
@@ -88,6 +88,38 @@ Texto ──► MarkupPlanner (spans) ──► BpeTokenizer ──► build_pre
 
 ## 3. Línea base cuantitativa e impacto esperado en el RTF
 
+### 3.0 Línea base vigente (2026-11-18, tras el Paso 4.5, `main` `d783c81`)
+
+**Condiciones de medición**:
+- Parámetros: `--quant-mixed -j 4`, `--seed 4`, temperatura por defecto (0,325). Mediana de 3 corridas.
+- Carga: sin carga, y con 1 hilo copiando 256 MiB (`scripts/SyntheticLoad.ps1 -Threads 1`).
+- Voces, configuradas como en AI-Voice-InterConnector:
+  - `default`: voz clonada de fábrica sobre el modelo Base, `--load-voice … --graft`.
+  - `ryan` y `vivian`: presets de CustomVoice.
+- Modos:
+  - CLI de petición única, sin y con `--stream`.
+  - Servidor residente, `POST /v1/tts` y `POST /v1/tts/stream`.
+
+**RTF en frase larga** (12–17 s de audio; mínimo–máximo de las 3 voces por idioma):
+
+| Condición | Idioma | CLI | CLI stream | Servidor | Servidor stream |
+|---|---|---|---|---|---|
+| Sin carga | es | 0,60–0,68 | 0,61–0,68 | 0,56–0,75 | 0,64–0,65 |
+| Sin carga | en | 0,59–0,60 | 0,61 | 0,59–0,63 | 0,63–0,64 |
+| Con carga | es | 0,83–0,97 | 0,86–0,88 | 0,86–0,89 | 0,87–0,88 |
+| Con carga | en | 0,85–0,90 | 0,86–0,88 | 0,86–0,88 | 0,86–0,88 |
+
+**Frase corta** (2,5–5,3 s de audio): RTF 0,60–0,77 sin carga y 0,83–1,13 con carga. Pesan los costes fijos por petición (prefill y primer fragmento); `default` en inglés (2,5 s) supera 1,0 con carga en los cuatro modos.
+
+**Primer audio en el servidor con *streaming***: 430–628 ms sin carga y 527–793 ms con carga.
+
+**Audio**:
+- Cada combinación da un único PCM en las 3 corridas y en las dos condiciones de carga.
+- Los modos sin *streaming* (CLI y `/v1/tts`) coinciden entre sí, y los modos con *streaming* también.
+- Entre ambos grupos solo cambian las rampas de 5 ms y 40 ms del WAV completo (`NUMERIC_CONTRACT.md`).
+
+Tablas por voz y los 24 hashes de referencia: `.work/plans/optimizations/phase-4/baseline_post_k1/baseline.md`.
+
 Dimensiones verificadas en `crates/qwen-core/src/config.rs` y `crates/qwen-engine/src/model.rs`:
 
 ### 3.1 Pesos y huella en memoria
@@ -141,12 +173,12 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 ### 4.1 Ancho de banda de memoria (RAM ↔ Cachés ↔ CPU)
 
 #### Microkernels `matmat` reales para `INT8` y `Q4_0`
-- **Ubicación**: `crates/qwen-kernels/src/simd/avx2.rs` (`int8_matmat_slice` L571–603, `q4_0_matmat_slice` L735–766) y `crates/qwen-kernels/src/simd/scalar.rs` (L134–166, L195–226).
+- **Ubicación**: `int8_matmat_slice` y `q4_0_matmat_slice` en `crates/qwen-kernels/src/simd/avx2.rs` y sus equivalentes en `crates/qwen-kernels/src/simd/scalar.rs`.
 - **Problema**: Para cada tile de `MM_TILE = 8` filas, el kernel ejecuta `for b in 0..b_dim` llamando a `int8_matvec_2row` / `q4_0_matvec_2row`. Esto relee las mismas filas de peso `w` desde caché/DRAM `b_dim` veces y en `Q4_0` recalcula `q4_0_sumq` en cada iteración, limitando los resultados de `--matmat-bench` (`crates/qwen-kernels/src/bench.rs`).
 - **Impacto**: Ahorra **`~55.3 MiB/frame`** en `cp_step2` (posiciones 0–1) (`B=2`) y reduce el tráfico de `B` relecturas a **1** (techo teórico `B×`). Medido: **1.26×** E2E en `--batch-bench` y **1.2–1.7×** en microbanco `INT8`/`INT4`. `matmat_bf16` queda fuera de alcance: **0.76–0.97×** en este hardware y descartado en el gemelo C. **Fundamento**: `Anexo A de phase-0/estado.md`.
 - **Propuesta**: Escribir microkernels `AVX2+FMA` especializados para `B=2, 4, 8`: cargar 32 bytes de peso (`INT8` o un `Q4_0Block`), decodificar nibbles una sola vez y acumular `B` vectores `a_b` en registros YMM independientes, precalculando `sumq[0..b_dim]` una vez por bloque. Mantener equivalente estructurado en `simd/scalar.rs` para ARM64 y *fallback* x86.
 - **Contrato numérico**: **Compatible 100 %** (`L2_rel == 0.0` en `INT8`, `L2_rel <= 1e-6` en `Q4_0` en `--self-test`).
-- **Estado**: `vigente` con **alcance local**: `cp_step2` (posiciones 0–1) del Code Predictor (B=2 por frame, en toda síntesis). El escalado batch (`B = 4, 8`) queda **fuera de alcance** → [`ROADMAP.md`](../../ROADMAP.md), «Microkernels `matmat` que lean los pesos una sola vez por lote». **Fundamento**: `.work/plans/optimizations/phase-0/estado.md`. Plan: **Fase 4, Paso 4.4**; techo según el perfil del 2026-11-18: ~6 % del CP (el prefill de 2 posiciones era 1 de cada 16 pasadas de pesos por frame). Desde el Paso 4.5, `cp_step2` también verifica la adivinanza del CP en ~11 pasadas por frame. **Si se pierde**: cada pasada de 2 posiciones lee cada matriz dos veces.
+- **Estado**: `implementado` (**Fase 4, Paso 4.4**) con **alcance local** en el Code Predictor: `cp_step2`, B=2 en toda síntesis (posiciones 0–1 y, desde el Paso 4.5, la verificación especulativa). El escalado batch (`B = 4, 8`) queda **fuera de alcance** → [`ROADMAP.md`](../../ROADMAP.md), «Microkernels `matmat` que lean los pesos una sola vez por lote». **Fundamento**: `.work/plans/optimizations/phase-0/estado.md`. Plan: **Fase 4, Paso 4.4**; techo según el perfil del 2026-11-18: ~6 % del CP (el prefill de 2 posiciones era 1 de cada 16 pasadas de pesos por frame). Desde el Paso 4.5, `cp_step2` también verifica la adivinanza del CP en ~11 pasadas por frame. **Si se pierde**: cada pasada de 2 posiciones lee cada matriz dos veces.
 
 #### Eliminar la doble transposición en `batch_proj_q` + `quantize_act_int8_cols`
 - **Ubicación**: `crates/qwen-engine/src/batch.rs:53-115` y `crates/qwen-kernels/src/dispatch.rs:357-379`.
@@ -163,13 +195,13 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Estado**: `descartado` (reestructuración del 2026-11-18). **Fundamento**: `codec_head` lee `6.0 MiB/frame` en `BF16`; `INT8` los reduce a `3.0 MiB/frame`, el 0,6 % del tráfico por frame, y obliga a cambiar `NUMERIC_CONTRACT.md`: el techo no compensa el riesgo.
 
 #### Prefill cuantizado o conversión `BF16→F32` por bloques L2 en `talker_prefill`
-- **Ubicación**: `crates/qwen-engine/src/talker.rs:64-82` y `crates/qwen-kernels/src/dispatch.rs:1268-1341`.
+- **Ubicación**: `talker_prefill` y `prefill_matmul_bf16` en `crates/qwen-engine/src/talker.rs`.
 - **Problema**: `convert_talker_layer_bf16_to_f32` expande `60.0 MiB/capa` a `F32` (`1,680 MiB` escritos y `1,680 MiB` re-leídos en 28 capas) y fuerza el *page-in* de `840 MiB` `BF16` del `mmap` aunque el Talker corra en `Q4_0`.
 - **Propuesta**:
   - *Opción A (bit-exacta en F32)*: convertir `BF16→F32` en bloques pequeños de L2 dentro de `sgemm` sin materializar la capa completa (conserva `F32` exacto y libera `60 MiB` de `TalkerBuffers`).
   - *Opción B (cuantizada)*: `descartado`. No habilitar `matmat_q4_0` en el prefill bajo `--quant-mixed`.
 - **Contrato numérico**: Opción A es **compatible**; Opción B altera la precisión del prefill y requiere validación en `NUMERIC_CONTRACT.md`.
-- **Estado**: Opción A `vigente` (**Fase 3, Paso 3.1**), Opción B `descartado`. **Perfil del 2026-11-18**: la conversión `BF16→F32` cuesta 127 / 133 ms y `sgemm` 199 / 248 ms (corta / larga) de un prefill de 346 / 417 ms, que es el 57 % del TTFA; techo de la Opción A: −100 a −200 ms. **Efecto medido**: la Opción B produce `+4.7 st` en `ryan`, WER `+1.8/+2.7 pp` y prefill largo `+41 %`. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`. **Si se pierde**: regenerar audio con el tono alterado.
+- **Estado**: Opción A `implementada` (**Fase 3**, Pasos 3.1 y 3.3: `prefill_matmul_bf16` en `talker.rs` convierte por bloques de 4 MiB, `PREFILL_STAGE_ELEMS`, y lanza una `sgemm` por bloque; sustituyó a `convert_talker_layer_bf16_to_f32`, que ya no existe), Opción B `descartado`. **Perfil del 2026-11-18**: la conversión `BF16→F32` cuesta 127 / 133 ms y `sgemm` 199 / 248 ms (corta / larga) de un prefill de 346 / 417 ms, que es el 57 % del TTFA; techo de la Opción A: −100 a −200 ms. **Efecto medido**: la Opción B produce `+4.7 st` en `ryan`, WER `+1.8/+2.7 pp` y prefill largo `+41 %`. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`. **Si se pierde**: regenerar audio con el tono alterado.
 
 ---
 
@@ -187,7 +219,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Problema**: `swiglu_inplace` ejecuta ~`331,776` `expf()` escalares/frame en Talker + CP; `speech_decoder_decode_streaming` ejecuta `expf()` y `erff()` escalares en FFN y `convnext_mlp`.
 - **Propuesta**: Despachar `swiglu_inplace` y `silu` por `KernelDispatch` con aproximación polinomial `AVX2+FMA` de `expf` (8 lanes, similar a `vsin2_avx2` en `avx2.rs:1245`), y vectorizar GELU + LayerNorm en `convnext_mlp`.
 - **Contrato numérico**: Diferencias de 1 ULP en `expf()` pueden variar desempates en muestreo respecto a `libm`; requiere medir ULP/SNR y validar que no degrada pruebas de regresión.
-- **Estado**: `descartado` para SwiGLU/SiLU y para la fusión `swiglu + quantize_act_int8` (reestructuración del 2026-11-18); GELU/LayerNorm de `convnext_mlp` entra en el vocoder vectorizado (Fase 4, Paso 4.2) solo si su perfil supera el 5 % del decoder (ConvNeXt completo: 5–7 %). **Efecto medido**: SwiGLU es el **1.7 %** del CP en el gemelo C; repartirlo entre hilos ahorró **0.68 ms/f**. Ahorro esperado ≤1 ms/f: `gate_up` (37 %) y QKV (27 %) concentran el coste del CP. **Fundamento**: `Anexo A §A.1 de phase-0/estado.md`.
+- **Estado**: `descartado` para SwiGLU/SiLU y para la fusión `swiglu + quantize_act_int8` (reestructuración del 2026-11-18); GELU/LayerNorm de `convnext_mlp` no se abordó: el perfil del Paso 4.1 puso el coste del decoder en las convoluciones k=7 (58 %) y la transpuesta (18 %), y el Paso 4.2 fue im2col. **Efecto medido**: SwiGLU es el **1.7 %** del CP en el gemelo C; repartirlo entre hilos ahorró **0.68 ms/f**. Ahorro esperado ≤1 ms/f: `gate_up` (37 %) y QKV (27 %) concentran el coste del CP. **Fundamento**: `Anexo A §A.1 de phase-0/estado.md`.
 
 #### Reducir barreras de `ComputePool`, eliminar `ftz_on()` en `matvec_*` y paralelizar batch unificado
 - **Ubicaciones**:
@@ -198,7 +230,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
   - ~~Dejar `ftz_on()` solo al inicializar hilos/runtimes~~ (**descartado por evidencia**, Fase 1 Paso 1.6): `ftz_on()` es `stmxcsr` + comparación (el `ldmxcsr` solo se ejecuta si FTZ/DAZ está apagado): ~466 llamadas/frame ≈ 5 k ciclos ≈ 2 µs/frame frente a ~45 ms/frame (≈ 0,005 %, por debajo de cualquier resolución de A/B). La auditoría de hilos muestra que `qwen-batch-sched` y `qwen-http-single` (`scheduler.rs`) usan el `ComputeRuntime` creado en `main` y no activan FTZ al nacer: para ellos, la llamada en la entrada del kernel es la única garantía. Retirarla obligaría a añadir `ftz_on()` en cada `spawn` (más superficie de error, con riesgo de denormales) a cambio de nada medible.
   - Ajustar el umbral de paralelización en `CodePredictor` para reducir salidas del pool (Fase 4, Paso 4.3).
 - **Contrato numérico**: **Bit-idéntico**.
-- **Estado**: parte `ftz_on()` `descartado` (Paso 1.6); parte batch **fuera de alcance** ([`ROADMAP.md`](../../ROADMAP.md), «Compactar los slots activos y usar una sola barrera de atención por capa»); parte Code Predictor `vigente` (**Fase 4, Paso 4.3**). **Perfil del 2026-11-18**: 325 despachos al pool por frame; la espera en la barrera es el 6,5 % / 4,2 % del CP sin carga (1,4–2,2 ms/frame); falta medirla con carga, primera tarea del paso. **Fundamento**: el gemelo C registra ~495 despachos al pool por fotograma. **Si se pierde**: barreras redundantes en el CP.
+- **Estado**: parte `ftz_on()` `descartado` (Paso 1.6); parte batch **fuera de alcance** ([`ROADMAP.md`](../../ROADMAP.md), «Compactar los slots activos y usar una sola barrera de atención por capa»); parte Code Predictor `descartado` (**Fase 4, Paso 4.3**: la espera con carga es el 11,7 % del CP, pero los 4 despachos por capa dependen cada uno del anterior y no hay nada que fusionar). **Perfil del 2026-11-18**: 325 despachos al pool por frame; la espera en la barrera es el 6,5 % / 4,2 % del CP sin carga (1,4–2,2 ms/frame). **Fundamento**: el gemelo C registra ~495 despachos al pool por fotograma. **Si se pierde**: barreras redundantes en el CP.
 
 #### Presupuesto de espera en `sd_pool` y vectorizar convoluciones del `SpeechDecoder`
 - **Ubicación**: `crates/qwen-kernels/src/dispatch.rs:1411-1417`, `crates/qwen-engine/src/speech_decoder.rs:32-43, 505-525, 1013-1057, 1366-1383`.
