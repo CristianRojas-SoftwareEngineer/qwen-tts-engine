@@ -146,14 +146,14 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Impacto**: Ahorra **`~55.3 MiB/frame`** en `cp_prefill2` (`B=2`) y reduce el tráfico de `B` relecturas a **1** (techo teórico `B×`). Medido: **1.26×** E2E en `--batch-bench` y **1.2–1.7×** en microbanco `INT8`/`INT4`. `matmat_bf16` queda fuera de alcance: **0.76–0.97×** en este hardware y descartado en el gemelo C. **Fundamento**: `Anexo A de phase-0/estado.md`.
 - **Propuesta**: Escribir microkernels `AVX2+FMA` especializados para `B=2, 4, 8`: cargar 32 bytes de peso (`INT8` o un `Q4_0Block`), decodificar nibbles una sola vez y acumular `B` vectores `a_b` en registros YMM independientes, precalculando `sumq[0..b_dim]` una vez por bloque. Mantener equivalente estructurado en `simd/scalar.rs` para ARM64 y *fallback* x86.
 - **Contrato numérico**: **Compatible 100 %** (`L2_rel == 0.0` en `INT8`, `L2_rel <= 1e-6` en `Q4_0` en `--self-test`).
-- **Estado**: `vigente` con **alcance local**: `cp_prefill2` del Code Predictor (B=2 por frame, en toda síntesis). El escalado batch (`B = 4, 8`) queda **fuera de alcance** → [`ROADMAP.md`](../../ROADMAP.md) (R1). **Fundamento**: `.work/plans/optimizations/phase-0/estado.md`. **Si se pierde**: `cp_prefill2` lee cada matriz dos veces por frame.
+- **Estado**: `vigente` con **alcance local**: `cp_prefill2` del Code Predictor (B=2 por frame, en toda síntesis). El escalado batch (`B = 4, 8`) queda **fuera de alcance** → [`ROADMAP.md`](../../ROADMAP.md), «Microkernels `matmat` que lean los pesos una sola vez por lote». **Fundamento**: `.work/plans/optimizations/phase-0/estado.md`. **Si se pierde**: `cp_prefill2` lee cada matriz dos veces por frame.
 
 #### O2. Eliminar la doble transposición en `batch_proj_q` + `quantize_act_int8_cols`
 - **Ubicación**: `crates/qwen-engine/src/batch.rs:53-115` y `crates/qwen-kernels/src/dispatch.rs:357-379`.
 - **Problema**: `BatchWorkspace` guarda activaciones en `[B, cols]`. `batch_proj_q` las transpone a `[cols, B]` (`batch_gather`), `quantize_act_int8_cols` las retranspone a `[B, cols]` en `QXT_TLS` elemento a elemento, y `batch_scatter` transpone `[rows, B] → [B, rows]`.
 - **Propuesta**: Cuantizar directamente cada fila contigua `src[b * cols..(b+1) * cols]` con `quantize_act_int8` AVX2 sin `batch_gather` y alinear la salida con el microkernel de `O1`.
 - **Contrato numérico**: **Bit-idéntico**.
-- **Estado**: **`fuera de alcance`** (solo existe en el camino batch) → [`ROADMAP.md`](../../ROADMAP.md) (R2).
+- **Estado**: **`fuera de alcance`** (solo existe en el camino batch) → [`ROADMAP.md`](../../ROADMAP.md), «Eliminar la doble transposición de activaciones en `batch_proj_q`».
 
 #### O3. Cuantización de `talker.codec_head_bf16` bajo `--quant-mixed` / `--int8`
 - **Ubicación**: `crates/qwen-engine/src/model.rs:1729` y `crates/qwen-engine/src/pipeline.rs:697-704`.
@@ -192,13 +192,13 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 #### O7. Reducir barreras de `ComputePool`, eliminar `ftz_on()` en `matvec_*` y paralelizar batch unificado
 - **Ubicaciones**:
   1. `crates/qwen-kernels/src/dispatch.rs:668, 709, 757, 823, 854, 894` (`ftz_on()` repetido ~466 veces/frame).
-  2. ~~`crates/qwen-engine/src/batch.rs`: barreras por slot y slots inactivos en `batch_talker_step_impl`~~ (**fuera de alcance**, camino batch → [`ROADMAP.md`](../../ROADMAP.md), R3).
+  2. ~~`crates/qwen-engine/src/batch.rs`: barreras por slot y slots inactivos en `batch_talker_step_impl`~~ (**fuera de alcance**, camino batch → [`ROADMAP.md`](../../ROADMAP.md), «Compactar los slots activos y usar una sola barrera de atención por capa»).
   3. `crates/qwen-engine/src/code_predictor.rs:206-360`: ~325 barreras por fotograma sobre matrices de `1024`–`3072` filas.
 - **Propuestas**:
   - ~~Dejar `ftz_on()` solo al inicializar hilos/runtimes~~ (**descartado por evidencia**, Fase 1 Paso 1.6): `ftz_on()` es `stmxcsr` + comparación (el `ldmxcsr` solo se ejecuta si FTZ/DAZ está apagado): ~466 llamadas/frame ≈ 5 k ciclos ≈ 2 µs/frame frente a ~45 ms/frame (≈ 0,005 %, por debajo de cualquier resolución de A/B). La auditoría de hilos muestra que `qwen-batch-sched` y `qwen-http-single` (`scheduler.rs`) usan el `ComputeRuntime` creado en `main` y no activan FTZ al nacer: para ellos, la llamada en la entrada del kernel es la única garantía. Retirarla obligaría a añadir `ftz_on()` en cada `spawn` (más superficie de error, con riesgo de denormales) a cambio de nada medible.
   - Ajustar el umbral de paralelización en `CodePredictor` para reducir salidas del pool (y combinar la fusión `swiglu + quantize_act_int8` en `down_proj` junto con `O6` en la **Fase 3**).
 - **Contrato numérico**: **Bit-idéntico**.
-- **Estado**: parte `ftz_on()` `descartado` (Paso 1.6); parte batch **fuera de alcance** ([`ROADMAP.md`](../../ROADMAP.md), R3); parte Code Predictor `vigente` (Paso 2.2). **Fundamento**: el gemelo C registra ~495 despachos al pool por fotograma. **Si se pierde**: barreras redundantes en el CP.
+- **Estado**: parte `ftz_on()` `descartado` (Paso 1.6); parte batch **fuera de alcance** ([`ROADMAP.md`](../../ROADMAP.md), «Compactar los slots activos y usar una sola barrera de atención por capa»); parte Code Predictor `vigente` (Paso 2.2). **Fundamento**: el gemelo C registra ~495 despachos al pool por fotograma. **Si se pierde**: barreras redundantes en el CP.
 
 #### O8. Presupuesto de espera en `sd_pool` y vectorizar convoluciones del `SpeechDecoder`
 - **Ubicación**: `crates/qwen-kernels/src/dispatch.rs:1411-1417`, `crates/qwen-engine/src/speech_decoder.rs:32-43, 505-525, 1013-1057, 1366-1383`.
@@ -212,7 +212,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Problema**: `FfiBlas::set_threads` modifica el estado global de proceso de OpenBLAS. Con `--workers N > 1`, múltiples workers se pisan entre prefill y generación. Un `OMP_NUM_THREADS` ausente en el lanzador compromete los hilos de OpenMP antes de `main`.
 - **Propuesta**: fijar `OMP_NUM_THREADS = -j` en el lanzador y `openblas_set_num_threads` una sola vez al iniciar cuando `n_workers > 1` (sin reconfigurar por petición). `OPENBLAS_NUM_THREADS` permanece sin definir. `--batch-size N` (o `faer-blas`) es la opción preferente en concurrencia.
 - **Contrato numérico**: **Bit-idéntico** por petición con el mismo número de hilos efectivo.
-- **Estado**: parte lanzador (`OMP_NUM_THREADS = -j`) `vigente` (Paso 2.3, aplica a toda síntesis); parte multi-worker (`openblas_set_num_threads` con `n_workers > 1`) **fuera de alcance** → [`ROADMAP.md`](../../ROADMAP.md) (R4). **Efecto medido (gemelo C)**: en Windows `OMP_NUM_THREADS = -j` reduce **1 410 MiB** comprometidos y el tiempo un **6 %**, sin cambiar el audio. **Fundamento**: `Anexo A §A.6 de phase-0/estado.md`.
+- **Estado**: parte lanzador (`OMP_NUM_THREADS = -j`) `vigente` (Paso 2.3, aplica a toda síntesis); parte multi-worker (`openblas_set_num_threads` con `n_workers > 1`) **fuera de alcance** → [`ROADMAP.md`](../../ROADMAP.md), «Configurar los hilos de OpenBLAS una sola vez con varios workers». **Efecto medido (gemelo C)**: en Windows `OMP_NUM_THREADS = -j` reduce **1 410 MiB** comprometidos y el tiempo un **6 %**, sin cambiar el audio. **Fundamento**: `Anexo A §A.6 de phase-0/estado.md`.
 
 ---
 
@@ -249,12 +249,12 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 | Prioridad | ID | Estado | Optimización | Recurso | Dependencias | Riesgo numérico | Esfuerzo |
 |---|---|---|---|---|---|---|---|
 | **1** | **O5** | `implementado` (neutro en RTF; camino único) | `causal_attention_windowed` en `SpeechDecoder` streaming | **CPU** | Ninguna | Ninguno (`SNR >= 100 dB`) | Bajo |
-| **2** | **O1** | `vigente` (alcance local: `cp_prefill2`; batch → ROADMAP R1) | Microkernels `matmat_int8` / `matmat_q4_0` reales (sin `bf16`) | **Ancho de banda + CPU** | Ninguna | Ninguno (bit-idéntico) | Medio |
-| **3** | **O2** | `fuera de alcance` (ROADMAP R2) | Eliminar doble transposición en `batch_proj_q` | **Ancho de banda + CPU** | Depende de **O1** | Ninguno (bit-idéntico) | Bajo–Medio |
+| **2** | **O1** | `vigente` (alcance local: `cp_prefill2`; batch → ROADMAP.md) | Microkernels `matmat_int8` / `matmat_q4_0` reales (sin `bf16`) | **Ancho de banda + CPU** | Ninguna | Ninguno (bit-idéntico) | Medio |
+| **3** | **O2** | `fuera de alcance` (ROADMAP.md) | Eliminar doble transposición en `batch_proj_q` | **Ancho de banda + CPU** | Depende de **O1** | Ninguno (bit-idéntico) | Bajo–Medio |
 | **4** | **O10** | `implementado` (`O10a`/`O10b`/`O10c`) | `KV_INITIAL_POSITIONS`, staging `pref_*_f32` transitorio, KV de `BatchWorkspace` bajo demanda | **RAM** | Ninguna | Ninguno (bit-idéntico) | Bajo |
 | **5** | **O11** | `implementado` | Snapshot compacto de KV en `generate_batch_multi` (CLI batch) | **RAM** | Ninguna | Ninguno (bit-idéntico) | Bajo |
-| **6** | **O7** | CP `vigente`; `ftz_on` descartado; batch fuera de alcance (ROADMAP R3) | Barreras del Code Predictor | **CPU + Ancho de banda** | Ninguna (mejor tras **O1**) | Ninguno (bit-idéntico) | Bajo–Medio |
-| **7** | **O9** | lanzador `vigente`; multi-worker fuera de alcance (ROADMAP R4) | Fijar `OMP_NUM_THREADS = -j` en el lanzador | **CPU + RAM** | Ninguna | Ninguno | Bajo |
+| **6** | **O7** | CP `vigente`; `ftz_on` descartado; batch fuera de alcance (ROADMAP.md) | Barreras del Code Predictor | **CPU + Ancho de banda** | Ninguna (mejor tras **O1**) | Ninguno (bit-idéntico) | Bajo–Medio |
+| **7** | **O9** | lanzador `vigente`; multi-worker fuera de alcance (ROADMAP.md) | Fijar `OMP_NUM_THREADS = -j` en el lanzador | **CPU + RAM** | Ninguna | Ninguno | Bajo |
 | **8** | **O12** | `pendiente` | Cuantización paralela en `Model06B::load` | **Tiempo de carga** | Ninguna | Ninguno (bit-idéntico) | Bajo |
 | **9** | **O6** | `condicionado` | Vectorizar `swiglu_inplace`, `silu`, GELU en `AVX2+FMA` | **CPU** | Ninguna | Revisar ULP vs `libm` | Medio |
 | **10** | **O3** | `pendiente` | Cuantizar `talker.codec_head` a `INT8` | **Ancho de banda** | Ninguna | Requiere `NUMERIC_CONTRACT.md` | Bajo |
