@@ -96,7 +96,6 @@ enum F32DataView<'a> {
         shard: &'a Arc<Mmap>,
         byte_offset: usize,
         len: usize,
-        data: &'a [u8],
     },
     Owned(Vec<f32>),
 }
@@ -243,7 +242,6 @@ impl MmapStore {
                         shard,
                         byte_offset: loc.byte_offset,
                         len: data.len() / 4,
-                        data,
                     })
                 } else {
                     let out: Vec<f32> = data
@@ -287,17 +285,6 @@ impl MmapStore {
                 len,
             }),
             F32DataView::Owned(out) => Ok(F32Ref::Owned(Arc::new(out))),
-        }
-    }
-
-    /// Lee un tensor F32 (o BF16 convertido a F32) como `std::borrow::Cow<[f32]>`. Toma referencia sin copias cuando es F32 alineado a 4 bytes.
-    pub fn tensor_f32(&self, name: &str) -> Result<std::borrow::Cow<'_, [f32]>, CoreError> {
-        match self.locate_f32(name)? {
-            F32DataView::AlignedMmap { data, len, .. } => {
-                let slice = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const f32, len) };
-                Ok(std::borrow::Cow::Borrowed(slice))
-            }
-            F32DataView::Owned(out) => Ok(std::borrow::Cow::Owned(out)),
         }
     }
 

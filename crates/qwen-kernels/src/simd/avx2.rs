@@ -604,7 +604,7 @@ unsafe fn int8_matmat_row<const NB: usize>(
 
 /// `y[r, b] = W_int8[r, :] · x_b` para las filas `r0..r1` y `b_dim` columnas de lote
 /// (`qxt[b * cols ..]` cuantizadas por columna, `cols` multiplo de 32). Los pesos se
-/// leen una vez por grupo de `MM_BATCH_CHUNK` columnas (O1).
+/// leen una vez por grupo de `MM_BATCH_CHUNK` columnas.
 #[allow(clippy::too_many_arguments)]
 #[target_feature(enable = "avx2,fma")]
 pub(crate) unsafe fn int8_matmat_slice(
@@ -810,7 +810,7 @@ unsafe fn q4_0_matmat_row<const NB: usize>(
 
 /// `y[r, b] = W_q4_0[r, :] · x_b` para las filas `r0..r1` y `b_dim` columnas de lote.
 /// `sumq` se precalcula una vez por columna de lote y bloque; los pesos se leen una
-/// vez por grupo de `MM_BATCH_CHUNK` columnas (O1).
+/// vez por grupo de `MM_BATCH_CHUNK` columnas.
 #[allow(clippy::too_many_arguments)]
 #[target_feature(enable = "avx2,fma")]
 pub(crate) unsafe fn q4_0_matmat_slice(

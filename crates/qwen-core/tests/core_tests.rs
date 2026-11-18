@@ -73,7 +73,7 @@ fn test_mmap_store_06b() {
         .tensor_bf16("talker.model.text_embedding.weight")
         .unwrap();
     assert_eq!(tok_emb.len(), 151_936 * TEXT_HIDDEN_SIZE);
-    let norm = store.tensor_f32("talker.model.norm.weight").unwrap();
+    let norm = store.tensor_f32_ref("talker.model.norm.weight").unwrap();
     assert_eq!(norm.len(), HIDDEN_SIZE);
 
     let sd_store = MmapStore::open_model(&cv_dir.join("speech_tokenizer"))
