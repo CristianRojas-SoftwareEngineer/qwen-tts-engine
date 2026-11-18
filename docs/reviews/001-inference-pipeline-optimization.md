@@ -308,11 +308,12 @@ Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar a
   2. **Códigos códec** (`Talker + CodePredictor`) **bit-idénticos** frente a la Fase 0 con `--seed 4`; **audio PCM** del `SpeechDecoder` con **`SNR >= 100 dB`** (Paso 1.5) y **bit-idéntico entre corridas** del nuevo binario.
   3. Pico `--batch-size 4` ≤**2 250 MiB** y `--workers 4` ≤**2 100 MiB**; RSS CLI ≤**2 070 MiB**; `decoder_ms` largo ≤**9 150 ms**, `drain` ≤**350 ms**; RTF corta ≤**0.78** sin regresión en larga.
   4. Compuerta con 1 hilo copiando 256 MB: el RTF no empeora respecto a la Fase 0 en la misma condición.
-- **Resultado del cierre (2026-11-18)**: `O10a`, `O11`, `O10b`, `O10c` y `O5` implementados; `O7` parcial (`ftz_on`) descartado y `O8` parcial (espera de `sd_pool`) revertido. Frente al binario de Fase 0 en A/B intercalado: pico de commit CLI −144 MiB; `--workers 4` 2 213 → 1 638 MiB; `--batch-size 4` 3 172 → 2 506 MiB; WS sin regresión; RTF −1,5 % (L1 sin regresión); `drain` 307 / 313 ms. Los umbrales de RSS de este criterio se fijaron en working set; el ahorro es commit diferido (métrica primaria adoptada en la Fase 1). El objetivo de `decoder_ms` no se cumple (9 266 ms): su coste está en el vocoder (`O8`, Paso 3.3), no en la atención (`O5`, neutro). Los tiempos del cierre se midieron con la variante descartada del Paso 1.7 (espera de `sd_pool` a 0) en lugar de HEAD: la RAM y la paridad son válidas para HEAD y los tiempos son una cota conservadora (esa variante es igual o más lenta). **Fundamento**: `.work/plans/optimizations/phase-1/estado.md`.
+- **Resultado del cierre (2026-11-18)**: `O10a`, `O11`, `O10b`, `O10c` y `O5` implementados; `O7` parcial (`ftz_on`) descartado y `O8` parcial (espera de `sd_pool`) revertido. Frente al binario de Fase 0 en A/B intercalado: pico de commit CLI −144 MiB; `--workers 4` 2 213 → 1 638 MiB; `--batch-size 4` 3 172 → 2 506 MiB; WS sin regresión; RTF neutro (0,66 / 0,64; −1,5 % / +1,6 %; L1 sin regresión); `drain` 297 / 326 ms. Los umbrales de RSS de este criterio se fijaron en working set; el ahorro es commit diferido (métrica primaria adoptada en la Fase 1). El objetivo de `decoder_ms` no se cumple (9 151 ms): su coste está en el vocoder (`O8`, Paso 3.3), no en la atención (`O5`, neutro). **El cierre de la Fase 1 es la línea base única de las Fases 2–4** (tiempos, RAM y audio de referencia). **Fundamento**: `.work/plans/optimizations/phase-1/estado.md`.
 
 ---
 
 ### Fase 2 — Microkernels `matmat` reales y escalado del servidor
+- **Línea base (única para las Fases 2–4)**: el cierre de la Fase 1 (`.work/plans/optimizations/00-estado.md`, fila «Cierre Fase 1»; audio `phase-1/baseline_fase1_{short,long}.wav`). Cada fase se compara contra el cierre de la anterior; la Fase 0 es histórico.
 - **Alcance**: `O1` (solo `INT8`/`Q4_0`; `matmat_bf16` queda fuera de alcance), `O2`, `O7 (compactación de slots activos + barrera única de atención batch + umbral en CP)` y `O9`.
 - **Prerequisitos**: Fase 1 completada.
 - **Pasos**:
@@ -325,7 +326,7 @@ Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar a
 - **Criterio de cierre de Fase 2**:
   1. `qwen_tts --self-test` con `L2_rel == 0.0` (`INT8`) y `L2_rel <= 1e-6` (`Q4_0`) entre `matmat(B=8)` y `8 × matvec`.
   2. `qwen_tts --batch-test` aprobado y salida E2E **bit-idéntica** respecto al cierre de la Fase 1.
-  3. `qwen_tts --matmat-bench` (`QWEN_BATCH_B=2,4,8`) y `--batch-bench` con techo realista **1.26×** E2E y **1.2–1.7×** en microbanco `INT8`/`INT4` frente a la Fase 0, y caída medible de `cp_ms` en `cp_prefill2`. `matmat_bf16` no se evalúa: mide 0.76–0.97×. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`.
+  3. `qwen_tts --matmat-bench` (`QWEN_BATCH_B=2,4,8`) y `--batch-bench` por encima de la línea base del cierre de la Fase 1 (`--batch-bench` **1.31×**; `--matmat-bench` int8 1.07× / int4 1.03× de mediana), y caída medible de `cp_ms` en `cp_prefill2`. `matmat_bf16` no se evalúa: mide 0.76–0.97×. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`.
 
 ---
 
@@ -339,7 +340,7 @@ Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar a
   - **Paso 3.4 (`O12`)**: paralelizar la cuantización durante `Model06B::load` sobre `runtime.pool` (`crates/qwen-engine/src/model.rs` y `crates/qwen-kernels/src/quant.rs`).
 - **Criterio de cierre de Fase 3**:
   1. Error máximo relativo de `swiglu_inplace` / `silu` / GELU AVX2 frente a `libm` `< 1e-6`.
-  2. `SNR >= 100 dB` en `SpeechDecoder` streaming vs full, determinismo E2E **bit-idéntico** entre corridas del mismo binario, y validación auditiva/métrica en frases cortas, medias y largas frente a la Fase 2.
+  2. `SNR >= 100 dB` en `SpeechDecoder` streaming vs full, determinismo E2E **bit-idéntico** entre corridas del mismo binario, y validación auditiva/métrica en frases cortas, medias y largas frente a la línea base vigente (cierre de la fase anterior).
   3. Reducción medible de `talker_ms`, `cp_ms`, `decoder_ms` y tiempo de carga de modelo.
 
 ---
