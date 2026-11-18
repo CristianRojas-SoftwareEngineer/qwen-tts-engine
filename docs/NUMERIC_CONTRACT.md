@@ -40,7 +40,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
    - **ARM64**: `FPCR |= (1 << 24)` (`FZ`).
 2. **Alineación a línea de caché**: activaciones, KV cache, pesos cuantizados, `W_k` y workspaces del decodificador usan `AlignedBuf<64>`.
 3. **Patrones `AVX2` (`qwen-kernels/src/simd/avx2.rs`)**:
-   - **Prefetch**: en `int8` y `q4_0`, anticipa `5120` bytes (`QWEN_INT8_PF_DIST = 5120`) por fila procesada.
+   - **Prefetch**: en `int8`, anticipa `5120` bytes (`QWEN_INT8_PF_DIST = 5120`) por fila procesada; en `q4_0`, 16 bloques (288 bytes). Anticipar 5 120 bytes también en `q4_0` se midió el 2026-11-18 (frase larga con carga): neutro o peor (RTF 0,94–1,00 → 0,97–1,01).
    - **Filas largas**: en `int8_matvec_slice` y `q4_0_matvec_slice`, procesa **1 fila por iteración** cuando `cols >= 2048` (`QWEN_LONG_ROW_COLS`), manteniendo acumulación idéntica bit a bit frente a 2 filas (`matmat` y `q4_0_matvec_qkv_slice` mantienen 2 filas).
 
 ---
