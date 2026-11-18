@@ -20,7 +20,7 @@ use crate::audio::apply_gain;
 use crate::error::EngineError;
 use crate::model::{
     lookup_codec_embed, Model06B, QuantWeight, RequestConfig, SessionScratch, VoiceBindings,
-    ROPE_MAX_POS,
+    KV_INITIAL_POSITIONS, ROPE_MAX_POS,
 };
 use crate::pipeline::{
     apply_talker_logit_rules, build_prefill_embeds, build_step_embed, next_stream_chunk_target,
@@ -116,7 +116,10 @@ fn batch_proj_q(
 
 pub struct BatchWorkspace {
     pub b_dim: usize,
+    /// Limite logico de posiciones de KV por slot.
     pub kv_max: usize,
+    /// Posiciones asignadas por slot y capa; crece bajo demanda hasta `kv_max`.
+    pub kv_cap: usize,
     pub kv_len: usize,
     pub force_matvec: bool,
     pub x: AlignedBuf<f32>,
@@ -130,8 +133,12 @@ pub struct BatchWorkspace {
     pub swiglu_tmp: AlignedBuf<f32>,
     pub xt: AlignedBuf<f32>,
     pub yt: AlignedBuf<f32>,
-    pub kv_k: AlignedBuf<u16>,
-    pub kv_v: AlignedBuf<u16>,
+    /// KV del Talker en BF16, un bloque `[NUM_LAYERS, kv_cap, KV_DIM]` por slot.
+    /// Bloques por slot para que el crecimiento reasigne de uno en uno (pico
+    /// transitorio de un slot) y lo bastante grandes (>= 14 MiB) para que el
+    /// asignador entregue paginas cero diferidas, sin tocarlas en reposo.
+    pub kv_k: Vec<AlignedBuf<u16>>,
+    pub kv_v: Vec<AlignedBuf<u16>>,
     pub cp_x: AlignedBuf<f32>,
     pub cp_x_norm: AlignedBuf<f32>,
     pub cp_q: AlignedBuf<f32>,
@@ -160,12 +167,14 @@ impl BatchWorkspace {
             .max(CP_Q_DIM)
             .max(CP_HIDDEN_SIZE);
         let cp_max_cols = CP_HIDDEN_SIZE.max(CP_Q_DIM).max(CP_INTERMEDIATE_SIZE);
-        let kv_total = b_dim * NUM_LAYERS * kv_max * KV_DIM;
+        let kv_cap = KV_INITIAL_POSITIONS.min(kv_max);
+        let kv_block = NUM_LAYERS * kv_cap * KV_DIM;
         let cp_kv_total = b_dim * CP_NUM_LAYERS * CP_KV_MAX * CP_KV_DIM;
 
         Ok(Self {
             b_dim,
             kv_max,
+            kv_cap,
             kv_len: 0,
             force_matvec: env_batch_force_matvec(),
             x: AlignedBuf::new_zeroed(b_dim * HIDDEN_SIZE),
@@ -179,8 +188,8 @@ impl BatchWorkspace {
             swiglu_tmp: AlignedBuf::new_zeroed(INTERMEDIATE_SIZE),
             xt: AlignedBuf::new_zeroed(max_cols * b_dim),
             yt: AlignedBuf::new_zeroed(max_rows * b_dim),
-            kv_k: AlignedBuf::new_zeroed(kv_total),
-            kv_v: AlignedBuf::new_zeroed(kv_total),
+            kv_k: (0..b_dim).map(|_| AlignedBuf::new_zeroed(kv_block)).collect(),
+            kv_v: (0..b_dim).map(|_| AlignedBuf::new_zeroed(kv_block)).collect(),
             cp_x: AlignedBuf::new_zeroed(b_dim * CP_HIDDEN_SIZE),
             cp_x_norm: AlignedBuf::new_zeroed(b_dim * CP_HIDDEN_SIZE),
             cp_q: AlignedBuf::new_zeroed(b_dim * CP_Q_DIM),
@@ -197,8 +206,33 @@ impl BatchWorkspace {
         })
     }
 
+    /// Garantiza `required` posiciones por bloque (`required <= kv_max`), duplicando
+    /// `kv_cap` (tope `kv_max`). Cada slot se reasigna y copia por separado, de modo
+    /// que el pico transitorio es de un solo slot.
+    pub fn ensure_kv_capacity(&mut self, required: usize) {
+        if required <= self.kv_cap {
+            return;
+        }
+        let mut new_cap = self.kv_cap.max(1);
+        while new_cap < required {
+            new_cap = new_cap.saturating_mul(2);
+        }
+        let new_cap = new_cap.min(self.kv_max).max(required);
+        let old_stride = self.kv_cap * KV_DIM;
+        let new_stride = new_cap * KV_DIM;
+        for block in self.kv_k.iter_mut().chain(self.kv_v.iter_mut()) {
+            let mut grown = AlignedBuf::new_zeroed(NUM_LAYERS * new_stride);
+            for layer in 0..NUM_LAYERS {
+                grown[layer * new_stride..layer * new_stride + old_stride]
+                    .copy_from_slice(&block[layer * old_stride..(layer + 1) * old_stride]);
+            }
+            *block = grown;
+        }
+        self.kv_cap = new_cap;
+    }
+
     /// Copia las primeras `prompt_len` posiciones de cada capa desde una cache
-    /// fuente con stride `src_kv_max` al slot `slot` (stride `self.kv_max`).
+    /// fuente con stride `src_kv_max` al slot `slot`.
     /// Unica ruta de carga de KV por slot: scratch de sesion
     /// (src_kv_max = talker_kv.max_pos) o snapshot compacto (src_kv_max = prompt_len).
     pub fn load_slot_kv(
@@ -209,12 +243,13 @@ impl BatchWorkspace {
         src_kv_max: usize,
         prompt_len: usize,
     ) {
+        self.ensure_kv_capacity(prompt_len);
+        let len = prompt_len * KV_DIM;
         for layer in 0..NUM_LAYERS {
-            let dst_off = (slot * NUM_LAYERS + layer) * self.kv_max * KV_DIM;
-            let src_off = layer * src_kv_max * KV_DIM;
-            let len = prompt_len * KV_DIM;
-            self.kv_k[dst_off..dst_off + len].copy_from_slice(&src_k[src_off..src_off + len]);
-            self.kv_v[dst_off..dst_off + len].copy_from_slice(&src_v[src_off..src_off + len]);
+            let dst = layer * self.kv_cap * KV_DIM;
+            let src = layer * src_kv_max * KV_DIM;
+            self.kv_k[slot][dst..dst + len].copy_from_slice(&src_k[src..src + len]);
+            self.kv_v[slot][dst..dst + len].copy_from_slice(&src_v[src..src + len]);
         }
     }
 }
@@ -247,6 +282,7 @@ fn batch_talker_step_impl(
             max_pos, bw.kv_max
         )));
     }
+    bw.ensure_kv_capacity(max_pos + 1);
 
     bw.x[..b_dim * HIDDEN_SIZE].copy_from_slice(&embeds[..b_dim * HIDDEN_SIZE]);
 
@@ -333,13 +369,13 @@ fn batch_talker_step_impl(
                 &model.talker.rope_sin,
                 pos,
             );
-            let lbase = (b * NUM_LAYERS + layer_idx) * bw.kv_max * KV_DIM;
+            let lbase = layer_idx * bw.kv_cap * KV_DIM;
             let kv_off = lbase + pos * KV_DIM;
-            d.f32_to_bf16_vec(&mut bw.kv_k[kv_off..kv_off + KV_DIM], k_b);
-            d.f32_to_bf16_vec(&mut bw.kv_v[kv_off..kv_off + KV_DIM], v_b);
+            d.f32_to_bf16_vec(&mut bw.kv_k[b][kv_off..kv_off + KV_DIM], k_b);
+            d.f32_to_bf16_vec(&mut bw.kv_v[b][kv_off..kv_off + KV_DIM], v_b);
 
-            let lk = &bw.kv_k[lbase..lbase + (pos + 1) * KV_DIM];
-            let lv = &bw.kv_v[lbase..lbase + (pos + 1) * KV_DIM];
+            let lk = &bw.kv_k[b][lbase..lbase + (pos + 1) * KV_DIM];
+            let lv = &bw.kv_v[b][lbase..lbase + (pos + 1) * KV_DIM];
             d.causal_attention_bf16kv_heads_parallel(
                 pool,
                 &mut bw.attn_out[b * Q_DIM..(b + 1) * Q_DIM],
@@ -1793,4 +1829,41 @@ pub fn run_continuous_batch<T>(
 
     runtime.blas.set_threads(nt);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_kv_grows_on_demand_and_preserves_contents() {
+        let kv_max = 3 * KV_INITIAL_POSITIONS + 7;
+        let mut bw = BatchWorkspace::new(2, kv_max).expect("workspace");
+        assert_eq!(bw.kv_cap, KV_INITIAL_POSITIONS);
+        assert_eq!(bw.kv_k.len(), 2);
+
+        let pl = 5usize;
+        let src_k: Vec<u16> = (0..NUM_LAYERS * pl * KV_DIM)
+            .map(|i| (i % 65_521) as u16)
+            .collect();
+        let src_v: Vec<u16> = src_k.iter().map(|x| x.wrapping_mul(3)).collect();
+        bw.load_slot_kv(1, &src_k, &src_v, pl, pl);
+
+        bw.ensure_kv_capacity(KV_INITIAL_POSITIONS + 1);
+        assert_eq!(bw.kv_cap, 2 * KV_INITIAL_POSITIONS);
+        bw.ensure_kv_capacity(kv_max);
+        assert_eq!(bw.kv_cap, kv_max, "el crecimiento no supera kv_max");
+
+        let stride = kv_max * KV_DIM;
+        for layer in 0..NUM_LAYERS {
+            let dst = &bw.kv_k[1][layer * stride..(layer + 1) * stride];
+            let src = &src_k[layer * pl * KV_DIM..(layer + 1) * pl * KV_DIM];
+            assert_eq!(&dst[..pl * KV_DIM], src);
+            assert!(dst[pl * KV_DIM..].iter().all(|&x| x == 0));
+            let dst = &bw.kv_v[1][layer * stride..(layer + 1) * stride];
+            let src = &src_v[layer * pl * KV_DIM..(layer + 1) * pl * KV_DIM];
+            assert_eq!(&dst[..pl * KV_DIM], src);
+        }
+        assert!(bw.kv_k[0].iter().all(|&x| x == 0), "slot 0 intacto");
+    }
 }
