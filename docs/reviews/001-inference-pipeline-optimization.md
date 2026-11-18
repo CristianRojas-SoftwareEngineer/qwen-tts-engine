@@ -23,7 +23,7 @@ El diseño actual ya incorpora optimizaciones clave para CPU: cuantización `Q4_
 
 1. **Ancho de banda de memoria (cuello de botella principal)**:
    - `int8_matmat_slice` y `q4_0_matmat_slice` (`crates/qwen-kernels/src/simd/avx2.rs`) iteran `for b in 0..b_dim` llamando a `matvec`, releyendo los mismos pesos `b_dim` veces (impacta a `cp_prefill2` con `B=2` en cada fotograma y a todo `ContinuousBatchScheduler`).
-   - `batch_proj_q` (`crates/qwen-engine/src/batch.rs`) realiza una doble transposición (`batch_gather` y `quantize_act_int8_cols`) más `batch_scatter`.
+   - `batch_proj_q` (`crates/qwen-engine/src/batch.rs`) realiza una doble transposición (`batch_gather` y `quantize_act_int8_cols`) más `batch_scatter` (solo en el camino batch: fuera de alcance, ver [`ROADMAP.md`](../../ROADMAP.md)).
    - `talker_prefill` (`crates/qwen-engine/src/talker.rs`) expande las 28 capas `BF16` a `F32` (`60.0 MiB`/capa = `3.36 GiB` de escritura+relectura extra en todo el prefill) y provoca el *page-in* de `840 MiB` `BF16` desde disco aunque el modelo corra cuantizado.
    - `talker.codec_head_bf16` (`3072 × 1024`, `6.0 MiB`) permanece en `BF16` sin cuantizar.
 
@@ -130,8 +130,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
    - La reducción de RTF es **moderada en frases largas** y **más pronunciada en frases cortas y TTFA**.
    - **Techo de implementación, no de volumen de bytes**: cada fotograma lee `~1.04 GiB` de pesos cuantizados (`236.25 MiB` del Talker `Q4_0` + `774.34 MiB` de los 14 pasos del CP + `30.0 MiB` de `lm_head`). Con esos mismos bytes, el gemelo C completa el Code Predictor en `33.0–37.0 ms/f` y este motor en `38.7 ms/f`: existe un **5–17 % de margen sin cambiar bitwidth**. **Fundamento**: `Anexo A de phase-0/estado.md`.
    - **Palancas con efecto en `B=1`**: `O3` (`-3 MiB/frame`), `O8` vocoder (libera el `drain` cuando mejora el productor; `O5` resultó neutro), `O4` (`prefill_ms`, crítico en textos breves) y `O1` solo en `cp_prefill2` (2 posiciones/fotograma; el matmat entero es exacto pero no más rápido: **1.26×** E2E y **1.2–1.7×** en microbanco). **Fundamento**: `Anexo A de phase-0/estado.md`.
-2. **En servidor concurrente (`--batch-size N`, `ContinuousBatchScheduler`)**:
-   - Aquí se produce la **mayor reducción de RTF agregado** (tiempo total / audio total generado). Actualmente, `int8_matmat_slice` y `q4_0_matmat_slice` re-leen los pesos `B` veces, multiplicando el tráfico de DRAM casi por `B`. Con `O1 + O2 + O7`, el costo de leer `~1.04 GiB/frame` se amortiza entre las `B` peticiones activas simultáneamente.
+2. **En servidor concurrente (`--batch-size N`, `--workers N`)**: **fuera de alcance**. El objetivo del plan es el uso local, con una síntesis a la vez en un equipo modesto (laptop, solo CPU, Windows/Linux/macOS). Las optimizaciones que solo rinden con varios clientes concurrentes (escalado batch de `O1`, `O2`, `O7` batch, parte multi-worker de `O9`) están en [`ROADMAP.md`](../../ROADMAP.md).
 3. **Optimizaciones orientadas a RAM y arranque (`O10`, `O11`, `O12`)**:
    - Reducen cientos de MiB de huella residente (evitando *swapping* en equipos de poca memoria) y aceleran el arranque, sin alterar directamente la velocidad por fotograma cuando hay RAM libre.
 
@@ -147,14 +146,14 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Impacto**: Ahorra **`~55.3 MiB/frame`** en `cp_prefill2` (`B=2`) y reduce el tráfico de `B` relecturas a **1** (techo teórico `B×`). Medido: **1.26×** E2E en `--batch-bench` y **1.2–1.7×** en microbanco `INT8`/`INT4`. `matmat_bf16` queda fuera de alcance: **0.76–0.97×** en este hardware y descartado en el gemelo C. **Fundamento**: `Anexo A de phase-0/estado.md`.
 - **Propuesta**: Escribir microkernels `AVX2+FMA` especializados para `B=2, 4, 8`: cargar 32 bytes de peso (`INT8` o un `Q4_0Block`), decodificar nibbles una sola vez y acumular `B` vectores `a_b` en registros YMM independientes, precalculando `sumq[0..b_dim]` una vez por bloque. Mantener equivalente estructurado en `simd/scalar.rs` para ARM64 y *fallback* x86.
 - **Contrato numérico**: **Compatible 100 %** (`L2_rel == 0.0` en `INT8`, `L2_rel <= 1e-6` en `Q4_0` en `--self-test`).
-- **Estado**: `vigente` (solo `INT8`/`Q4_0`). **Efecto medido**: 1.26× E2E. **Fundamento**: `.work/plans/optimizations/phase-0/estado.md`. **Si se pierde**: volver a leer los pesos `B` veces por lote.
+- **Estado**: `vigente` con **alcance local**: `cp_prefill2` del Code Predictor (B=2 por frame, en toda síntesis). El escalado batch (`B = 4, 8`) queda **fuera de alcance** → [`ROADMAP.md`](../../ROADMAP.md) (R1). **Fundamento**: `.work/plans/optimizations/phase-0/estado.md`. **Si se pierde**: `cp_prefill2` lee cada matriz dos veces por frame.
 
 #### O2. Eliminar la doble transposición en `batch_proj_q` + `quantize_act_int8_cols`
 - **Ubicación**: `crates/qwen-engine/src/batch.rs:53-115` y `crates/qwen-kernels/src/dispatch.rs:357-379`.
 - **Problema**: `BatchWorkspace` guarda activaciones en `[B, cols]`. `batch_proj_q` las transpone a `[cols, B]` (`batch_gather`), `quantize_act_int8_cols` las retranspone a `[B, cols]` en `QXT_TLS` elemento a elemento, y `batch_scatter` transpone `[rows, B] → [B, rows]`.
 - **Propuesta**: Cuantizar directamente cada fila contigua `src[b * cols..(b+1) * cols]` con `quantize_act_int8` AVX2 sin `batch_gather` y alinear la salida con el microkernel de `O1`.
 - **Contrato numérico**: **Bit-idéntico**.
-- **Estado**: `pendiente`. **Efecto medido**: sin medir en Fase 0. **Fundamento**: depende de `O1`.
+- **Estado**: **`fuera de alcance`** (solo existe en el camino batch) → [`ROADMAP.md`](../../ROADMAP.md) (R2).
 
 #### O3. Cuantización de `talker.codec_head_bf16` bajo `--quant-mixed` / `--int8`
 - **Ubicación**: `crates/qwen-engine/src/model.rs:1729` y `crates/qwen-engine/src/pipeline.rs:697-704`.
@@ -193,14 +192,13 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 #### O7. Reducir barreras de `ComputePool`, eliminar `ftz_on()` en `matvec_*` y paralelizar batch unificado
 - **Ubicaciones**:
   1. `crates/qwen-kernels/src/dispatch.rs:668, 709, 757, 823, 854, 894` (`ftz_on()` repetido ~466 veces/frame).
-  2. `crates/qwen-engine/src/batch.rs:252-426`: `causal_attention_bf16kv_heads_parallel` se invoca dentro de `for b in 0..b_dim` (`b_dim` barreras por capa) y procesa proyecciones para slots con `active[b] == false`.
+  2. ~~`crates/qwen-engine/src/batch.rs`: barreras por slot y slots inactivos en `batch_talker_step_impl`~~ (**fuera de alcance**, camino batch → [`ROADMAP.md`](../../ROADMAP.md), R3).
   3. `crates/qwen-engine/src/code_predictor.rs:206-360`: ~325 barreras por fotograma sobre matrices de `1024`–`3072` filas.
 - **Propuestas**:
   - ~~Dejar `ftz_on()` solo al inicializar hilos/runtimes~~ (**descartado por evidencia**, Fase 1 Paso 1.6): `ftz_on()` es `stmxcsr` + comparación (el `ldmxcsr` solo se ejecuta si FTZ/DAZ está apagado): ~466 llamadas/frame ≈ 5 k ciclos ≈ 2 µs/frame frente a ~45 ms/frame (≈ 0,005 %, por debajo de cualquier resolución de A/B). La auditoría de hilos muestra que `qwen-batch-sched` y `qwen-http-single` (`scheduler.rs`) usan el `ComputeRuntime` creado en `main` y no activan FTZ al nacer: para ellos, la llamada en la entrada del kernel es la única garantía. Retirarla obligaría a añadir `ftz_on()` en cada `spawn` (más superficie de error, con riesgo de denormales) a cambio de nada medible.
-  - En `batch_talker_step_impl`, compactar slots activos (`n_act`) antes de `batch_proj_q` y paralelizar `(slot activo, cabeza)` en una sola barrera por capa.
   - Ajustar el umbral de paralelización en `CodePredictor` para reducir salidas del pool (y combinar la fusión `swiglu + quantize_act_int8` en `down_proj` junto con `O6` en la **Fase 3**).
 - **Contrato numérico**: **Bit-idéntico**.
-- **Estado**: `vigente`. **Efecto medido**: sin medir en Fase 0. **Fundamento**: el gemelo C registra ~495 despachos al pool por fotograma. **Si se pierde**: barreras redundantes por capa y por slot inactivo.
+- **Estado**: parte `ftz_on()` `descartado` (Paso 1.6); parte batch **fuera de alcance** ([`ROADMAP.md`](../../ROADMAP.md), R3); parte Code Predictor `vigente` (Paso 2.2). **Fundamento**: el gemelo C registra ~495 despachos al pool por fotograma. **Si se pierde**: barreras redundantes en el CP.
 
 #### O8. Presupuesto de espera en `sd_pool` y vectorizar convoluciones del `SpeechDecoder`
 - **Ubicación**: `crates/qwen-kernels/src/dispatch.rs:1411-1417`, `crates/qwen-engine/src/speech_decoder.rs:32-43, 505-525, 1013-1057, 1366-1383`.
@@ -214,7 +212,7 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 - **Problema**: `FfiBlas::set_threads` modifica el estado global de proceso de OpenBLAS. Con `--workers N > 1`, múltiples workers se pisan entre prefill y generación. Un `OMP_NUM_THREADS` ausente en el lanzador compromete los hilos de OpenMP antes de `main`.
 - **Propuesta**: fijar `OMP_NUM_THREADS = -j` en el lanzador y `openblas_set_num_threads` una sola vez al iniciar cuando `n_workers > 1` (sin reconfigurar por petición). `OPENBLAS_NUM_THREADS` permanece sin definir. `--batch-size N` (o `faer-blas`) es la opción preferente en concurrencia.
 - **Contrato numérico**: **Bit-idéntico** por petición con el mismo número de hilos efectivo.
-- **Estado**: `vigente`. **Efecto medido**: en Windows `OMP_NUM_THREADS = -j` reduce **1 410 MiB** comprometidos y el tiempo un **6 %**, sin cambiar el audio. **Fundamento**: `Anexo A §A.6 de phase-0/estado.md`.
+- **Estado**: parte lanzador (`OMP_NUM_THREADS = -j`) `vigente` (Paso 2.3, aplica a toda síntesis); parte multi-worker (`openblas_set_num_threads` con `n_workers > 1`) **fuera de alcance** → [`ROADMAP.md`](../../ROADMAP.md) (R4). **Efecto medido (gemelo C)**: en Windows `OMP_NUM_THREADS = -j` reduce **1 410 MiB** comprometidos y el tiempo un **6 %**, sin cambiar el audio. **Fundamento**: `Anexo A §A.6 de phase-0/estado.md`.
 
 ---
 
@@ -251,12 +249,12 @@ De este modelo se desprenden tres conclusiones clave sobre el **RTF**:
 | Prioridad | ID | Estado | Optimización | Recurso | Dependencias | Riesgo numérico | Esfuerzo |
 |---|---|---|---|---|---|---|---|
 | **1** | **O5** | `implementado` (neutro en RTF; camino único) | `causal_attention_windowed` en `SpeechDecoder` streaming | **CPU** | Ninguna | Ninguno (`SNR >= 100 dB`) | Bajo |
-| **2** | **O1** | `vigente` | Microkernels `matmat_int8` / `matmat_q4_0` reales (sin `bf16`) | **Ancho de banda + CPU** | Ninguna | Ninguno (bit-idéntico) | Medio |
-| **3** | **O2** | `pendiente` | Eliminar doble transposición en `batch_proj_q` | **Ancho de banda + CPU** | Depende de **O1** | Ninguno (bit-idéntico) | Bajo–Medio |
+| **2** | **O1** | `vigente` (alcance local: `cp_prefill2`; batch → ROADMAP R1) | Microkernels `matmat_int8` / `matmat_q4_0` reales (sin `bf16`) | **Ancho de banda + CPU** | Ninguna | Ninguno (bit-idéntico) | Medio |
+| **3** | **O2** | `fuera de alcance` (ROADMAP R2) | Eliminar doble transposición en `batch_proj_q` | **Ancho de banda + CPU** | Depende de **O1** | Ninguno (bit-idéntico) | Bajo–Medio |
 | **4** | **O10** | `implementado` (`O10a`/`O10b`/`O10c`) | `KV_INITIAL_POSITIONS`, staging `pref_*_f32` transitorio, KV de `BatchWorkspace` bajo demanda | **RAM** | Ninguna | Ninguno (bit-idéntico) | Bajo |
 | **5** | **O11** | `implementado` | Snapshot compacto de KV en `generate_batch_multi` (CLI batch) | **RAM** | Ninguna | Ninguno (bit-idéntico) | Bajo |
-| **6** | **O7** | `vigente` | Quitar `ftz_on()` hot path, compactar batch y barrera única atención | **CPU + Ancho de banda** | Ninguna (mejor tras **O1**) | Ninguno (bit-idéntico) | Bajo–Medio |
-| **7** | **O9** | `vigente` | Fijar `OMP_NUM_THREADS = -j` en el lanzador y `openblas_set_num_threads` una sola vez | **CPU (servidor)** | Ninguna | Ninguno | Bajo |
+| **6** | **O7** | CP `vigente`; `ftz_on` descartado; batch fuera de alcance (ROADMAP R3) | Barreras del Code Predictor | **CPU + Ancho de banda** | Ninguna (mejor tras **O1**) | Ninguno (bit-idéntico) | Bajo–Medio |
+| **7** | **O9** | lanzador `vigente`; multi-worker fuera de alcance (ROADMAP R4) | Fijar `OMP_NUM_THREADS = -j` en el lanzador | **CPU + RAM** | Ninguna | Ninguno | Bajo |
 | **8** | **O12** | `pendiente` | Cuantización paralela en `Model06B::load` | **Tiempo de carga** | Ninguna | Ninguno (bit-idéntico) | Bajo |
 | **9** | **O6** | `condicionado` | Vectorizar `swiglu_inplace`, `silu`, GELU en `AVX2+FMA` | **CPU** | Ninguna | Revisar ULP vs `libm` | Medio |
 | **10** | **O3** | `pendiente` | Cuantizar `talker.codec_head` a `INT8` | **Ancho de banda** | Ninguna | Requiere `NUMERIC_CONTRACT.md` | Bajo |
@@ -312,21 +310,19 @@ Las 12 mejoras **no deben aplicarse en un único cambio monolítico**: mezclar a
 
 ---
 
-### Fase 2 — Microkernels `matmat` reales y escalado del servidor
+### Fase 2 — Code Predictor y microkernels para la síntesis individual
 - **Línea base (única para las Fases 2–4)**: el cierre de la Fase 1 (`.work/plans/optimizations/00-estado.md`, fila «Cierre Fase 1»; audio `phase-1/baseline_fase1_{short,long}.wav`). Cada fase se compara contra el cierre de la anterior; la Fase 0 es histórico.
-- **Alcance**: `O1` (solo `INT8`/`Q4_0`; `matmat_bf16` queda fuera de alcance), `O2`, `O7 (compactación de slots activos + barrera única de atención batch + umbral en CP)` y `O9`.
+- **Alcance**: `O1` en `cp_prefill2` (solo `INT8`/`Q4_0`; `matmat_bf16` queda fuera), `O7` en el Code Predictor y `O9` en el lanzador. Las optimizaciones de servidor concurrente y batch están **fuera de alcance** ([`ROADMAP.md`](../../ROADMAP.md)).
 - **Prerequisitos**: Fase 1 completada.
 - **Pasos**:
-  - **Paso 2.1 (`O1a`)**: implementar microkernel real `int8_matmat_slice` para `B=2,4,8` en `crates/qwen-kernels/src/simd/avx2.rs` (y paridad en `simd/scalar.rs`).
-  - **Paso 2.2 (`O1b`)**: implementar microkernel real `q4_0_matmat_slice` para `B=2,4,8` con `sumq[0..b_dim]` precalculado por bloque (`avx2.rs` y `scalar.rs`).
-  - **Paso 2.3 (`O2`)**: eliminar la doble transposición en `batch_proj_q` cuantizando directamente filas contiguas `[B, cols]` (`crates/qwen-engine/src/batch.rs` y `dispatch.rs`).
-  - **Paso 2.4 (`O7` batch)**: compactar slots activos (`n_act`) antes de `batch_proj_q` y unificar `causal_attention_bf16kv_heads_parallel` en una sola barrera por capa en `batch_talker_step_impl` (`crates/qwen-engine/src/batch.rs`).
-  - **Paso 2.5 (`O7` CP)**: ajustar umbral de paralelización en `CodePredictor` (`crates/qwen-engine/src/code_predictor.rs`) y verificar con `--batch-test`.
-  - **Paso 2.6 (`O9`)**: fijar `OMP_NUM_THREADS = -j` en el lanzador y `openblas_set_num_threads` una sola vez al inicializar cuando `n_workers > 1` (`crates/qwen-app/src/server/scheduler.rs` y `crates/qwen-kernels/src/blas.rs`). `OPENBLAS_NUM_THREADS` permanece sin definir.
+  - **Paso 2.1 (`O1`)**: microkernel `matmat` INT8/Q4_0 que lee cada fila de pesos una vez y acumula las columnas de lote en registros (`crates/qwen-kernels/src/simd/avx2.rs`), usado por `cp_prefill2` (B=2 en cada frame del CP).
+  - **Paso 2.2 (`O7` CP)**: reducir las barreras de `ComputePool` en el `CodePredictor` (`crates/qwen-engine/src/code_predictor.rs`), tras medir su coste real en una corrida instrumentada.
+  - **Paso 2.3 (`O9` lanzador)**: garantizar `OMP_NUM_THREADS = -j` antes de inicializar OpenBLAS. `OPENBLAS_NUM_THREADS` permanece sin definir.
 - **Criterio de cierre de Fase 2**:
-  1. `qwen_tts --self-test` con `L2_rel == 0.0` (`INT8`) y `L2_rel <= 1e-6` (`Q4_0`) entre `matmat(B=8)` y `8 × matvec`.
-  2. `qwen_tts --batch-test` aprobado y salida E2E **bit-idéntica** respecto al cierre de la Fase 1.
-  3. `qwen_tts --matmat-bench` (`QWEN_BATCH_B=2,4,8`) y `--batch-bench` por encima de la línea base del cierre de la Fase 1 (`--batch-bench` **1.31×**; `--matmat-bench` int8 1.07× / int4 1.03× de mediana), y caída medible de `cp_ms` en `cp_prefill2`. `matmat_bf16` no se evalúa: mide 0.76–0.97×. **Fundamento**: `Anexo A §A.3 de phase-0/estado.md`.
+  1. `qwen_tts --self-test` con `L2_rel == 0.0` (`INT8`) y `L2_rel <= 1e-6` (`Q4_0`) entre `matmat` y `matvec`; `--batch-test` aprobado.
+  2. Salida E2E **bit-idéntica** a `baseline_fase1_{short,long}.wav`.
+  3. `cp_ms` (ms/f) más bajo que en la línea base y RTF de la síntesis individual sin regresión; commit del CLI sin regresión.
+  4. `decoder_ms` y `drain` sin regresión.
 
 ---
 
@@ -387,8 +383,8 @@ cargo test --workspace --release --target x86_64-pc-windows-gnu
 .\target\x86_64-pc-windows-gnu\release\qwen_tts.exe --batch-bench -d models\qwen3-tts-0.6b --quant-mixed
 ```
 
-Para registrar el progreso real de cada Fase y Paso, medir antes y después con el mismo texto, semilla (`--seed 4`) e hilos (`-j 4 --quant-mixed`), en **CLI y servidor**:
+Para registrar el progreso real de cada Fase y Paso, medir antes y después con el mismo texto, semilla (`--seed 4`) e hilos (`-j 4 --quant-mixed`), en **CLI** (el servidor concurrente está fuera de alcance, ver [`ROADMAP.md`](../../ROADMAP.md)):
 - **Latencia y RTF**: `Prefill (ms)`, `Talker step (ms/f)`, `Code Predictor (ms/f)`, `Speech decoder (ms)`, `drain (ms)`, `TTFA (ms)` y `RTF`.
 - **Condición con carga**: además del equipo libre, 1 hilo copiando 256 MB en bucle durante toda la serie; su mediana se registra por separado. Las ganancias de ancho de banda aparecen en esta condición y aquí se verifica el requisito de RTF < 1.
-- **Memoria**: pico de `WorkingSet64` del proceso en CLI (frase corta, frase larga, ICL) y en servidor bajo `--serve --batch-size 4` y `--workers 4` con 4 peticiones concurrentes del mismo texto. La memoria privada es otra magnitud: no se compara con el *working set* y se instrumenta por separado cuando se necesite.
+- **Memoria**: pico de commit privado (`PeakPagefileUsage`, métrica primaria desde la Fase 1) y pico de *working set* (no regresión) del proceso en CLI (frase corta, frase larga, ICL).
 - **Pico durante reasignación**: en Pasos que modifiquen capacidades iniciales, registrar el pico *durante* `ensure_capacity`, no solo el de régimen.
