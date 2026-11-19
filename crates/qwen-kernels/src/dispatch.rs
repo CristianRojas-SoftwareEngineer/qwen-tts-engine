@@ -334,8 +334,43 @@ static AVX2_DISPATCH: KernelDispatch = KernelDispatch {
     snake_row_fn: avx2_wrappers::snake_row,
 };
 
+/// Ruta de kernels pedida con la variable de entorno `QWEN_KERNELS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelChoice {
+    /// Los kernels más rápidos que soporte la CPU (por defecto).
+    Auto,
+    /// La ruta escalar aunque la CPU tenga SIMD: referencia para comparar kernels en la misma máquina.
+    Scalar,
+}
+
+impl KernelChoice {
+    /// Interpreta el valor de `QWEN_KERNELS`: `auto` o `scalar`, sin distinguir mayúsculas; ausente o vacío es `auto`.
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            None | Some("") | Some("auto") => Ok(Self::Auto),
+            Some("scalar") => Ok(Self::Scalar),
+            Some(other) => Err(format!("QWEN_KERNELS={other} no es válido; use auto o scalar")),
+        }
+    }
+
+    /// Lee `QWEN_KERNELS` una vez por proceso. Un valor no válido se avisa por stderr y se trata como `auto`.
+    pub fn from_env() -> Self {
+        static CHOICE: std::sync::OnceLock<KernelChoice> = std::sync::OnceLock::new();
+        *CHOICE.get_or_init(|| {
+            Self::parse(std::env::var("QWEN_KERNELS").ok().as_deref()).unwrap_or_else(|e| {
+                eprintln!("aviso: {e}; se usa auto");
+                Self::Auto
+            })
+        })
+    }
+}
+
 impl KernelDispatch {
+    /// Tabla de kernels para `caps`, salvo que `QWEN_KERNELS=scalar` fuerce la ruta escalar.
     pub fn for_caps(caps: &CpuCaps) -> &'static Self {
+        if KernelChoice::from_env() == KernelChoice::Scalar {
+            return &SCALAR_DISPATCH;
+        }
         #[cfg(target_arch = "x86_64")]
         if caps.has_avx2_fma() {
             return &AVX2_DISPATCH;
@@ -1449,6 +1484,6 @@ impl ComputeRuntime {
 
     pub fn caps_report(&self) -> String {
         self.caps
-            .format_report(self.pool.n_threads(), self.blas.name())
+            .format_report(self.pool.n_threads(), self.blas.name(), KernelChoice::from_env())
     }
 }

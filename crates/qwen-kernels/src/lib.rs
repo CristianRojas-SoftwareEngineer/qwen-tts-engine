@@ -20,7 +20,7 @@ mod simd;
 pub use aligned::AlignedBuf;
 pub use blas::{set_initial_openblas_threads, BlasBackend, FfiBlas, Transpose};
 pub use caps::CpuCaps;
-pub use dispatch::{ComputeRuntime, KernelDispatch};
+pub use dispatch::{ComputeRuntime, KernelChoice, KernelDispatch};
 pub use ftz::ftz_on;
 pub use pool::{default_num_threads, resolve_num_threads, ComputePool};
 pub use quant::{Q2_0Block, Q4_0Block};

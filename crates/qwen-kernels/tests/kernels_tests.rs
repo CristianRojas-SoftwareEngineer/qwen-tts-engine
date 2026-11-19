@@ -255,3 +255,17 @@ fn test_parallel_rows_partition_bit_exact() {
         assert_eq!(run(&serial), run(&par), "rows={rows}");
     }
 }
+
+#[test]
+fn test_kernel_choice_parse() {
+    use qwen_kernels::KernelChoice;
+
+    for v in [None, Some(""), Some("auto"), Some(" AUTO ")] {
+        assert_eq!(KernelChoice::parse(v), Ok(KernelChoice::Auto), "{v:?}");
+    }
+    for v in [Some("scalar"), Some("Scalar"), Some(" scalar\n")] {
+        assert_eq!(KernelChoice::parse(v), Ok(KernelChoice::Scalar), "{v:?}");
+    }
+    let err = KernelChoice::parse(Some("neon")).unwrap_err();
+    assert!(err.contains("QWEN_KERNELS=neon"), "{err}");
+}

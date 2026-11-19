@@ -5,6 +5,8 @@
 
 use std::fmt::Write;
 
+use crate::dispatch::KernelChoice;
+
 /// Capacidades SIMD y de arquitectura detectadas en tiempo de ejecución.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CpuCaps {
@@ -62,11 +64,16 @@ impl CpuCaps {
         self.avx2 && self.fma
     }
 
-    pub fn format_report(&self, threads: usize, blas_name: &str) -> String {
+    /// Informe de `--caps`. Describe la ruta de kernels en uso, que es la escalar si `choice` la fuerza.
+    pub fn format_report(&self, threads: usize, blas_name: &str, choice: KernelChoice) -> String {
+        let simd = self.has_avx2_fma() && choice == KernelChoice::Auto;
         let mut s = String::new();
         let _ = writeln!(s, "qwen-tts-engine runtime capabilities:");
         let _ = writeln!(s, "  arch:             {}", self.arch);
-        if self.has_avx2_fma() {
+        if choice == KernelChoice::Scalar {
+            let _ = writeln!(s, "  kernels:          scalar (forced by QWEN_KERNELS=scalar)");
+        }
+        if simd {
             let _ = writeln!(s, "  matvec + attn:    AVX2 (2-row fused, FMA)");
             let _ = writeln!(
                 s,
@@ -105,7 +112,7 @@ impl CpuCaps {
             let _ = writeln!(
                 s,
                 "  lever (x86):      {}",
-                if self.has_avx2_fma() {
+                if simd {
                     "AVX2 maddubs integer dot for int8 and q4_0"
                 } else {
                     "scalar integer dot"

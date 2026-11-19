@@ -8,6 +8,8 @@
 #                 de la frase corta y la larga (scripts/ci-medir-rtf.sh).
 #   hilos_windows Windows x86_64: -j 4, -j 2 y -j 4 con QWEN_SD_THREADS=2, intercalados
 #                 (scripts/ci-comparar-hilos.sh).
+#   kernels       Los tres sistemas: QWEN_KERNELS=auto frente a QWEN_KERNELS=scalar, intercalados
+#                 (scripts/ci-comparar-kernels.sh).
 # Lanzamiento: POST https://circleci.com/api/v2/project/gh/CristianRojas-SoftwareEngineer/qwen-tts-engine/pipeline
 #   {"branch": "main", "parameters": {"medir": true}}
 # (o, en la web de CircleCI, «Trigger Pipeline» con el parámetro correspondiente = true).
@@ -25,6 +27,10 @@ parameters:
     type: boolean
     default: false
     description: Compara configuraciones de hilos en Windows x86_64.
+  kernels:
+    type: boolean
+    default: false
+    description: Compara QWEN_KERNELS=auto con QWEN_KERNELS=scalar en los tres sistemas.
 
 commands:
   descargar_modelo:
@@ -96,6 +102,18 @@ commands:
           command: bash scripts/ci-medir-rtf.sh 4 medicion
       - store_artifacts:
           path: medicion
+
+  comparar_kernels_unix:
+    steps:
+      - run:
+          name: Compilar qwen_tts (release)
+          command: cargo build --release -p qwen-app
+      - run:
+          name: Comparar kernels (auto frente a scalar)
+          no_output_timeout: 15m
+          command: bash scripts/ci-comparar-kernels.sh kernels
+      - store_artifacts:
+          path: kernels
 
   preparar_windows:
     description: MSYS2 UCRT64 (gcc, OpenBLAS), Rust para x86_64-pc-windows-gnu, modelo y compilación
@@ -233,12 +251,53 @@ jobs:
       - store_artifacts:
           path: hilos
 
+  kernels-linux-arm64:
+    docker:
+      - image: cimg/base:current
+    resource_class: arm.large
+    steps:
+      - checkout
+      - run:
+          name: Instalar OpenBLAS
+          command: sudo apt-get update -qq && sudo apt-get install -y -qq libopenblas-dev
+      - instalar_rust_unix
+      - descargar_modelo
+      - comparar_kernels_unix
+
+  kernels-macos-arm64:
+    macos:
+      xcode: "26.4.0"
+    resource_class: m4pro.medium
+    steps:
+      - checkout
+      - instalar_rust_unix
+      - descargar_modelo
+      - comparar_kernels_unix
+
+  kernels-windows-x64:
+    executor:
+      name: win/server-2022
+      size: large
+    steps:
+      - preparar_windows
+      - run:
+          name: Comparar kernels (auto frente a scalar)
+          shell: bash.exe
+          no_output_timeout: 15m
+          command: |
+            export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
+            unset OPENBLAS_NUM_THREADS
+            BIN=target/x86_64-pc-windows-gnu/release/qwen_tts.exe bash scripts/ci-comparar-kernels.sh kernels
+      - store_artifacts:
+          path: kernels
+
 workflows:
   pruebas:
     when:
       and:
         - not: << pipeline.parameters.medir >>
         - not: << pipeline.parameters.hilos_windows >>
+        - not: << pipeline.parameters.kernels >>
     jobs:
       - pruebas-linux-arm64
       - pruebas-macos-arm64
@@ -253,3 +312,9 @@ workflows:
     when: << pipeline.parameters.hilos_windows >>
     jobs:
       - hilos-windows-x64
+  kernels:
+    when: << pipeline.parameters.kernels >>
+    jobs:
+      - kernels-linux-arm64
+      - kernels-macos-arm64
+      - kernels-windows-x64
