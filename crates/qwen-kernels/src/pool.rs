@@ -3,7 +3,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::any::Any;
 use std::cell::UnsafeCell;
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -74,6 +76,10 @@ struct PoolInner {
     // el incremento de `generation` (Release/SeqCst) y el de `completed` (AcqRel).
     job_slot: UnsafeCell<JobSlot>,
     workers: Mutex<Vec<JoinHandle<()>>>,
+    /// Primer pánico de un trabajador en la tarea en curso; `parallel` lo relanza en quien llama.
+    worker_panic: Mutex<Option<Box<dyn Any + Send>>>,
+    /// `worker_panic` tiene un pánico: evita bloquear el mutex en cada tarea sin pánico.
+    worker_panicked: AtomicBool,
 }
 
 unsafe impl Send for PoolInner {}
@@ -109,20 +115,6 @@ fn wait_workers_complete(inner: &PoolInner, actual_workers: usize) {
             guard = inner.complete.wait(guard).unwrap_or_else(|e| e.into_inner());
         }
         guard.main_sleeping = false;
-    }
-}
-
-struct ActiveJobGuard<'a> {
-    inner: &'a PoolInner,
-    actual_workers: usize,
-    done: bool,
-}
-
-impl Drop for ActiveJobGuard<'_> {
-    fn drop(&mut self) {
-        if !self.done {
-            wait_workers_complete(self.inner, self.actual_workers);
-        }
     }
 }
 
@@ -177,6 +169,8 @@ impl ComputePool {
             stop: AtomicBool::new(false),
             job_slot: UnsafeCell::new(JobSlot::default()),
             workers: Mutex::new(Vec::with_capacity(requested_workers)),
+            worker_panic: Mutex::new(None),
+            worker_panicked: AtomicBool::new(false),
         });
 
         if requested_workers > 0 {
@@ -251,15 +245,22 @@ impl ComputePool {
             inner.wake.notify_all();
         }
 
-        // Garantiza la espera de los workers antes de liberar `f` incluso ante pánico en el hilo principal.
-        let mut active_guard = ActiveJobGuard {
-            inner,
-            actual_workers,
-            done: false,
-        };
-        run_chunks(job);
+        // Se espera a todos los trabajadores antes de liberar `f`, también si una tarea entra en
+        // pánico; después se relanza aquí el pánico: primero el de quien llama y, si no hubo, el
+        // primero de un trabajador.
+        let caller = catch_unwind(AssertUnwindSafe(|| run_chunks(job)));
         wait_workers_complete(inner, actual_workers);
-        active_guard.done = true;
+        let worker = if inner.worker_panicked.swap(false, Ordering::Acquire) {
+            inner.worker_panic.lock().unwrap_or_else(|e| e.into_inner()).take()
+        } else {
+            None
+        };
+        if let Err(payload) = caller {
+            resume_unwind(payload);
+        }
+        if let Some(payload) = worker {
+            resume_unwind(payload);
+        }
     }
 }
 
@@ -309,6 +310,15 @@ fn worker_main(inner: Arc<PoolInner>, mut seen: u64) {
         seen = inner.generation.load(Ordering::Acquire);
         let _completion = WorkerCompletionGuard { inner: &inner };
         let job = unsafe { &*inner.job_slot.get() };
-        run_chunks(job);
+        // El trabajador sobrevive al pánico de una tarea: lo guarda para quien llama (antes de
+        // contar la tarea como completada) y sigue atendiendo las siguientes.
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| run_chunks(job))) {
+            inner
+                .worker_panic
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_or_insert(payload);
+            inner.worker_panicked.store(true, Ordering::Release);
+        }
     }
 }

@@ -149,6 +149,24 @@ fn test_compute_pool_panic_safety() {
 }
 
 #[test]
+fn test_compute_pool_worker_panic_propagates() {
+    // Todas las tareas entran en pánico, así que al menos una cae en un hilo trabajador: el pánico
+    // llega a quien llama y los trabajadores siguen vivos (la llamada siguiente no se cuelga).
+    let pool = ComputePool::new(4);
+    for _ in 0..20 {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pool.parallel(4, |_, _| panic!("intentional test panic"));
+        }));
+        assert!(res.is_err());
+    }
+    let next = AtomicUsize::new(0);
+    pool.parallel(4, |_, _| {
+        next.fetch_add(1, Ordering::SeqCst);
+    });
+    assert_eq!(next.load(Ordering::SeqCst), 4);
+}
+
+#[test]
 fn test_scalar_dispatch_parity_and_bounds() {
     use qwen_kernels::KernelDispatch;
 
