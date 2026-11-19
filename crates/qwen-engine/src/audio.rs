@@ -129,25 +129,98 @@ pub fn encode_wav_bytes(samples: &[f32], sample_rate: u32) -> Vec<u8> {
     out.extend_from_slice(b"data");
     out.extend_from_slice(&data_size.to_le_bytes());
 
-    let mut fade_in = (sample_rate as usize) / 200; // 5 ms
-    let mut fade_out = (sample_rate as usize) * 40 / 1000; // 40 ms
-    if fade_in > n_samples / 2 {
-        fade_in = n_samples / 2;
-    }
-    if fade_out > n_samples / 2 {
-        fade_out = n_samples / 2;
-    }
+    let (fade_in, fade_out) = edge_fade_lens(sample_rate, n_samples);
     for (i, &orig) in samples.iter().enumerate() {
-        let mut s = orig;
-        if fade_in > 0 && i < fade_in {
-            s *= (i as f32) / (fade_in as f32);
-        }
-        if fade_out > 0 && i >= n_samples - fade_out {
-            s *= ((n_samples - 1 - i) as f32) / (fade_out as f32);
-        }
+        let s = edge_fade_out(edge_fade_in(orig, i, fade_in), i, n_samples, fade_out);
         out.extend_from_slice(&f32_to_s16le_clamped(s).to_le_bytes());
     }
     out
+}
+
+/// Longitudes de las rampas de borde de una síntesis de `n_samples` muestras: entrada de 5 ms y
+/// salida de 40 ms, cada una acotada a la mitad del audio.
+fn edge_fade_lens(sample_rate: u32, n_samples: usize) -> (usize, usize) {
+    let fade_in = ((sample_rate as usize) / 200).min(n_samples / 2);
+    let fade_out = ((sample_rate as usize) * 40 / 1000).min(n_samples / 2);
+    (fade_in, fade_out)
+}
+
+#[inline]
+fn edge_fade_in(s: f32, i: usize, fade_in: usize) -> f32 {
+    if fade_in > 0 && i < fade_in {
+        s * ((i as f32) / (fade_in as f32))
+    } else {
+        s
+    }
+}
+
+#[inline]
+fn edge_fade_out(s: f32, i: usize, n_samples: usize, fade_out: usize) -> f32 {
+    if fade_out > 0 && i >= n_samples - fade_out {
+        s * (((n_samples - 1 - i) as f32) / (fade_out as f32))
+    } else {
+        s
+    }
+}
+
+/// Ganancia y rampas de borde para salidas en *streaming*, con el mismo resultado bit a bit que
+/// `apply_gain` seguido de `encode_wav_bytes` sobre el audio completo.
+///
+/// La rampa de salida necesita saber dónde acaba el audio: se retienen los últimos 40 ms (y todo
+/// hasta acumular 80 ms, para que las longitudes de rampa sean las definitivas) y se emiten con la
+/// llamada siguiente o en `finish`.
+pub struct StreamEdgeRamp {
+    sample_rate: u32,
+    volume: f32,
+    pending: Vec<f32>,
+    emitted: usize,
+}
+
+impl StreamEdgeRamp {
+    pub fn new(sample_rate: u32, volume: f32) -> Self {
+        Self {
+            sample_rate,
+            volume,
+            pending: Vec::new(),
+            emitted: 0,
+        }
+    }
+
+    /// Añade `samples` y escribe en `out` (PCM s16le) las muestras que ya no pueden caer en la
+    /// rampa de salida.
+    pub fn push(&mut self, samples: &[f32], out: &mut Vec<u8>) {
+        let start = self.pending.len();
+        self.pending.extend_from_slice(samples);
+        apply_gain(&mut self.pending[start..], self.volume);
+        let (fade_in_max, hold) = edge_fade_lens(self.sample_rate, usize::MAX);
+        // Con al menos 2 × `hold` muestras en total, las rampas definitivas son las máximas y
+        // ninguna muestra fuera de las últimas `hold` cae en la de salida.
+        if self.emitted + self.pending.len() < 2 * hold {
+            return;
+        }
+        let ready = self.pending.len() - hold;
+        out.reserve(ready * 2);
+        for (j, &s) in self.pending[..ready].iter().enumerate() {
+            let v = edge_fade_in(s, self.emitted + j, fade_in_max);
+            out.extend_from_slice(&f32_to_s16le_clamped(v).to_le_bytes());
+        }
+        self.pending.drain(..ready);
+        self.emitted += ready;
+    }
+
+    /// Escribe en `out` las muestras retenidas con la rampa de salida definitiva.
+    pub fn finish(&mut self, out: &mut Vec<u8>) {
+        let n_samples = self.emitted + self.pending.len();
+        let (fade_in, fade_out) = edge_fade_lens(self.sample_rate, n_samples);
+        out.reserve(self.pending.len() * 2);
+        for (j, &s) in self.pending.iter().enumerate() {
+            let i = self.emitted + j;
+            let v = edge_fade_out(edge_fade_in(s, i, fade_in), i, n_samples, fade_out);
+            out.extend_from_slice(&f32_to_s16le_clamped(v).to_le_bytes());
+        }
+        self.emitted = n_samples;
+        self.pending.clear();
+    }
 }
 
 pub fn write_wav(path: &Path, samples: &[f32], sample_rate: u32) -> Result<(), EngineError> {
@@ -207,7 +280,7 @@ impl AudioSink for MemorySink {
 
 pub struct WavStreamSink {
     file: BufWriter<File>,
-    volume: f32,
+    ramp: StreamEdgeRamp,
     data_bytes: u32,
 }
 
@@ -219,26 +292,33 @@ impl WavStreamSink {
         bw.flush()?;
         Ok(Self {
             file: bw,
-            volume,
+            ramp: StreamEdgeRamp::new(sample_rate, volume),
             data_bytes: 0,
         })
+    }
+
+    fn write_pcm(&mut self, buf: &[u8]) -> Result<(), EngineError> {
+        if buf.is_empty() {
+            return Ok(());
+        }
+        self.file.write_all(buf)?;
+        self.file.flush()?;
+        self.data_bytes = self.data_bytes.saturating_add(buf.len() as u32);
+        Ok(())
     }
 }
 
 impl AudioSink for WavStreamSink {
     fn write_samples(&mut self, samples: &[f32]) -> Result<(), EngineError> {
-        let mut buf = Vec::with_capacity(samples.len() * 2);
-        for &s in samples {
-            let v = s * self.volume;
-            buf.extend_from_slice(&f32_to_s16le_clamped(v).to_le_bytes());
-        }
-        self.file.write_all(&buf)?;
-        self.file.flush()?;
-        self.data_bytes = self.data_bytes.saturating_add(buf.len() as u32);
-        Ok(())
+        let mut buf = Vec::new();
+        self.ramp.push(samples, &mut buf);
+        self.write_pcm(&buf)
     }
 
     fn finish(&mut self) -> Result<(), EngineError> {
+        let mut buf = Vec::new();
+        self.ramp.finish(&mut buf);
+        self.write_pcm(&buf)?;
         self.file.flush()?;
         let inner = self.file.get_mut();
         let file_size = 36u32.saturating_add(self.data_bytes);
@@ -252,31 +332,35 @@ impl AudioSink for WavStreamSink {
 }
 
 pub struct StdoutRawSink {
-    volume: f32,
+    ramp: StreamEdgeRamp,
 }
 
 impl StdoutRawSink {
     pub fn new(volume: f32) -> Self {
-        Self { volume }
+        Self {
+            ramp: StreamEdgeRamp::new(SAMPLE_RATE as u32, volume),
+        }
     }
+}
+
+fn write_stdout(buf: &[u8]) -> Result<(), EngineError> {
+    let mut out = std::io::stdout().lock();
+    out.write_all(buf)?;
+    out.flush()?;
+    Ok(())
 }
 
 impl AudioSink for StdoutRawSink {
     fn write_samples(&mut self, samples: &[f32]) -> Result<(), EngineError> {
-        let mut buf = Vec::with_capacity(samples.len() * 2);
-        for &s in samples {
-            let v = s * self.volume;
-            buf.extend_from_slice(&f32_to_s16le_clamped(v).to_le_bytes());
-        }
-        let mut out = std::io::stdout().lock();
-        out.write_all(&buf)?;
-        out.flush()?;
-        Ok(())
+        let mut buf = Vec::new();
+        self.ramp.push(samples, &mut buf);
+        write_stdout(&buf)
     }
 
     fn finish(&mut self) -> Result<(), EngineError> {
-        std::io::stdout().lock().flush()?;
-        Ok(())
+        let mut buf = Vec::new();
+        self.ramp.finish(&mut buf);
+        write_stdout(&buf)
     }
 }
 
@@ -665,5 +749,61 @@ pub fn trim_trailing_silence(audio: &mut Vec<f32>, sample_rate: usize, silent: b
             );
         }
         audio.truncate(new_n);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PCM s16le de referencia: ganancia y rampas sobre el audio completo (camino sin streaming).
+    fn reference_pcm(samples: &[f32], volume: f32) -> Vec<u8> {
+        let mut s = samples.to_vec();
+        apply_gain(&mut s, volume);
+        encode_wav_bytes(&s, SAMPLE_RATE as u32)[44..].to_vec()
+    }
+
+    fn streamed_pcm(samples: &[f32], volume: f32, chunk: usize) -> Vec<u8> {
+        let mut ramp = StreamEdgeRamp::new(SAMPLE_RATE as u32, volume);
+        let mut out = Vec::new();
+        for c in samples.chunks(chunk) {
+            ramp.push(c, &mut out);
+        }
+        ramp.finish(&mut out);
+        out
+    }
+
+    #[test]
+    fn stream_edge_ramp_matches_full_wav_bit_exact() {
+        let mut seed = 0x1234_5678u32;
+        for &n in &[0usize, 1, 100, 1919, 1920, 1921, 2880, 5000, 48_000] {
+            let samples: Vec<f32> = (0..n)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    ((seed >> 8) as f32 / 16_777_216.0 - 0.5) * 2.4
+                })
+                .collect();
+            for &volume in &[1.0f32, 0.7, 2.0] {
+                let expected = reference_pcm(&samples, volume);
+                for &chunk in &[1usize, 7, 960, 1920, 3840, 100_000] {
+                    assert_eq!(
+                        streamed_pcm(&samples, volume, chunk),
+                        expected,
+                        "n={n} volume={volume} chunk={chunk}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stream_edge_ramp_holds_back_only_the_fade_out() {
+        let mut ramp = StreamEdgeRamp::new(SAMPLE_RATE as u32, 1.0);
+        let mut out = Vec::new();
+        ramp.push(&vec![0.5f32; 1000], &mut out);
+        assert!(out.is_empty(), "con menos de 80 ms no se emite nada");
+        ramp.push(&vec![0.5f32; 2840], &mut out);
+        // 3 840 muestras recibidas (2 fotogramas): se emiten todas salvo las 960 de la rampa de salida.
+        assert_eq!(out.len(), (3840 - 960) * 2);
     }
 }

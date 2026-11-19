@@ -14,7 +14,8 @@ use qwen_core::config::SAMPLE_RATE;
 use qwen_engine::batch::MAX_BATCH_SLOTS;
 use qwen_engine::{
     encode_wav_bytes, prepare_markup_06b, run_continuous_batch, AbortHandle, BatchReq,
-    ContinuousBatchSink, ContinuousSlotJob, EngineError, Model06B, SessionScratch, VoiceBindings,
+    ContinuousBatchSink, ContinuousSlotJob, EngineError, Model06B, SessionScratch, StreamEdgeRamp,
+    VoiceBindings,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -187,7 +188,7 @@ struct BatchHttpTag {
     stream: TcpStream,
     is_stream: bool,
     header_sent: bool,
-    volume: f32,
+    ramp: StreamEdgeRamp,
     samples_sent: usize,
     t0: Instant,
 }
@@ -228,7 +229,9 @@ impl ContinuousBatchSink<BatchHttpTag> for BatchSinkAdapter {
             }
             tag.header_sent = true;
         }
-        if send_pcm_chunk(&mut tag.stream, samples, tag.volume).is_err() {
+        let mut pcm = Vec::new();
+        tag.ramp.push(samples, &mut pcm);
+        if send_pcm_chunk(&mut tag.stream, &pcm).is_err() {
             return false;
         }
         tag.samples_sent += samples.len();
@@ -247,6 +250,9 @@ impl ContinuousBatchSink<BatchHttpTag> for BatchSinkAdapter {
                 if !tag.header_sent && send_chunked_header(&mut tag.stream).is_ok() {
                     tag.header_sent = true;
                 }
+                let mut pcm = Vec::new();
+                tag.ramp.finish(&mut pcm);
+                let _ = send_pcm_chunk(&mut tag.stream, &pcm);
                 let _ = send_chunked_end(&mut tag.stream);
                 log_stream_sent(tag.samples_sent, tag.t0.elapsed().as_secs_f64());
             } else if matches!(err, Some(EngineError::Aborted))
@@ -426,7 +432,7 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
                                 stream,
                                 is_stream,
                                 header_sent: false,
-                                volume: vreq.volume,
+                                ramp: StreamEdgeRamp::new(SAMPLE_RATE as u32, vreq.volume),
                                 samples_sent: 0,
                                 t0: Instant::now(),
                             };

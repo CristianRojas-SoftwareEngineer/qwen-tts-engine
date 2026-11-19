@@ -24,7 +24,7 @@ pub mod voice_clone;
 pub use audio::{
     apply_gain, encode_wav_bytes, f32_to_s16le_clamped, onset_fade, read_wav_24khz, read_wav_pcm,
     tail_glitch_score, tail_trim, time_stretch, trim_trailing_silence,
-    validate_wav_path_or_header, write_wav, AudioSink, MemorySink, StdoutRawSink, WavStreamSink,
+    validate_wav_path_or_header, write_wav, AudioSink, MemorySink, StdoutRawSink, StreamEdgeRamp, WavStreamSink,
 };
 pub use batch::{
     batch_bench, batch_cp_predict, batch_self_test, batch_talker_step, batch_talker_step_ragged,

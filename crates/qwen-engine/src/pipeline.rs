@@ -128,7 +128,8 @@ pub(crate) fn build_step_embed(
     }
 }
 
-/// Calcula el tamaño objetivo de chunk en fotogramas según la rampa progresiva de streaming.
+/// Calcula el tamaño objetivo de chunk en fotogramas según la rampa progresiva (la misma con y sin
+/// streaming).
 #[inline]
 pub(crate) fn next_stream_chunk_target(
     first_chunk_emitted: bool,
@@ -592,11 +593,10 @@ pub fn synthesize_to_sink(
             let mut first_chunk_emitted = false;
 
             loop {
-                let (target, ramped) = if req.stream {
-                    next_stream_chunk_target(first_chunk_emitted, ramp_chunks, chunk_frames)
-                } else {
-                    (chunk_frames, false)
-                };
+                // Mismo calendario de fragmentos con y sin streaming: las fronteras de
+                // fragmento fijan el redondeo del decodificador, así el PCM es idéntico.
+                let (target, ramped) =
+                    next_stream_chunk_target(first_chunk_emitted, ramp_chunks, chunk_frames);
 
                 let (avail, is_done) = {
                     let mut g = queue.state.lock().unwrap_or_else(|e| e.into_inner());

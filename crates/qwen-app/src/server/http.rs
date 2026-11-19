@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 use qwen_core::config::{PRESET_SPEAKERS, SAMPLE_RATE};
 use qwen_core::MarkupPlanner;
 use qwen_engine::{
-    encode_wav_bytes, f32_to_s16le_clamped, prepare_markup_06b, render_spans_buffer,
+    encode_wav_bytes, prepare_markup_06b, render_spans_buffer,
     render_spans_stream, synthesize_to_samples, synthesize_to_sink, AbortHandle, AudioSink,
     EngineError, MemorySink, Model06B, RequestConfig, RequestExecution, SessionScratch,
-    SynthesisTiming, VoiceBindings, VoiceIdentity,
+    StreamEdgeRamp, SynthesisTiming, VoiceBindings, VoiceIdentity,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -243,18 +243,15 @@ pub fn send_chunked_header(stream: &mut TcpStream) -> std::io::Result<()> {
     send_all(stream, hdr)
 }
 
-pub fn send_pcm_chunk(stream: &mut TcpStream, samples: &[f32], volume: f32) -> std::io::Result<()> {
-    if samples.is_empty() {
+/// Envía un fragmento *chunked* con PCM s16le ya procesado (ganancia y rampas de borde aplicadas
+/// por `StreamEdgeRamp`). Un fragmento vacío no se envía: cerraría la respuesta.
+pub fn send_pcm_chunk(stream: &mut TcpStream, pcm: &[u8]) -> std::io::Result<()> {
+    if pcm.is_empty() {
         return Ok(());
-    }
-    let mut pcm = Vec::with_capacity(samples.len() * 2);
-    for &s in samples {
-        let v = s * volume;
-        pcm.extend_from_slice(&f32_to_s16le_clamped(v).to_le_bytes());
     }
     let ch_hdr = format!("{:x}\r\n", pcm.len());
     send_all(stream, ch_hdr.as_bytes())?;
-    send_all(stream, &pcm)?;
+    send_all(stream, pcm)?;
     send_all(stream, b"\r\n")?;
     Ok(())
 }
@@ -334,9 +331,23 @@ pub fn log_timing_breakdown(t: &SynthesisTiming) {
 }
 
 pub struct HttpAudioChunkSink<'a> {
-    pub stream: &'a mut TcpStream,
-    pub total_samples: usize,
-    pub volume: f32,
+    stream: &'a mut TcpStream,
+    ramp: StreamEdgeRamp,
+    total_samples: usize,
+}
+
+impl<'a> HttpAudioChunkSink<'a> {
+    pub fn new(stream: &'a mut TcpStream, volume: f32) -> Self {
+        Self {
+            stream,
+            ramp: StreamEdgeRamp::new(SAMPLE_RATE as u32, volume),
+            total_samples: 0,
+        }
+    }
+
+    fn send(&mut self, pcm: &[u8]) -> Result<(), EngineError> {
+        send_pcm_chunk(self.stream, pcm).map_err(|_| EngineError::Aborted)
+    }
 }
 
 impl AudioSink for HttpAudioChunkSink<'_> {
@@ -344,15 +355,17 @@ impl AudioSink for HttpAudioChunkSink<'_> {
         if samples.is_empty() {
             return Ok(());
         }
-        if send_pcm_chunk(self.stream, samples, self.volume).is_err() {
-            return Err(EngineError::Aborted);
-        }
+        let mut pcm = Vec::new();
+        self.ramp.push(samples, &mut pcm);
+        self.send(&pcm)?;
         self.total_samples += samples.len();
         Ok(())
     }
 
     fn finish(&mut self) -> Result<(), EngineError> {
-        Ok(())
+        let mut pcm = Vec::new();
+        self.ramp.finish(&mut pcm);
+        self.send(&pcm)
     }
 }
 
@@ -600,11 +613,7 @@ pub fn handle_tts_stream(
     let t0 = Instant::now();
     let exec = build_http_exec(vreq, &prep, effective_seed, true, guard.abort.clone());
 
-    let mut chunk_sink = HttpAudioChunkSink {
-        stream,
-        total_samples: 0,
-        volume: vreq.volume,
-    };
+    let mut chunk_sink = HttpAudioChunkSink::new(stream, vreq.volume);
 
     let mut timing_opt: Option<SynthesisTiming> = None;
     let gen_res: Result<(), EngineError> = if prep.use_compose {
