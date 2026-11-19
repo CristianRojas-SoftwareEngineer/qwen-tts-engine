@@ -95,8 +95,8 @@ Texto ──► MarkupPlanner (spans) ──► BpeTokenizer ──► build_pre
 **Condiciones de medición**:
 - Parámetros: `--quant-mixed -j 4`, `--seed 4`, temperatura por defecto (0,325). Mediana de 3 corridas.
 - Carga: sin carga, y con 1 hilo copiando 256 MiB (`scripts/SyntheticLoad.ps1 -Threads 1`).
-- Voces, configuradas como en AI-Voice-InterConnector:
-  - `default`: voz clonada de fábrica sobre el modelo Base, `--load-voice … --graft`.
+- Voces:
+  - `default`: voz clonada (`.qvoice`) sobre el modelo Base, `--load-voice … --graft`.
   - `ryan` y `vivian`: presets de CustomVoice.
 - Modos:
   - CLI de petición única, sin y con `--stream`.
