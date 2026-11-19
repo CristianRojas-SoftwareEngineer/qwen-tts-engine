@@ -59,10 +59,13 @@ commands:
   instalar_rust_unix:
     steps:
       - run:
-          name: Instalar Rust estable
+          name: Instalar Rust (versión de rust-toolchain.toml)
           command: |
-            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --component clippy
+            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
             echo 'source "$HOME/.cargo/env"' >> "$BASH_ENV"
+            source "$HOME/.cargo/env"
+            rustup toolchain install
+            rustc -V
 
   pruebas_unix:
     steps:
@@ -107,11 +110,13 @@ commands:
             & C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --needed --noconfirm --disable-download-timeout mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-binutils"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - run:
-          name: Instalar Rust estable (x86_64-pc-windows-gnu)
+          name: Instalar Rust (versión de rust-toolchain.toml, x86_64-pc-windows-gnu)
           command: |
             $ErrorActionPreference = "Stop"
             Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
-            .\rustup-init.exe -y --profile minimal --default-toolchain stable --target x86_64-pc-windows-gnu --component clippy
+            .\rustup-init.exe -y --profile minimal --default-toolchain none
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & "$env:USERPROFILE\.cargo\bin\rustup.exe" toolchain install
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - descargar_modelo:
           shell: bash.exe
