@@ -506,9 +506,13 @@ mod tests {
     use crate::model::ModelLoadOptions;
     use std::path::PathBuf;
 
-    fn load_model() -> (ComputeRuntime, Model06B) {
+    /// Carga `models/qwen3-tts-0.6b`; `None` (y la prueba se omite) si el modelo no está.
+    fn load_model() -> Option<(ComputeRuntime, Model06B)> {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/qwen3-tts-0.6b");
-        assert!(dir.exists(), "falta el modelo en {}", dir.display());
+        if !dir.exists() {
+            eprintln!("Se omite la prueba: falta el modelo en {}", dir.display());
+            return None;
+        }
         let runtime = ComputeRuntime::new(Some(4));
         let model = Model06B::load(
             &dir,
@@ -521,7 +525,7 @@ mod tests {
         )
         .expect("carga del modelo");
         assert!(model.cp.all_quantized);
-        (runtime, model)
+        Some((runtime, model))
     }
 
     struct Lcg(u32);
@@ -618,7 +622,7 @@ mod tests {
 
     #[test]
     fn step2_equals_two_steps_at_arbitrary_pos() {
-        let (runtime, model) = load_model();
+        let Some((runtime, model)) = load_model() else { return };
         let voice = VoiceBindings::preset(3061);
         let d = runtime.dispatch;
         for pos in [2usize, 9] {
@@ -652,7 +656,7 @@ mod tests {
 
     #[test]
     fn rejection_rollback_is_exact() {
-        let (runtime, model) = load_model();
+        let Some((runtime, model)) = load_model() else { return };
         let voice = VoiceBindings::preset(3061);
         let d = runtime.dispatch;
         let pos = 9usize;
@@ -739,7 +743,7 @@ mod tests {
 
     #[test]
     fn cp_predict_matches_sequential_reference() {
-        let (runtime, model) = load_model();
+        let Some((runtime, model)) = load_model() else { return };
         let voice = VoiceBindings::preset(3061);
         let mut rng = Lcg(0xC0DE_1234);
         let (mut total_hits, mut total_guesses) = (0usize, 0usize);

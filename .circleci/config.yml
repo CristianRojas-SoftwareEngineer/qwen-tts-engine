@@ -1,8 +1,9 @@
-# CircleCI: medición del motor en los tres sistemas operativos de destino (Fase 5, kernels NEON).
-# Cada job compila el motor, descarga el modelo CustomVoice (con caché) y mide con los scripts de
-# scripts/ci-*.sh.
+# CircleCI de qwen-tts-engine en Linux ARM64, macOS ARM64 y Windows x86_64.
 #
-# Solo se ejecuta a mano, para no gastar créditos en cada push. Parámetros (booleanos):
+# Pruebas (en cada push, salvo en las ejecuciones manuales de medición): clippy -D warnings,
+# cargo test --workspace --release (con el modelo CustomVoice restaurado de la caché) y --self-test.
+#
+# Medición (solo a mano, para no gastar créditos en cada push). Parámetros (booleanos):
 #   medir         Linux ARM64, macOS ARM64 y Windows x86_64: --caps, --self-test y 3 síntesis
 #                 de la frase corta y la larga (scripts/ci-medir-rtf.sh).
 #   hilos_windows Windows x86_64: -j 4, -j 2 y -j 4 con QWEN_SD_THREADS=2, intercalados
@@ -60,8 +61,24 @@ commands:
       - run:
           name: Instalar Rust estable
           command: |
-            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --component clippy
             echo 'source "$HOME/.cargo/env"' >> "$BASH_ENV"
+
+  pruebas_unix:
+    steps:
+      - run:
+          name: clippy (-D warnings)
+          command: cargo clippy --workspace --all-targets -- -D warnings
+      - run:
+          name: cargo test --workspace --release
+          no_output_timeout: 20m
+          command: cargo test --workspace --release
+      - run:
+          name: --caps y --self-test
+          command: |
+            cargo build --release -p qwen-app
+            ./target/release/qwen_tts --caps
+            ./target/release/qwen_tts --self-test
 
   compilar_y_medir_unix:
     steps:
@@ -94,7 +111,7 @@ commands:
           command: |
             $ErrorActionPreference = "Stop"
             Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
-            .\rustup-init.exe -y --profile minimal --default-toolchain stable --target x86_64-pc-windows-gnu
+            .\rustup-init.exe -y --profile minimal --default-toolchain stable --target x86_64-pc-windows-gnu --component clippy
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - descargar_modelo:
           shell: bash.exe
@@ -108,6 +125,48 @@ commands:
             cargo build --release -p qwen-app --target x86_64-pc-windows-gnu
 
 jobs:
+  pruebas-linux-arm64:
+    docker:
+      - image: cimg/base:current
+    resource_class: arm.large
+    steps:
+      - checkout
+      - run:
+          name: Instalar OpenBLAS
+          command: sudo apt-get update -qq && sudo apt-get install -y -qq libopenblas-dev
+      - instalar_rust_unix
+      - descargar_modelo
+      - pruebas_unix
+
+  pruebas-macos-arm64:
+    macos:
+      xcode: "26.4.0"
+    resource_class: m4pro.medium
+    steps:
+      - checkout
+      - instalar_rust_unix
+      - descargar_modelo
+      - pruebas_unix
+
+  pruebas-windows-x64:
+    executor:
+      name: win/server-2022
+      size: large
+    steps:
+      - preparar_windows
+      - run:
+          name: clippy, cargo test y --self-test (x86_64-pc-windows-gnu)
+          shell: bash.exe
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
+            unset OPENBLAS_NUM_THREADS
+            cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+            cargo test --workspace --release --target x86_64-pc-windows-gnu
+            target/x86_64-pc-windows-gnu/release/qwen_tts.exe --caps
+            target/x86_64-pc-windows-gnu/release/qwen_tts.exe --self-test
+
   medir-linux-arm64:
     docker:
       - image: cimg/base:current
@@ -170,6 +229,15 @@ jobs:
           path: hilos
 
 workflows:
+  pruebas:
+    when:
+      and:
+        - not: << pipeline.parameters.medir >>
+        - not: << pipeline.parameters.hilos_windows >>
+    jobs:
+      - pruebas-linux-arm64
+      - pruebas-macos-arm64
+      - pruebas-windows-x64
   medicion:
     when: << pipeline.parameters.medir >>
     jobs:
