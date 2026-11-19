@@ -64,6 +64,7 @@ commands:
             cargo build --release -p qwen-app
       - run:
           name: Medir (--caps, --self-test, síntesis corta y larga × 3)
+          no_output_timeout: 10m
           command: bash scripts/ci-medir-rtf.sh 4 medicion
       - store_artifacts:
           path: medicion
@@ -95,7 +96,9 @@ jobs:
   medir-windows-x64:
     executor:
       name: win/server-2022
-      size: medium
+      # `medium` tiene 2 núcleos físicos: el motor se fija a uno por núcleo y, con -j 4 (más los
+      # hilos del decoder), sus barreras se estorban y la síntesis no avanza. `large` da 4.
+      size: large
     steps:
       - checkout
       - run:
@@ -126,6 +129,7 @@ jobs:
       - run:
           name: Medir (--caps, --self-test, síntesis corta y larga × 3)
           shell: bash.exe
+          no_output_timeout: 10m
           command: |
             export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
             unset OPENBLAS_NUM_THREADS
