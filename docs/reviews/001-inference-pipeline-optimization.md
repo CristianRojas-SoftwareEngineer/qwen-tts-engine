@@ -460,6 +460,20 @@ Las fases 2–4 originales priorizaban el servidor multi-cliente y el batch, est
   - **Paridad con la ruta escalar** (`--self-test`, cada ruta que pueda ejecutar la CPU): INT8 bit a bit; Q4_0 `L2_rel` ≤ 3,5e-7 (límite 1e-6), igual en AVX2 que en NEON.
   - **Dónde se verificó**: Docker arm64 emulado (con `dotprod`, así que se prueban las dos variantes) y el workflow `pruebas` de CircleCI en Linux ARM64 y macOS ARM64.
   - **Hallazgo colateral, corregido**: si una tarea de `ComputePool::parallel` entraba en pánico en un hilo trabajador, el pánico no llegaba a quien llama y el trabajador moría, así que la llamada siguiente se colgaba. Ahora el trabajador guarda el pánico, sigue vivo, y `parallel` lo relanza al terminar la tarea (prueba `test_compute_pool_worker_panic_propagates`, que con el código anterior se colgaba).
+- **Resultado del Paso 5.4 (2026-11-19, CircleCI pipeline 19, workflow `kernels`)**:
+  - **Condiciones**: `QWEN_KERNELS=auto` (NEON en ARM, AVX2 en Windows) frente a `scalar`, intercalados por corrida; sin carga, `ryan`, inglés, `--quant-mixed -j 4 --seed 4`, frase corta y larga, 3 corridas. Productor = Talker + CP por fotograma.
+
+| Máquina | Productor `auto` / `scalar` (ms/f) | RTF `auto` / `scalar` | TTFA `auto` / `scalar` | Decoder, larga (`auto`) |
+|---|---|---|---|---|
+| macOS, Apple M4 Pro virtual (6 núcleos) | 27–32 / 108–121 (~3,9×) | 0,36–0,43 / 1,36–1,56 | 193–263 / 339–427 ms | 2,7 s para 19,6 s de audio |
+| Linux ARM64, Neoverse N1 (4 vCPU) | 137–139 / 420–426 (~3,1×) | 1,82–1,90 / 5,33–5,45 | 841–1 141 / 1 343–1 625 ms | 21,8–22,1 s para 14,1 s de audio |
+| Windows x86_64 (control AVX2, 4 núcleos, máquina virtual irregular) | 75–193 / 397–659 | 1,28–2,62 / 5,09–8,48 | — | — |
+
+  - **Veredicto**: mejora consistente del productor en los 6 pares de cada máquina, sin regresiones (TTFA también baja). Se integra.
+  - **macOS llega a tiempo real** sin carga, con margen: el productor queda en ~30 ms por fotograma de 80 ms.
+  - **Linux ARM64 sigue sin tiempo real**: el productor aún tarda 137 ms/f (el CP, 95 ms/f, con atención BF16, normas y cuantización de activaciones todavía escalares) y el decoder va 1,5× más lento que el audio. Los dos pasan al Paso 5.5.
+  - **El audio cambia** respecto a la ruta escalar en la misma máquina (determinista en cada una): con la frase larga, el Mac genera 245 fotogramas con NEON frente a 188 con la escalar, y Linux, 176 frente a 216. Todos terminan en EOS. Los kernels NEON dan los mismos bits que AVX2, así que la diferencia es el efecto del muestreo autorregresivo sobre un redondeo distinto, no un error de los kernels; la aceptación es de oído (Paso 5.6).
+- **Resultado del Paso 5.6 para Q4_0 + INT8 (2026-11-19)**: escucha en el Mac de CircleCI con la voz clonada del usuario (modelo Base, español e inglés) y con `ryan`, ruta escalar frente a NEON. Veredicto del usuario: **aceptable**. Con su voz, RTF 0,29 con NEON frente a 1,13–1,21 con la ruta escalar.
 
 ---
 
