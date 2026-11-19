@@ -50,13 +50,14 @@ Tras compilar `qwen_tts`, verifica el runtime y las rutas *batched* según [`INT
 
 ---
 
-## 3. Matriz de integración continua (`.github/workflows/ci.yml`)
+## 3. Integración continua en CircleCI (`.circleci/config.yml`)
 
-En cada `push` y `pull_request` sobre `main` (y tags `v*`), CI ejecuta pruebas del workspace, compilación `release`, `--caps` y `--self-test` en:
+La CI del repositorio es CircleCI. Hoy solo tiene el pipeline de **medición**, que se lanza a mano con el parámetro `medir = true` (web de CircleCI, «Trigger Pipeline», o la API v2) para no gastar créditos en cada push. En cada sistema de destino compila `release`, descarga el modelo CustomVoice (con caché) y ejecuta `scripts/ci-medir-rtf.sh`: `--caps`, `--self-test` y 3 síntesis de la frase corta y la larga (`ryan`, inglés, `--quant-mixed -j 4 --seed 4`), con RTF, tiempos por etapa, TTFA y hash del PCM.
 
-| Runner / Target | Toolchain BLAS | Verificaciones extra |
-|---|---|---|
-| `linux-x86_64` | `libopenblas-dev` | `cargo check -p qwen-app --features faer-blas` |
-| `linux-aarch64` | `libopenblas-dev` | Verificación en arquitectura ARM64 (*fallback* escalar) |
-| `macos-arm64` | `Accelerate` | Verificación en Apple Silicon |
-| `windows-x86_64-gnu` | MSYS2 UCRT64 (`libopenblas.a` estático) | Comprobación de manifiesto UTF-8 (`activeCodePage`) embebido en `qwen_tts.exe` |
+| Job | Máquina | Target | BLAS |
+|---|---|---|---|
+| `medir-linux-arm64` | Docker `cimg/base`, `arm.large` (Neoverse N1, 4 vCPU) | `aarch64-unknown-linux-gnu` | `libopenblas-dev` |
+| `medir-macos-arm64` | macOS Xcode 26.4, `m4pro.medium` (Apple M4 Pro) | `aarch64-apple-darwin` | `Accelerate` |
+| `medir-windows-x64` | Windows Server 2022 (orb `circleci/windows`), `medium` | `x86_64-pc-windows-gnu` | MSYS2 UCRT64 (`libopenblas.a` estático) |
+
+**Pendiente**: el pipeline de pruebas en cada push (`cargo test`, `clippy` y `--self-test` en los tres sistemas).

@@ -2,7 +2,7 @@
 
 Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 0.6B.
 
-[![CI](https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![CircleCI](https://dl.circleci.com/status-badge/img/gh/CristianRojas-SoftwareEngineer/qwen-tts-engine/tree/main.svg?style=shield)](https://dl.circleci.com/status-badge/redirect/gh/CristianRojas-SoftwareEngineer/qwen-tts-engine/tree/main)
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
 ![Rust: Stable](https://img.shields.io/badge/Rust-stable-orange.svg)
 ![Model: Qwen3--TTS 0.6B](https://img.shields.io/badge/Model-Qwen3--TTS%200.6B-informational.svg)
@@ -208,7 +208,7 @@ La documentación sigue el modelo **Diátaxis** para separar guías prácticas, 
 | [`docs/SPEC_06B.md`](docs/SPEC_06B.md) | Referencia | Ingenieros del motor y mantenedores | Geometría fija `0.6B`, mapa de tensores `safetensors`, formatos `.qvoice` v3 / `.bin`, vocabularios, *prefill* y marcado inline. |
 | [`docs/NUMERIC_CONTRACT.md`](docs/NUMERIC_CONTRACT.md) | Referencia | Ingenieros de kernels y optimización | Cuantización `INT8`/`Q4_0`/`Q2_0`, `FTZ`/`DAZ`, reglas IEEE-754/`FMA`, determinismo de *streaming* y tolerancias. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Explicación | Desarrolladores y contribuidores | Grafo de *crates* (DAG), política `unsafe`, cuatro tiempos de vida del estado, `ComputeRuntime`, pipeline y *schedulers*. |
-| [`docs/VERIFICATION_PLAN.md`](docs/VERIFICATION_PLAN.md) | Guía operativa | QA, contribuidores y mantenimiento de CI | Suites `cargo test`, verificación numérica de kernels y matriz de `.github/workflows/ci.yml`. |
+| [`docs/VERIFICATION_PLAN.md`](docs/VERIFICATION_PLAN.md) | Guía operativa | QA, contribuidores y mantenimiento de CI | Suites `cargo test`, verificación numérica de kernels y CI en CircleCI (`.circleci/config.yml`). |
 | [`docs/adr/001-only-06b.md`](docs/adr/001-only-06b.md) | ADR | Mantenedores | Especialización del motor para Qwen3-TTS `0.6B`. |
 | [`docs/adr/002-blas-strategy.md`](docs/adr/002-blas-strategy.md) | ADR | Mantenedores | Estrategia BLAS (`FfiBlas` por defecto y `faer-blas` opcional). |
 | [`docs/adr/003-concurrency-pool.md`](docs/adr/003-concurrency-pool.md) | ADR | Mantenedores | Pool de hilos `ComputePool` y control de sobresuscripción. |
