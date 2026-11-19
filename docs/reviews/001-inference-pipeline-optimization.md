@@ -88,7 +88,7 @@ Texto ──► MarkupPlanner (spans) ──► BpeTokenizer ──► build_pre
 
 ## 3. Línea base cuantitativa e impacto esperado en el RTF
 
-### 3.0 Línea base vigente (2026-11-18, tras el Paso 4.5, `main` `d783c81`)
+### 3.0 Línea base vigente (2026-11-19, tras el Paso 4.5 y el audio idéntico en los cuatro modos)
 
 **Condiciones de medición**:
 - Parámetros: `--quant-mixed -j 4`, `--seed 4`, temperatura por defecto (0,325). Mediana de 3 corridas.
@@ -104,19 +104,30 @@ Texto ──► MarkupPlanner (spans) ──► BpeTokenizer ──► build_pre
 
 | Condición | Idioma | CLI | CLI stream | Servidor | Servidor stream |
 |---|---|---|---|---|---|
-| Sin carga | es | 0,60–0,68 | 0,61–0,68 | 0,56–0,75 | 0,64–0,65 |
-| Sin carga | en | 0,59–0,60 | 0,61 | 0,59–0,63 | 0,63–0,64 |
-| Con carga | es | 0,83–0,97 | 0,86–0,88 | 0,86–0,89 | 0,87–0,88 |
-| Con carga | en | 0,85–0,90 | 0,86–0,88 | 0,86–0,88 | 0,86–0,88 |
+| Sin carga | es | 0,58–0,64 | 0,60–0,64 | 0,65–0,67 | 0,64–0,66 |
+| Sin carga | en | 0,63 | 0,63 | 0,64–0,66 | 0,64–0,66 |
+| Con carga | es | 0,90–0,92 | 0,91–1,02 | 0,91–0,95 | 0,89–0,91 |
+| Con carga | en | 0,89–0,90 | 0,88–0,91 | 0,89–0,92 | 0,89–1,04 |
 
-**Frase corta** (2,5–5,3 s de audio): RTF 0,60–0,77 sin carga y 0,83–1,13 con carga. Pesan los costes fijos por petición (prefill y primer fragmento); `default` en inglés (2,5 s) supera 1,0 con carga en los cuatro modos.
+Los máximos de 1,02 y 1,04 con carga vienen de una sola voz (`default`), con corridas de 0,90–0,92 a 1,14: son las celdas más ruidosas.
 
-**Primer audio en el servidor con *streaming***: 430–628 ms sin carga y 527–793 ms con carga.
+**Frase corta** (2,5–5,3 s de audio): RTF 0,63–0,80 sin carga y 0,90–1,14 con carga. Pesan los costes fijos por petición (prefill y primer fragmento); `default` en inglés (2,5 s) supera 1,0 con carga en los cuatro modos.
+
+**Primer audio en el servidor con *streaming***: 442–644 ms sin carga y 548–816 ms con carga.
+
+**Medición**:
+- Se midió entera con el binario final y en una sola sesión (288 corridas).
+- Frente a la medición del día anterior, con el binario previo, sale ~0,02–0,03 más alta. Los A/B intercalados de la misma sesión atribuyen esa diferencia a deriva del equipo:
+  - unificar el calendario de fragmentos cuesta +0,00 a +0,01 de RTF sin *streaming*;
+  - la retención de 40 ms en *streaming* es neutra (−0,01 a 0).
 
 **Audio**:
-- Cada combinación da un único PCM en las 3 corridas y en las dos condiciones de carga.
-- Los modos sin *streaming* (CLI y `/v1/tts`) coinciden entre sí, y los modos con *streaming* también.
-- Entre ambos grupos solo cambian las rampas de 5 ms y 40 ms del WAV completo (`NUMERIC_CONTRACT.md`).
+- Cada combinación da un único PCM en todas sus corridas y en las dos condiciones de carga, idéntico en los cuatro modos. Para ello:
+  - los dos modos usan el mismo calendario de fragmentos del decoder;
+  - el *streaming* aplica las mismas rampas de borde (5 ms y 40 ms) que el WAV completo.
+
+  Antes difería ±1 LSB fuera de las rampas, y el *streaming* podía terminar con la señal aún sonando: hasta ±106 en la última muestra, un posible clic.
+- Referencia vigente: `phase-4/baseline_fase4b_*` (`NUMERIC_CONTRACT.md`).
 
 Tablas por voz y los 24 hashes de referencia: `.work/plans/optimizations/phase-4/baseline_post_k1/baseline.md`.
 
@@ -391,7 +402,7 @@ Las fases 2–4 originales priorizaban el servidor multi-cliente y el batch, est
 - **Resultado del Paso 4.4 (2026-11-18)**: microkernel `matmat` INT8/Q4_0 en `cp_step2` (posiciones 0–1) (lee cada fila de pesos una vez para las 2 posiciones): `matmat` Q4_0 B=2 −40 a −50 %; RTF corta 0,72 → 0,69, larga 0,67 → 0,66; audio bit-idéntico.
 - **Criterio de cierre**: metas de RTF en el A/B E2E y en `/v1/tts/stream`; códigos códec bit-idénticos y PCM bit-idéntico o `SNR >= 100 dB` documentado; TTFA y commit sin regresión.
 - **Cierre (2026-11-18, HEAD `3cba746`)**: **cerrada con la meta ajustada por el usuario** a RTF ≤ 0,70 sin carga y ≤ 1,00 con carga (la original, 0,55 / 0,85, no se alcanzó). A/B intercalado frente al cierre de la Fase 3: RTF 0,71 → 0,68 / 0,64 → 0,68 sin carga (la larga, deriva del equipo: el Talker, sin cambios, también se frenó) y 1,04 → 1,00 / 1,01 → 0,99 con carga; decoder −3 a −8 %; drenaje hasta −38 %; audio SNR ≥ 104 dB. **Palanca pendiente**: el ritmo lo marca el Code Predictor, que con carga pasa de ~35 a ~54 ms/f porque relee sus pesos 15 veces por fotograma; bajar el RTF con carga exige que lea menos bytes.
-- **Paso 4.5, tras el cierre (2026-11-18): verificación especulativa de 1 adivinanza en el Code Predictor.** Tras obtener `c[g]`, la cabeza siguiente sobre el mismo estado adivina `c[g+1]` (`argmax(lm_heads[g+1](h[g+1]))`, sin entrenar nada); una pasada de 2 posiciones (`cp_step2`, la misma del prefill generalizada a cualquier posición) calcula el código real y, si coincide con la adivinanza, también el siguiente. Si no coincide, la segunda columna se descarta y su K/V se sobrescribe antes de leerse. Cada código sigue siendo el `argmax` de la misma cabeza sobre el mismo estado: **audio bit-idéntico** (CLI, voz clonada y `/v1/tts/stream`). Acierta el 28–31 % de las veces: pasadas de pesos por fotograma 15 → ~11,9. A/B intercalado de 5 pares con control A/A: con 1 hilo de carga, frase larga, CP 51,6 → 45,6 ms/f y RTF 0,95 → 0,87 (5 de 5 pares); sin carga, CP −4 a −7 % (los pesos se sirven en parte desde L3 y la pasada de 2 posiciones cuesta ~4 % más). Variantes descartadas antes de implementar (simulación con datos reales): sorteo en el CP (cambia la voz), borrador entrenado tipo EAGLE (≤ 0,01 de RTF sobre esta) y árboles de candidatos. Referencia de audio vigente desde el Paso 4.2: `phase-4/baseline_fase4_*`. **Fundamento**: `.work/plans/optimizations/phase-4/especulativa-k1/reporte.md`.
+- **Paso 4.5, tras el cierre (2026-11-18): verificación especulativa de 1 adivinanza en el Code Predictor.** Tras obtener `c[g]`, la cabeza siguiente sobre el mismo estado adivina `c[g+1]` (`argmax(lm_heads[g+1](h[g+1]))`, sin entrenar nada); una pasada de 2 posiciones (`cp_step2`, la misma del prefill generalizada a cualquier posición) calcula el código real y, si coincide con la adivinanza, también el siguiente. Si no coincide, la segunda columna se descarta y su K/V se sobrescribe antes de leerse. Cada código sigue siendo el `argmax` de la misma cabeza sobre el mismo estado: **audio bit-idéntico** (CLI, voz clonada y `/v1/tts/stream`). Acierta el 28–31 % de las veces: pasadas de pesos por fotograma 15 → ~11,9. A/B intercalado de 5 pares con control A/A: con 1 hilo de carga, frase larga, CP 51,6 → 45,6 ms/f y RTF 0,95 → 0,87 (5 de 5 pares); sin carga, CP −4 a −7 % (los pesos se sirven en parte desde L3 y la pasada de 2 posiciones cuesta ~4 % más). Variantes descartadas antes de implementar (simulación con datos reales): sorteo en el CP (cambia la voz), borrador entrenado tipo EAGLE (≤ 0,01 de RTF sobre esta) y árboles de candidatos. Referencia de audio entonces vigente: `phase-4/baseline_fase4_*` (hoy `baseline_fase4b_*`, tras unificar las rampas de borde y el calendario de fragmentos, §3.0). **Fundamento**: `.work/plans/optimizations/phase-4/especulativa-k1/reporte.md`.
 
 ---
 
