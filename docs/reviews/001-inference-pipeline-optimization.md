@@ -436,6 +436,21 @@ Las fases 2–4 originales priorizaban el servidor multi-cliente y el batch, est
   - **Paso 5.2 (`matvec` INT8 y Q4_0 en NEON)**: kernels del Talker y del Code Predictor. Verificación: `--self-test` en ARM64.
   - **Paso 5.3 (conversión `BF16→F32` y vocoder en NEON)**: incluye los kernels nuevos de las Fases 3–4. Verificación: `SNR >= 100 dB` frente a la ruta escalar.
 - **Criterio de cierre**: `--self-test` y `cargo test` verdes en ARM64; A/B E2E escalar frente a NEON con RTF < 1.
+- **Resultado del Paso 5.1 (2026-11-19, CircleCI, `scripts/ci-medir-rtf.sh`)**:
+  - **Condiciones**: ruta escalar, sin carga, `ryan`, inglés, `--quant-mixed -j 4 --seed 4`, 3 corridas.
+  - **Comunes a las dos máquinas**:
+    - `--self-test` verde.
+    - `--caps` ya detecta NEON con `dotprod`/`SDOT`.
+    - Audio determinista en cada máquina, pero distinto entre ellas y de x86 (fotogramas de la larga: Linux 216, macOS 188, x86 195).
+
+| Máquina | RTF corta / larga | Talker ms/f | CP ms/f | Decoder, larga | TTFA |
+|---|---|---|---|---|---|
+| Linux ARM64, Neoverse N1, 4 vCPU (`arm.large`), OpenBLAS | 5,05–5,38 / 4,99–5,47 | 106–114 | 287–317 | 27,5–29,1 s para 17,3 s de audio | 1,3–1,6 s |
+| macOS, Apple M4 Pro virtual (`m4pro.medium`), Accelerate | 1,16–1,21 / 1,15–1,23 | 25–27 | 65–70 | 1,9 s | 277–345 ms |
+
+  - **macOS**: el productor (~92 ms/f) supera los 80 ms de un fotograma, así que no llega a tiempo real. El decoder va sobrado.
+  - **Linux ARM64**: el productor tarda ~400 ms/f y el decoder solo ya va 1,6× más lento que el tiempo real. Hacen falta NEON en el productor y también en el decoder (`sgemm` de OpenBLAS, *snake* y atención escalares).
+  - **Referencia para portar**: los kernels NEON del motor C original.
 
 ---
 
