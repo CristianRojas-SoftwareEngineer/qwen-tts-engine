@@ -412,7 +412,10 @@ Las fases 2–4 originales priorizaban el servidor multi-cliente y el batch, est
   - **Pasan**:
     - **Reparto dinámico de filas.**
     - **`codec_head` solo con las filas válidas.**
-    - **Atención del CP en Q4_0 calibrada tipo GPTQ**, con reserva: error de salida 0,39 veces el del Q4_0 actual, pero ~40 veces el del INT8; cambia el audio y queda pendiente de escucha ciega.
+    - **Atención del CP en Q4_0 calibrada tipo GPTQ**, con reserva: error de salida 0,39 veces el del Q4_0 actual, pero ~40 veces el del INT8. **Descartada después** (2026-11-19):
+      - Velocidad: con carga, −1,6 ms/f (5 de 5 pares), RTF 0,83 → 0,82.
+      - Escucha del usuario con su voz clonada: cambia levemente la prosodia y el tono, y el INT8 suena más natural.
+      - Fundamento: `.work/plans/optimizations/phase-4/experimentos-productor/reporte_q4_calibrado.md`.
   - **Fundamento**: `.work/plans/optimizations/phase-4/experimentos-productor/reporte_cribado.md`.
 - **Paso 4.6 (2026-11-19): reparto dinámico de filas entre hilos y `codec_head` solo con las filas válidas.**
   - **Reparto**: `parallel_rows` reparte cada `matvec`/`matmat` en 4 trozos por hilo, alineados a 64 filas, que los hilos toman según quedan libres. Con carga, un hilo frenado ya no retrasa la barrera: es la espera del 11,7 % que el Paso 4.3 no podía quitar fusionando despachos.
