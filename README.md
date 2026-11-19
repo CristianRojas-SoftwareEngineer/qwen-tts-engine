@@ -26,7 +26,7 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 
 ## Alcance y capacidades
 
-- **Síntesis local en CPU**: ejecuta **Qwen3-TTS `0.6B`** con cuantización recomendada `--quant-mixed` (`Q4_0` + `INT8`), despacho en runtime `AVX2 + FMA` en x86-64 (y *fallback* escalar en ARM64) y *streaming* progresivo.
+- **Síntesis local en CPU**: ejecuta **Qwen3-TTS `0.6B`** con cuantización recomendada `--quant-mixed` (`Q4_0` + `INT8`), despacho en runtime `AVX2 + FMA` en x86-64 (en ARM64, kernels escalares por ahora; ver [requisitos mínimos](#requisitos-mínimos-recomendados-síntesis-en-tiempo-real)) y *streaming* progresivo.
 - **Clonación de voz y expresividad**: soporta perfiles `.qvoice` v3 / `.bin`, extracción `ECAPA-TDNN` + RVQ desde audio de referencia, activos `emovoice`, `--emo-ref`, `--roughness` (`Q2_0`) y marcado inline (`[laugh]`, `[sigh]`, pausas).
 - **Tres interfaces de integración**:
   - **CLI (`qwen_tts`)**: síntesis directa a WAV, *streaming* a WAV o `stdout` PCM crudo, lotes `--batch` y creación de voces.
@@ -38,6 +38,25 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 ---
 
 ## Requisitos de entorno
+
+### Requisitos mínimos recomendados (síntesis en tiempo real)
+
+«Tiempo real» significa RTF < 1, es decir, generar el audio más rápido de lo que dura, para que el *streaming* no se corte. Se cumple tanto con el equipo libre como con una carga de fondo moderada (1 hilo copiando 256 MiB en bucle).
+
+| Plataforma | CPU | Núcleos físicos | RAM | Disco | Estado |
+|---|---|---|---|---|---|
+| **Windows x86_64** (`x86_64-pc-windows-gnu`) | x86_64 con **AVX2 y FMA** (Intel Core de 4.ª generación / Haswell o posterior; AMD Ryzen / Zen o posterior) | **8** | 8 GB, doble canal | ~5 GB (los dos modelos) | ✅ Verificado: RTF 0,66 sin carga y 0,92 con carga, con 8 núcleos (AMD Ryzen 7 5825U) |
+| **Linux x86_64** (`x86_64-unknown-linux-gnu`) | Igual que Windows | **8** | 8 GB, doble canal | ~5 GB | ⚠️ Misma ruta de kernels AVX2 que Windows; requisitos esperados iguales, sin medición propia en Linux |
+| **macOS ARM64** (`aarch64-apple-darwin`) | Apple Silicon (M1 o posterior) | — | 8 GB | ~5 GB | ❌ Hoy sin tiempo real: RTF 1,15–1,23 en un Apple M4 Pro, porque en ARM64 los kernels del productor son escalares. Los kernels NEON están planificados (Fase 5 de [`docs/reviews/001-inference-pipeline-optimization.md`](docs/reviews/001-inference-pipeline-optimization.md)). |
+| **Linux ARM64** (`aarch64-unknown-linux-gnu`) | ARMv8 con NEON | — | 8 GB | ~5 GB | ❌ Hoy sin tiempo real: RTF ~5 en un Arm Neoverse N1 de 4 vCPU (kernels escalares y decodificador limitado por OpenBLAS). Pendiente de la misma Fase 5. |
+
+Notas sobre estos requisitos:
+- **Núcleos físicos, no hilos.** El motor se fija a un hilo lógico por núcleo físico (Windows). Con menos de 8 núcleos, el decodificador y OpenBLAS compiten con el productor por las mismas CPU. Mediciones en el mismo equipo, limitado por afinidad:
+  - **6 núcleos:** RTF 0,89 sin carga, pero 1,13 con carga.
+  - **4 núcleos:** 0,97 sin carga y 1,45 con carga.
+- **Sin AVX2**, el motor usa la ruta escalar y va unas 5–6 veces más lento (RTF ~3,8 en el mismo equipo).
+- **Memoria.** El proceso usa ~1,3 GB en el pico. El motor está limitado por el ancho de banda de memoria, por eso se recomienda doble canal.
+- **Ajuste de hilos.** `-j` fija los hilos del productor (4 por defecto). Menos hilos no compensa la falta de núcleos: con 4 núcleos, `-j 2` tampoco bajó de RTF 1.
 
 ### Dependencias por plataforma (perfil BLAS nativo por defecto)
 
