@@ -9,8 +9,6 @@
 # Medición (solo a mano, para no gastar créditos en cada push). Parámetros (booleanos):
 #   medir         Linux ARM64, macOS ARM64 y Windows x86_64: --caps, --self-test y 3 síntesis
 #                 de la frase corta y la larga (scripts/ci-medir-rtf.sh).
-#   hilos_windows Windows x86_64: -j 4, -j 2 y -j 4 con QWEN_SD_THREADS=2, intercalados
-#                 (scripts/ci-comparar-hilos.sh).
 #   kernels       Los tres sistemas: QWEN_KERNELS=auto frente a QWEN_KERNELS=scalar, intercalados
 #                 (scripts/ci-comparar-kernels.sh).
 # Lanzamiento: POST https://circleci.com/api/v2/project/gh/CristianRojas-SoftwareEngineer/qwen-tts-engine/pipeline
@@ -26,10 +24,6 @@ parameters:
     type: boolean
     default: false
     description: Ejecuta la medición en Linux ARM64, macOS ARM64 y Windows x86_64.
-  hilos_windows:
-    type: boolean
-    default: false
-    description: Compara configuraciones de hilos en Windows x86_64.
   kernels:
     type: boolean
     default: false
@@ -252,25 +246,6 @@ jobs:
       - store_artifacts:
           path: medicion
 
-  hilos-windows-x64:
-    # `medium` tiene 2 núcleos físicos: el motor se fija a uno por núcleo y, con -j 4 (más los
-    # hilos del decoder), sus barreras se estorban y la síntesis no avanza. `large` da 4.
-    executor:
-      name: win/server-2022
-      size: large
-    steps:
-      - preparar_windows
-      - run:
-          name: Comparar hilos (-j 4, -j 2, -j 4 con QWEN_SD_THREADS=2)
-          shell: bash.exe
-          no_output_timeout: 10m
-          command: |
-            export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
-            unset OPENBLAS_NUM_THREADS
-            BIN=target/x86_64-pc-windows-gnu/release/qwen_tts.exe bash scripts/ci-comparar-hilos.sh hilos
-      - store_artifacts:
-          path: hilos
-
   kernels-linux-arm64:
     docker:
       - image: cimg/base:current
@@ -314,7 +289,6 @@ workflows:
     when:
       and:
         - not: << pipeline.parameters.medir >>
-        - not: << pipeline.parameters.hilos_windows >>
         - not: << pipeline.parameters.kernels >>
     jobs:
       - pruebas-linux-arm64
@@ -326,10 +300,6 @@ workflows:
       - medir-linux-arm64
       - medir-macos-arm64
       - medir-windows-x64
-  hilos-windows:
-    when: << pipeline.parameters.hilos_windows >>
-    jobs:
-      - hilos-windows-x64
   kernels:
     when: << pipeline.parameters.kernels >>
     jobs:

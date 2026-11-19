@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Compara la ruta de kernels por defecto (QWEN_KERNELS=auto) con la escalar (QWEN_KERNELS=scalar) en
 # la máquina actual, intercaladas por corrida para que la deriva de la máquina no favorezca a ninguna.
-# Frase corta y larga de la línea base, 3 corridas, -j 4.
+# Frase corta y larga de referencia (ci-comun.sh), 3 corridas, -j 4.
 # Uso: scripts/ci-comparar-kernels.sh <carpeta de salida>   (BIN = ruta del binario)
 set -euo pipefail
 source "$(dirname "$0")/ci-comun.sh"
