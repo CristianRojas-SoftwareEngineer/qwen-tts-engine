@@ -488,7 +488,7 @@ Las fases 2–4 originales priorizaban el servidor multi-cliente y el batch, est
 
   - **Regla de la espera activa**: se quita solo si `-j` llega a los núcleos físicos (4 de 4), porque con 6 núcleos empeora. Con 8 núcleos (la laptop del usuario) no cambia nada: mismo audio y mismo comportamiento.
   - **Linux ARM64 con 4 vCPU sigue sin tiempo real** (RTF ~1,55): el productor tarda ~118 ms por fotograma de 80 y el decoder ~1,2× la duración del audio, compartiendo las 4 CPU. Es la misma limitación que x86 con 4 núcleos (por eso el mínimo publicado en x86 es 8). CircleCI no ofrece a este proyecto máquinas ARM de más de 4 vCPU (`arm.xlarge`: *resource class not in plan*), así que el requisito para Linux ARM64 queda sin verificar.
-  - **El audio cambia** respecto a la versión anterior en ARM (los kernels de atención y normas ahora suman como AVX2): pendiente de escucha.
+  - **Escucha** (pipeline 26, voz clonada del usuario, español e inglés, Mac y Linux ARM64, ruta escalar frente a NEON completo): veredicto del usuario **aceptable**. El usuario notó el tono algo más alto en un par; medido (F0): +1,2 semitonos en Linux en español, pero −1,5 en Mac en español y ~0 en los otros dos. En x86, cambiar solo la semilla mueve el tono de la misma frase hasta +1,1 semitonos: es la variación del muestreo (T=0,325, la temperatura por defecto), no un desplazamiento de NEON.
 
 ---
 
