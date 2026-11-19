@@ -489,6 +489,17 @@ Las fases 2–4 originales priorizaban el servidor multi-cliente y el batch, est
   - **Regla de la espera activa**: se quita solo si `-j` llega a los núcleos físicos (4 de 4), porque con 6 núcleos empeora. Con 8 núcleos (la laptop del usuario) no cambia nada: mismo audio y mismo comportamiento.
   - **Linux ARM64 con 4 vCPU sigue sin tiempo real** (RTF ~1,55): el productor tarda ~118 ms por fotograma de 80 y el decoder ~1,2× la duración del audio, compartiendo las 4 CPU. Es la misma limitación que x86 con 4 núcleos (por eso el mínimo publicado en x86 es 8). CircleCI no ofrece a este proyecto máquinas ARM de más de 4 vCPU (`arm.xlarge`: *resource class not in plan*), así que el requisito para Linux ARM64 queda sin verificar.
   - **Escucha** (pipeline 26, voz clonada del usuario, español e inglés, Mac y Linux ARM64, ruta escalar frente a NEON completo): veredicto del usuario **aceptable**. El usuario notó el tono algo más alto en un par; medido (F0): +1,2 semitonos en Linux en español, pero −1,5 en Mac en español y ~0 en los otros dos. En x86, cambiar solo la semilla mueve el tono de la misma frase hasta +1,1 semitonos: es la variación del muestreo (T=0,325, la temperatura por defecto), no un desplazamiento de NEON.
+- **Resultado del Paso 5.5 (segunda parte: OpenBLAS propio en Linux ARM64)**:
+  - **Qué se hizo**: `scripts/build-openblas.sh` compila OpenBLAS 0.3.30 estático (solo BLAS, hilos POSIX, `DYNAMIC_ARCH`), y `build.rs` lo enlaza con `OPENBLAS_LIB_DIR`. `--caps` muestra el kernel elegido (`openblas_get_corename`). La CI de Linux ARM64 lo usa (`openblas_propio`, con caché).
+  - **Medición** (CircleCI pipelines 28 y 29, intercalado, 3 corridas, frase corta y larga, `-j 4`, 4 vCPU):
+
+| Máquina y OpenBLAS de la distribución | RTF distribución / propio | Decoder, larga | Audio |
+|---|---|---|---|
+| Docker `cimg/base` (Ubuntu reciente, Neoverse N1): ya `core neoversen1` | 1,59–1,69 / 1,60–1,66 | igual | igual |
+| *Machine* Ubuntu 22.04 (Neoverse V1): `core armv8`, genérico | 1,20–1,33 / **1,12–1,21** (6/6) | 13,4–13,6 → **9,4–9,6 s** | cambia (otro kernel de `sgemm`) |
+
+  - **Veredicto**: se integra; mejora clara donde la distribución trae un OpenBLAS genérico y es neutro donde ya trae `DYNAMIC_ARCH`. Así el binario no depende del OpenBLAS de cada distribución.
+  - **Linux ARM64 sigue sin tiempo real con 4 vCPU**, pero en el Neoverse V1 se queda en RTF ~1,12–1,21, con el productor en ~85 ms por fotograma de 80.
 
 ---
 

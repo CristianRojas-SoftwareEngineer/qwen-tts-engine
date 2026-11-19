@@ -1,5 +1,8 @@
 # CircleCI de qwen-tts-engine en Linux ARM64, macOS ARM64 y Windows x86_64.
 #
+# Linux ARM64 enlaza un OpenBLAS propio (scripts/build-openblas.sh, en caché): el de Ubuntu 22.04
+# solo trae el kernel genérico ARMV8.
+#
 # Pruebas (en cada push, salvo en las ejecuciones manuales de medición): clippy -D warnings,
 # cargo test --workspace --release (con el modelo CustomVoice restaurado de la caché) y --self-test.
 #
@@ -61,6 +64,27 @@ commands:
           key: modelo-customvoice-v1
           paths:
             - models/qwen3-tts-0.6b
+
+  openblas_propio:
+    description: >-
+      OpenBLAS estático compilado con scripts/build-openblas.sh (DYNAMIC_ARCH, con caché), enlazado
+      con OPENBLAS_LIB_DIR: el kernel de cada CPU ARM no depende del OpenBLAS de la distribución.
+    steps:
+      - restore_cache:
+          keys:
+            - openblas-0.3.30-dynarch-arm64-v1
+      - run:
+          name: OpenBLAS 0.3.30 propio (compilar si no está en caché)
+          no_output_timeout: 40m
+          command: |
+            if [ ! -s "$HOME/openblas/lib/libopenblas.a" ]; then
+              bash scripts/build-openblas.sh "$HOME/openblas" 0.3.30
+            fi
+            echo "export OPENBLAS_LIB_DIR=$HOME/openblas/lib" >> "$BASH_ENV"
+      - save_cache:
+          key: openblas-0.3.30-dynarch-arm64-v1
+          paths:
+            - ~/openblas
 
   instalar_rust_unix:
     steps:
@@ -154,9 +178,7 @@ jobs:
     resource_class: arm.large
     steps:
       - checkout
-      - run:
-          name: Instalar OpenBLAS
-          command: sudo apt-get update -qq && sudo apt-get install -y -qq libopenblas-dev
+      - openblas_propio
       - instalar_rust_unix
       - descargar_modelo
       - pruebas_unix
@@ -196,9 +218,7 @@ jobs:
     resource_class: arm.large
     steps:
       - checkout
-      - run:
-          name: Instalar OpenBLAS
-          command: sudo apt-get update -qq && sudo apt-get install -y -qq libopenblas-dev
+      - openblas_propio
       - instalar_rust_unix
       - descargar_modelo
       - compilar_y_medir_unix
@@ -257,9 +277,7 @@ jobs:
     resource_class: arm.large
     steps:
       - checkout
-      - run:
-          name: Instalar OpenBLAS
-          command: sudo apt-get update -qq && sudo apt-get install -y -qq libopenblas-dev
+      - openblas_propio
       - instalar_rust_unix
       - descargar_modelo
       - comparar_kernels_unix
