@@ -6,7 +6,7 @@ set -euo pipefail
 
 THREADS="${1:-4}"
 OUT="${2:-medicion}"
-BIN="target/release/qwen_tts"
+BIN="${BIN:-target/release/qwen_tts}"
 MODEL="models/qwen3-tts-0.6b"
 mkdir -p "$OUT"
 

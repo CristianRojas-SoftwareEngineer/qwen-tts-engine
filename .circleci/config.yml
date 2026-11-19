@@ -1,17 +1,36 @@
-# CircleCI: medición del motor en ARM64 (Fase 5, kernels NEON).
+# CircleCI: medición del motor en los tres sistemas operativos de destino (Fase 5, kernels NEON).
 # Cada job compila el motor, descarga el modelo CustomVoice (con caché), ejecuta --caps y --self-test,
 # y sintetiza la frase corta y la larga de la línea base 3 veces (scripts/ci-medir-rtf.sh).
+#
+# Solo se ejecuta a mano, para no gastar créditos en cada push:
+#   POST https://circleci.com/api/v2/project/gh/CristianRojas-SoftwareEngineer/qwen-tts-engine/pipeline
+#   {"branch": "main", "parameters": {"medir": true}}
+# (o, en la web de CircleCI, «Trigger Pipeline» con el parámetro booleano `medir` = true).
 version: 2.1
+
+orbs:
+  win: circleci/windows@5.0
+
+parameters:
+  medir:
+    type: boolean
+    default: false
+    description: Ejecuta la medición en Linux ARM64, macOS ARM64 y Windows x86_64.
 
 commands:
   descargar_modelo:
     description: Descarga Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice en models/qwen3-tts-0.6b (con caché)
+    parameters:
+      shell:
+        type: string
+        default: /bin/bash
     steps:
       - restore_cache:
           keys:
             - modelo-customvoice-v1
       - run:
           name: Descargar el modelo (si no está en caché)
+          shell: << parameters.shell >>
           command: |
             set -euo pipefail
             D=models/qwen3-tts-0.6b
@@ -28,7 +47,7 @@ commands:
           paths:
             - models/qwen3-tts-0.6b
 
-  instalar_rust:
+  instalar_rust_unix:
     steps:
       - run:
           name: Instalar Rust estable
@@ -36,7 +55,7 @@ commands:
             curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
             echo 'source "$HOME/.cargo/env"' >> "$BASH_ENV"
 
-  compilar_y_medir:
+  compilar_y_medir_unix:
     steps:
       - run:
           name: Compilar qwen_tts (release)
@@ -59,9 +78,9 @@ jobs:
       - run:
           name: Instalar OpenBLAS
           command: sudo apt-get update -qq && sudo apt-get install -y -qq libopenblas-dev
-      - instalar_rust
+      - instalar_rust_unix
       - descargar_modelo
-      - compilar_y_medir
+      - compilar_y_medir_unix
 
   medir-macos-arm64:
     macos:
@@ -69,12 +88,55 @@ jobs:
     resource_class: m4pro.medium
     steps:
       - checkout
-      - instalar_rust
+      - instalar_rust_unix
       - descargar_modelo
-      - compilar_y_medir
+      - compilar_y_medir_unix
+
+  medir-windows-x64:
+    executor:
+      name: win/server-2022
+      size: medium
+    steps:
+      - checkout
+      - run:
+          name: Instalar MSYS2 UCRT64 (gcc, OpenBLAS, binutils)
+          command: |
+            $ErrorActionPreference = "Stop"
+            choco install msys2 -y --no-progress --params "/NoUpdate /InstallDir:C:\msys64"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --needed --noconfirm --disable-download-timeout mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-binutils"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - run:
+          name: Instalar Rust estable (x86_64-pc-windows-gnu)
+          command: |
+            $ErrorActionPreference = "Stop"
+            Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
+            .\rustup-init.exe -y --profile minimal --default-toolchain stable --target x86_64-pc-windows-gnu
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - descargar_modelo:
+          shell: bash.exe
+      - run:
+          name: Compilar qwen_tts.exe (release, x86_64-pc-windows-gnu)
+          shell: bash.exe
+          command: |
+            export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
+            unset OPENBLAS_NUM_THREADS
+            rustc --version
+            cargo build --release -p qwen-app --target x86_64-pc-windows-gnu
+      - run:
+          name: Medir (--caps, --self-test, síntesis corta y larga × 3)
+          shell: bash.exe
+          command: |
+            export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
+            unset OPENBLAS_NUM_THREADS
+            BIN=target/x86_64-pc-windows-gnu/release/qwen_tts.exe bash scripts/ci-medir-rtf.sh 4 medicion
+      - store_artifacts:
+          path: medicion
 
 workflows:
-  medicion-arm64:
+  medicion:
+    when: << pipeline.parameters.medir >>
     jobs:
       - medir-linux-arm64
       - medir-macos-arm64
+      - medir-windows-x64
