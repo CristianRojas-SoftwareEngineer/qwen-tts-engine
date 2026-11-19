@@ -287,3 +287,56 @@ fn test_kernel_choice_parse() {
     let err = KernelChoice::parse(Some("neon")).unwrap_err();
     assert!(err.contains("QWEN_KERNELS=neon"), "{err}");
 }
+
+#[test]
+fn test_available_dispatch_tables() {
+    use qwen_kernels::{CpuCaps, KernelChoice, KernelDispatch};
+
+    let caps = CpuCaps::detect();
+    let tables = KernelDispatch::available(&caps);
+    let names: Vec<&str> = tables.iter().map(|t| t.name()).collect();
+    assert_eq!(names[0], "scalar", "{names:?}");
+    #[cfg(target_arch = "aarch64")]
+    {
+        assert!(names.contains(&"neon"), "{names:?}");
+        assert_eq!(names.contains(&"neon-dotprod"), caps.dotprod, "{names:?}");
+    }
+    #[cfg(target_arch = "x86_64")]
+    assert_eq!(names.contains(&"avx2"), caps.has_avx2_fma(), "{names:?}");
+    if KernelChoice::from_env() == KernelChoice::Auto {
+        assert_eq!(KernelDispatch::for_caps(&caps).name(), *names.last().unwrap());
+    }
+}
+
+/// Las rutas SIMD suman Q4_0 en el mismo orden (el de AVX2), así que dan los mismos bits en x86 y
+/// en ARM. La huella de referencia sale de la ruta AVX2; si cambia el orden de suma de cualquier
+/// ruta SIMD, esta prueba falla.
+#[test]
+fn test_simd_q4_0_matches_avx2_summation_order() {
+    use qwen_kernels::quant::quantize_bf16_to_q4_0;
+    use qwen_kernels::{CpuCaps, KernelDispatch};
+
+    const AVX2_FINGERPRINT: u64 = 0x5df1d827ee451ac1;
+    let pool = ComputePool::new(1);
+    let fnv = |h: u64, v: &[f32]| {
+        v.iter().fold(h, |h, f| (h ^ f.to_bits() as u64).wrapping_mul(0x100000001b3))
+    };
+    for &simd in KernelDispatch::available(&CpuCaps::detect()).iter().skip(1) {
+        let mut h = 0xcbf29ce484222325u64;
+        // 1024 columnas usa el kernel de 2 filas y 2048, el de 1 fila; 257 filas, la fila suelta.
+        for (rows, cols) in [(257usize, 1024usize), (64, 2048)] {
+            let wb: Vec<u16> = (0..rows * cols)
+                .map(|i| f32_to_bf16_round(((i * 7919 % 211) as f32 - 105.0) * 0.002))
+                .collect();
+            let x: Vec<f32> = (0..3 * cols).map(|i| ((i * 37 % 101) as f32 - 50.0) * 0.01).collect();
+            let wq = quantize_bf16_to_q4_0(&wb, rows, cols);
+            let mut y = vec![0.0f32; 3 * rows];
+            simd.matvec_q4_0(&pool, &mut y[..rows], &wq, &x, rows, cols);
+            h = fnv(h, &y[..rows]);
+            simd.matmat_q4_0(&pool, &mut y, &wq, &x, rows, cols, 3);
+            h = fnv(h, &y);
+        }
+        println!("{}: huella Q4_0 = {h:#018x}", simd.name());
+        assert_eq!(h, AVX2_FINGERPRINT, "{}", simd.name());
+    }
+}

@@ -6,7 +6,7 @@
 use std::fmt::Write;
 
 use crate::aligned::AlignedBuf;
-use crate::dispatch::ComputeRuntime;
+use crate::dispatch::{ComputeRuntime, KernelDispatch};
 use crate::quant::{
     bf16_to_f32, f16_to_f32, f32_to_bf16_round, quantize_act_int8_scalar, quantize_bf16_to_int8,
     quantize_bf16_to_q4_0, Q4_0_BLOCK_SIZE,
@@ -403,6 +403,97 @@ fn selftest_quantize_case(rt: &ComputeRuntime, rng: &mut Lcg, n: usize, out: &mu
     failures
 }
 
+/// `||a - b|| / ||b||` en `f64`.
+fn rel_l2_f32(a: &[f32], b: &[f32]) -> f64 {
+    let mut l2n = 0.0f64;
+    let mut l2d = 0.0f64;
+    for (&x, &r) in a.iter().zip(b.iter()) {
+        let diff = (x as f64) - (r as f64);
+        l2n += diff * diff;
+        l2d += (r as f64) * (r as f64);
+    }
+    (l2n / (l2d + 1e-30)).sqrt()
+}
+
+/// Compara una ruta SIMD que puede ejecutar esta CPU con la ruta escalar en las mismas entradas.
+/// INT8 debe dar los mismos bits (la suma entera es exacta). Q4_0 suma en otro orden (8 carriles
+/// con FMA frente a una suma por bloque), así que se exige `L2_rel <= 1e-6`.
+fn selftest_simd_vs_scalar_case(
+    rt: &ComputeRuntime,
+    simd: &KernelDispatch,
+    rng: &mut Lcg,
+    rows: usize,
+    cols: usize,
+    out: &mut String,
+) -> usize {
+    const BATCHES: [usize; 2] = [3, 8];
+    const Q4_TOL: f64 = 1e-6;
+    let sc = KernelDispatch::scalar();
+    let pool = &rt.pool;
+    let name = simd.name();
+
+    let x: Vec<f32> = (0..cols * 8).map(|_| rng.next_f()).collect();
+    let wb: Vec<u16> = (0..rows * cols).map(|_| f32_to_bf16_round(rng.next_f())).collect();
+    let (wi, si) = quantize_bf16_to_int8(&wb, rows, cols);
+    let wq = quantize_bf16_to_q4_0(&wb, rows, cols);
+    let nb = cols / Q4_0_BLOCK_SIZE;
+    let same_bits = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(p, q)| p.to_bits() == q.to_bits());
+
+    let mut results: Vec<(String, bool, String)> = Vec::new();
+    let (mut ya, mut yb) = (vec![0.0f32; rows * 8], vec![0.0f32; rows * 8]);
+
+    simd.matvec_int8(pool, &mut ya[..rows], &wi, &si, &x, rows, cols);
+    sc.matvec_int8(pool, &mut yb[..rows], &wi, &si, &x, rows, cols);
+    let ok = same_bits(&ya[..rows], &yb[..rows]);
+    results.push(("matvec_int8".into(), ok, "bit a bit".into()));
+    for b in BATCHES {
+        simd.matmat_int8(pool, &mut ya[..rows * b], &wi, &si, &x, rows, cols, b);
+        sc.matmat_int8(pool, &mut yb[..rows * b], &wi, &si, &x, rows, cols, b);
+        let ok = same_bits(&ya[..rows * b], &yb[..rows * b]);
+        results.push((format!("matmat_int8(B={b})"), ok, "bit a bit".into()));
+    }
+
+    simd.matvec_q4_0(pool, &mut ya[..rows], &wq, &x, rows, cols);
+    sc.matvec_q4_0(pool, &mut yb[..rows], &wq, &x, rows, cols);
+    let l2 = rel_l2_f32(&ya[..rows], &yb[..rows]);
+    results.push(("matvec_q4_0".into(), l2 <= Q4_TOL, format!("L2_rel={l2:.2e}")));
+
+    let (qd, kvd) = (rows / 2, rows / 4);
+    let (wqq, wqk, wqv) = (
+        &wq[..qd * nb],
+        &wq[qd * nb..(qd + kvd) * nb],
+        &wq[(qd + kvd) * nb..(qd + 2 * kvd) * nb],
+    );
+    for (d, y) in [(simd, &mut ya), (sc, &mut yb)] {
+        let (q, rest) = y.split_at_mut(qd);
+        let (k, rest) = rest.split_at_mut(kvd);
+        d.matvec_q4_0_qkv(pool, q, k, &mut rest[..kvd], wqq, wqk, wqv, &x, cols, qd, kvd);
+    }
+    let n = qd + 2 * kvd;
+    let l2 = rel_l2_f32(&ya[..n], &yb[..n]);
+    results.push(("qkv_q4_0".into(), l2 <= Q4_TOL, format!("L2_rel={l2:.2e}")));
+
+    for b in BATCHES {
+        simd.matmat_q4_0(pool, &mut ya[..rows * b], &wq, &x, rows, cols, b);
+        sc.matmat_q4_0(pool, &mut yb[..rows * b], &wq, &x, rows, cols, b);
+        let l2 = rel_l2_f32(&ya[..rows * b], &yb[..rows * b]);
+        results.push((format!("matmat_q4_0(B={b})"), l2 <= Q4_TOL, format!("L2_rel={l2:.2e}")));
+    }
+
+    let mut failures = 0usize;
+    for (what, ok, detail) in results {
+        let _ = writeln!(
+            out,
+            "  [{name} {rows:4}x{cols:4}] {what} vs scalar: {detail}  {}",
+            if ok { "PASS" } else { "FAIL" }
+        );
+        if !ok {
+            failures += 1;
+        }
+    }
+    failures
+}
+
 pub fn run_kernel_selftest(rt: &ComputeRuntime) -> (usize, String) {
     let mut out = String::new();
     let mut rng = Lcg(0x9E3779B97F4A7C15u64);
@@ -427,6 +518,13 @@ pub fn run_kernel_selftest(rt: &ComputeRuntime) -> (usize, String) {
     }
     for &n in &[1024usize, 3072, 320] {
         failures += selftest_quantize_case(rt, &mut rng, n, &mut out);
+    }
+    // Cada ruta SIMD que puede ejecutar esta CPU frente a la escalar (filas cortas y largas,
+    // número de filas impar).
+    for &simd in KernelDispatch::available(&rt.caps).iter().skip(1) {
+        for &(rows, cols) in &[(3072usize, 1024usize), (257, 320), (1024, 2048), (255, 3072)] {
+            failures += selftest_simd_vs_scalar_case(rt, simd, &mut rng, rows, cols, &mut out);
+        }
     }
 
     let _ = writeln!(

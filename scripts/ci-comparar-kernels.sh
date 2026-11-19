@@ -12,8 +12,9 @@ mkdir -p "$OUT"
 
 for k in auto scalar; do
     echo "== --caps con QWEN_KERNELS=$k"
-    QWEN_KERNELS=$k "$BIN" --caps | grep -E "kernels:|matvec \+ attn|runtime cpu" || true
-    QWEN_KERNELS=$k "$BIN" --self-test > "$OUT/self-test-$k.log" 2>&1 || { tail -20 "$OUT/self-test-$k.log"; exit 1; }
+    QWEN_KERNELS=$k "$BIN" --caps | grep -E "kernels:|matvec \+ attn|q4_0 \+ int8|runtime cpu" || true
+    QWEN_KERNELS=$k "$BIN" --self-test > "$OUT/self-test-$k.log" 2>&1 || { grep FAIL "$OUT/self-test-$k.log" | head -20; tail -5 "$OUT/self-test-$k.log"; exit 1; }
+    grep -c " vs scalar: .*PASS" "$OUT/self-test-$k.log" | sed 's/^/  comparaciones SIMD frente a escalar en PASS: /'
     tail -1 "$OUT/self-test-$k.log"
 done
 

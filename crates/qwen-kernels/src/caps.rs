@@ -64,30 +64,51 @@ impl CpuCaps {
         self.avx2 && self.fma
     }
 
-    /// Informe de `--caps`. Describe la ruta de kernels en uso, que es la escalar si `choice` la fuerza.
-    pub fn format_report(&self, threads: usize, blas_name: &str, choice: KernelChoice) -> String {
-        let simd = self.has_avx2_fma() && choice == KernelChoice::Auto;
+    /// Informe de `--caps`. `kernels` es el nombre de la ruta en uso (`KernelDispatch::name`): la
+    /// escalar si `QWEN_KERNELS=scalar` la fuerza.
+    pub fn format_report(
+        &self,
+        threads: usize,
+        blas_name: &str,
+        choice: KernelChoice,
+        kernels: &str,
+    ) -> String {
         let mut s = String::new();
         let _ = writeln!(s, "qwen-tts-engine runtime capabilities:");
         let _ = writeln!(s, "  arch:             {}", self.arch);
         if choice == KernelChoice::Scalar {
             let _ = writeln!(s, "  kernels:          scalar (forced by QWEN_KERNELS=scalar)");
-        }
-        if simd {
-            let _ = writeln!(s, "  matvec + attn:    AVX2 (2-row fused, FMA)");
-            let _ = writeln!(
-                s,
-                "  int8 dot:         AVX2 _mm256_maddubs_epi16 (integer, runtime dispatch)"
-            );
-            let _ = writeln!(s, "  bf16 dot:         bf16->f32 conversion + FMA");
-            let _ = writeln!(s, "  rms/bf16-conv:    AVX2");
         } else {
-            let _ = writeln!(s, "  matvec + attn:    scalar");
-            let _ = writeln!(
-                s,
-                "  int8 dot:         scalar (integer loop, int32 accumulation)"
-            );
-            let _ = writeln!(s, "  rms/bf16-conv:    scalar");
+            let _ = writeln!(s, "  kernels:          {kernels}");
+        }
+        match kernels {
+            "avx2" => {
+                let _ = writeln!(s, "  matvec + attn:    AVX2 (2-row fused, FMA)");
+                let _ = writeln!(
+                    s,
+                    "  int8 dot:         AVX2 _mm256_maddubs_epi16 (integer, runtime dispatch)"
+                );
+                let _ = writeln!(s, "  bf16 dot:         bf16->f32 conversion + FMA");
+                let _ = writeln!(s, "  rms/bf16-conv:    AVX2");
+            }
+            "neon" | "neon-dotprod" => {
+                let dot = if kernels == "neon-dotprod" {
+                    "NEON SDOT (dotprod)"
+                } else {
+                    "NEON SMULL widening"
+                };
+                let _ = writeln!(s, "  q4_0 + int8 dot:  {dot}, AVX2 summation order");
+                let _ = writeln!(s, "  bf16 + attn:      scalar");
+                let _ = writeln!(s, "  rms/bf16-conv:    scalar");
+            }
+            _ => {
+                let _ = writeln!(s, "  matvec + attn:    scalar");
+                let _ = writeln!(
+                    s,
+                    "  int8 dot:         scalar (integer loop, int32 accumulation)"
+                );
+                let _ = writeln!(s, "  rms/bf16-conv:    scalar");
+            }
         }
 
         let pool_kind = if cfg!(target_os = "windows") {
@@ -112,7 +133,7 @@ impl CpuCaps {
             let _ = writeln!(
                 s,
                 "  lever (x86):      {}",
-                if simd {
+                if kernels == "avx2" {
                     "AVX2 maddubs integer dot for int8 and q4_0"
                 } else {
                     "scalar integer dot"

@@ -3,7 +3,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Implementación escalar de referencia (usada como fallback universal en ARM64 y x86 sin AVX2).
+//! Implementación escalar de referencia: ruta completa en x86 sin AVX2, entradas aún sin portar a NEON
+//! en ARM64 y control para comparar rutas (`QWEN_KERNELS=scalar`).
 
 use crate::quant::{
     bf16_to_f32, f16_to_f32, quantize_act_int8_scalar, Q2_0Block, Q4_0Block, Q2_0_BLOCK_SIZE,

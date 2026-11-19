@@ -90,6 +90,8 @@ pub fn env_batch_b(default_b: usize, max_b: usize) -> usize {
 
 /// Tabla de punteros a kernels SIMD resuelta en tiempo de ejecución según `CpuCaps`.
 pub struct KernelDispatch {
+    /// Nombre de la ruta: `scalar`, `avx2`, `neon` o `neon-dotprod`.
+    name: &'static str,
     quantize_act_int8_fn: QuantizeActFn,
     rms_norm_fn: RmsNormFn,
     rms_norm_residual_fn: RmsNormResidualFn,
@@ -113,6 +115,7 @@ pub struct KernelDispatch {
 }
 
 static SCALAR_DISPATCH: KernelDispatch = KernelDispatch {
+    name: "scalar",
     quantize_act_int8_fn: scalar::quantize_act_int8,
     rms_norm_fn: scalar::rms_norm,
     rms_norm_residual_fn: scalar::rms_norm_residual,
@@ -312,6 +315,7 @@ mod avx2_wrappers {
 
 #[cfg(target_arch = "x86_64")]
 static AVX2_DISPATCH: KernelDispatch = KernelDispatch {
+    name: "avx2",
     quantize_act_int8_fn: avx2_wrappers::quantize_act_int8,
     rms_norm_fn: avx2_wrappers::rms_norm,
     rms_norm_residual_fn: avx2_wrappers::rms_norm_residual,
@@ -333,6 +337,31 @@ static AVX2_DISPATCH: KernelDispatch = KernelDispatch {
     f32_matvec_accum_fn: avx2_wrappers::f32_matvec_accum,
     snake_row_fn: avx2_wrappers::snake_row,
 };
+
+/// Tabla NEON para aarch64: Q4_0 e INT8 con NEON (`$m` = `sdot` o `widen`); el resto, escalar
+/// hasta que se porte.
+#[cfg(target_arch = "aarch64")]
+macro_rules! neon_dispatch {
+    ($name:literal, $m:ident) => {
+        KernelDispatch {
+            name: $name,
+            int8_matvec_slice_fn: crate::simd::neon::$m::int8_matvec_slice,
+            int8_matmat_slice_fn: crate::simd::neon::$m::int8_matmat_slice,
+            q4_0_matvec_slice_fn: crate::simd::neon::$m::q4_0_matvec_slice,
+            q4_0_matvec_qkv_slice_fn: crate::simd::neon::$m::q4_0_matvec_qkv_slice,
+            q4_0_matmat_slice_fn: crate::simd::neon::$m::q4_0_matmat_slice,
+            ..SCALAR_DISPATCH
+        }
+    };
+}
+
+/// NEON con `SDOT` (CPU con `dotprod`).
+#[cfg(target_arch = "aarch64")]
+static NEON_DOTPROD_DISPATCH: KernelDispatch = neon_dispatch!("neon-dotprod", sdot);
+
+/// NEON con multiplicación ampliada (cualquier CPU aarch64).
+#[cfg(target_arch = "aarch64")]
+static NEON_DISPATCH: KernelDispatch = neon_dispatch!("neon", widen);
 
 /// Ruta de kernels pedida con la variable de entorno `QWEN_KERNELS`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,12 +400,32 @@ impl KernelDispatch {
         if KernelChoice::from_env() == KernelChoice::Scalar {
             return &SCALAR_DISPATCH;
         }
+        Self::available(caps).last().copied().unwrap_or(&SCALAR_DISPATCH)
+    }
+
+    /// Tablas que puede ejecutar esta CPU, de la más lenta a la más rápida, sin tener en cuenta
+    /// `QWEN_KERNELS`. La primera es siempre la escalar. Sirve para comparar cada ruta con la escalar
+    /// en la misma máquina (`--self-test` y pruebas).
+    pub fn available(caps: &CpuCaps) -> Vec<&'static Self> {
+        let mut tables = vec![&SCALAR_DISPATCH];
         #[cfg(target_arch = "x86_64")]
         if caps.has_avx2_fma() {
-            return &AVX2_DISPATCH;
+            tables.push(&AVX2_DISPATCH);
+        }
+        #[cfg(target_arch = "aarch64")]
+        if caps.neon {
+            tables.push(&NEON_DISPATCH);
+            if caps.dotprod {
+                tables.push(&NEON_DOTPROD_DISPATCH);
+            }
         }
         let _ = caps;
-        &SCALAR_DISPATCH
+        tables
+    }
+
+    /// Nombre de la ruta de kernels: `scalar`, `avx2`, `neon` o `neon-dotprod`.
+    pub fn name(&self) -> &'static str {
+        self.name
     }
 
     pub fn detect() -> &'static Self {
@@ -1484,6 +1533,11 @@ impl ComputeRuntime {
 
     pub fn caps_report(&self) -> String {
         self.caps
-            .format_report(self.pool.n_threads(), self.blas.name(), KernelChoice::from_env())
+            .format_report(
+            self.pool.n_threads(),
+            self.blas.name(),
+            KernelChoice::from_env(),
+            self.dispatch.name(),
+        )
     }
 }

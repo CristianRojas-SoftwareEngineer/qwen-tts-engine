@@ -430,12 +430,15 @@ Las fases 2–4 originales priorizaban el servidor multi-cliente y el batch, est
 
 ### Fase 5 — Kernels NEON para macOS/ARM64
 - **Objetivo**: RTF < 1 sin carga en ARM64 (hoy todo pasa por `simd/scalar.rs`).
-- **Prerrequisito**: una máquina ARM64 con el modelo; compilar en cruzado no verifica ni exactitud ni velocidad.
+- **Prerrequisito**: máquinas ARM64 con el modelo (CircleCI: Linux ARM64 y macOS ARM64). La corrección de los kernels se comprueba también en local con Docker emulando arm64; compilar en cruzado o emular no mide la velocidad.
 - **Pasos**:
-  - **Paso 5.1 (línea base en ARM64)**: tiempos por etapa, TTFA, RTF y hashes con la ruta escalar.
-  - **Paso 5.2 (`matvec` INT8 y Q4_0 en NEON)**: kernels del Talker y del Code Predictor. Verificación: `--self-test` en ARM64.
-  - **Paso 5.3 (conversión `BF16→F32` y vocoder en NEON)**: incluye los kernels nuevos de las Fases 3–4. Verificación: `SNR >= 100 dB` frente a la ruta escalar.
-- **Criterio de cierre**: `--self-test` y `cargo test` verdes en ARM64; A/B E2E escalar frente a NEON con RTF < 1.
+  - **Paso 5.0 (máquinas)** y **Paso 5.1 (línea base en ARM64)**: tiempos por etapa, TTFA, RTF y hashes con la ruta escalar.
+  - **Paso 5.2 (interruptor `QWEN_KERNELS=auto|scalar`)**: la ruta escalar como control en la misma máquina, y el workflow `kernels` de CircleCI que compara las dos rutas intercaladas.
+  - **Paso 5.3 (Q4_0 e INT8 en NEON)**: `matvec`, QKV fusionado y `matmat`, los kernels del Talker y del Code Predictor. Verificación: paridad con la ruta escalar en `--self-test` y `cargo test` en ARM64.
+  - **Paso 5.4 (medición)**: workflow `kernels`; se integra si el productor mejora de forma consistente.
+  - **Paso 5.5 (resto de kernels)**: conversión y normas, BF16, atención y decoder (*snake* con `sin` vectorial).
+  - **Paso 5.6 (escucha)**, si el audio NEON difiere del escalar, y **Paso 5.7 (cierre)**.
+- **Criterio de cierre**: `--self-test` y `cargo test` verdes en ARM64; paridad de cada kernel NEON con la escalar dentro del contrato; RTF < 1 en macOS con mejora consistente frente a `scalar`; en Linux ARM64, mejora consistente (el tiempo real depende del decoder).
 - **Resultado del Paso 5.1 (2026-11-19, CircleCI, `scripts/ci-medir-rtf.sh`)**:
   - **Condiciones**: ruta escalar, sin carga, `ryan`, inglés, `--quant-mixed -j 4 --seed 4`, 3 corridas.
   - **Comunes a las dos máquinas**:
@@ -451,6 +454,12 @@ Las fases 2–4 originales priorizaban el servidor multi-cliente y el batch, est
   - **macOS**: el productor (~92 ms/f) supera los 80 ms de un fotograma, así que no llega a tiempo real. El decoder va sobrado.
   - **Linux ARM64**: el productor tarda ~400 ms/f y el decoder solo ya va 1,6× más lento que el tiempo real. Hacen falta NEON en el productor y también en el decoder (`sgemm` de OpenBLAS, *snake* y atención escalares).
   - **Referencia para portar**: los kernels NEON del motor C original.
+- **Resultado del Paso 5.3 (2026-11-19, kernels; la velocidad se mide en el Paso 5.4)**:
+  - **Qué se hizo**: `simd/neon.rs` con Q4_0 e INT8 en dos variantes del mismo código, `neon-dotprod` (`SDOT` emitido con `asm!`) y `neon` (`SMULL` y sumas por pares, para ARMv8.0 sin `dotprod`). Las tablas `NEON_DOTPROD_DISPATCH` y `NEON_DISPATCH` usan la ruta escalar en las entradas aún no portadas. `--caps` muestra la ruta en la línea `kernels:`.
+  - **Orden de suma de AVX2**: las dos variantes NEON dan la misma huella Q4_0 que la ruta AVX2 (`0x5df1d827ee451ac1`; la escalar da `0x1446d95353ca3f99`). La prueba `test_simd_q4_0_matches_avx2_summation_order` la fija.
+  - **Paridad con la ruta escalar** (`--self-test`, cada ruta que pueda ejecutar la CPU): INT8 bit a bit; Q4_0 `L2_rel` ≤ 3,5e-7 (límite 1e-6), igual en AVX2 que en NEON.
+  - **Dónde se verificó**: Docker arm64 emulado (con `dotprod`, así que se prueban las dos variantes) y el workflow `pruebas` de CircleCI en Linux ARM64 y macOS ARM64.
+  - **Hallazgo colateral, corregido**: si una tarea de `ComputePool::parallel` entraba en pánico en un hilo trabajador, el pánico no llegaba a quien llama y el trabajador moría, así que la llamada siguiente se colgaba. Ahora el trabajador guarda el pánico, sigue vivo, y `parallel` lo relanza al terminar la tarea (prueba `test_compute_pool_worker_panic_propagates`, que con el código anterior se colgaba).
 
 ---
 

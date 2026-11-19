@@ -9,3 +9,6 @@ pub(crate) mod scalar;
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod avx2;
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod neon;

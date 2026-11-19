@@ -23,7 +23,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | **Q4_0** (`18 B / 32 pesos`) | `scale_f16` (`u16`) + `qs[16]` | **Mínimos cuadrados ponderados (`q4_0s1`)**: toma el elemento de mayor magnitud `vmax` (con signo), fija `isc = -8.0 / vmax`, `q[i] = clamp(round(v[i] * isc), -8, 7)` y reescala `s* = sum(v^2 * v * q) / sum(v^2 * q^2)`. Empaque intercalado: `qs[i] = (q[2i]+8) \| ((q[2i+1]+8) << 4)`. | `--int4`; Talker + FFN del CP en `--quant-mixed`. |
 | **Q2_0** (`12 B / 32 pesos`) | `scale` (`f32`) + `qs[8]` | 4 niveles simétricos `{-1.5, -0.5, 0.5, 1.5} * scale`: `scale = absmax / 1.5`, `code = clamp(round_ties_even(v / scale + 1.5), 0, 3)`; 4 códigos/byte (`(i & 3) * 2`). | Solo `down_q2_rough` bajo `--roughness > 0`, mezclado en `down_proj` del CP: `proj = (1 - r) * proj + r * proj_q2`. |
 
-- **Cero fallbacks en coma flotante**: todas las rutas (`AVX2` `maddubs` y escalar `i32`) acumulan en producto escalar entero.
+- **Cero fallbacks en coma flotante**: todas las rutas (`AVX2` `maddubs`, NEON `SDOT` o `SMULL` y escalar `i32`) acumulan en producto escalar entero.
 - **Matriz `gate_up` intercalada**: la fila `2r` corresponde a `gate[r]` y la `2r+1` a `up[r]`. En modos cuantizados se cuantiza directamente desde `gate_bf16` y `up_bf16` sin materializar `gate_up_fused_bf16`.
 
 ### 1.3 Perfil `--quant-mixed` (`[INT8+Q4_0-FFN]`)
@@ -33,7 +33,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 
 ---
 
-## 2. Hardware, alineación y kernels `AVX2`
+## 2. Hardware, alineación y kernels SIMD
 
 1. **FTZ / DAZ por hilo (`ftz_on`)**: las activaciones cuantizadas entran con frecuencia en rango subnormal (penalización ~100×). El hilo principal (`ComputeRuntime`), cada hilo trabajador de `ComputePool` y los puntos de entrada cuantizados de `KernelDispatch` activan:
    - **x86-64**: `MXCSR |= 0x8040` (`FTZ` + `DAZ`).
@@ -42,7 +42,11 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 3. **Patrones `AVX2` (`qwen-kernels/src/simd/avx2.rs`)**:
    - **Prefetch**: en `int8`, anticipa `5120` bytes (`QWEN_INT8_PF_DIST = 5120`) por fila procesada; en `q4_0`, 16 bloques (288 bytes). Anticipar 5 120 bytes también en `q4_0` se midió el 2026-11-18 (frase larga con carga): neutro o peor (RTF 0,94–1,00 → 0,97–1,01).
    - **Filas largas**: en `int8_matvec_slice` y `q4_0_matvec_slice`, procesa **1 fila por iteración** cuando `cols >= 2048` (`QWEN_LONG_ROW_COLS`), manteniendo acumulación idéntica bit a bit frente a 2 filas (`matmat` y `q4_0_matvec_qkv_slice` mantienen 2 filas).
-4. **Reparto de filas entre hilos (`parallel_rows`)**: las `matvec`/`matmat` de 256 filas o más se reparten en `PARALLEL_ROWS_CHUNKS_PER_THREAD = 4` trozos por hilo con bordes múltiplos de 64 filas, que los hilos toman de un contador compartido. Cada fila se calcula con el mismo kernel y el mismo orden de suma, así que el resultado no depende del reparto: 1 hilo y 4 hilos dan los mismos bits (prueba `test_parallel_rows_partition_bit_exact`). Con la CPU ocupada, un hilo frenado ya no retrasa a los demás en la barrera.
+4. **Kernels NEON (`qwen-kernels/src/simd/neon.rs`, aarch64)**: Q4_0 e INT8 (`matvec`, QKV fusionado y `matmat`); el resto de entradas de la tabla usa la ruta escalar hasta que se porten.
+   - **Dos variantes con el mismo código**: `neon-dotprod` usa `SDOT` (emitido con `asm!`, porque `vdotq_s32` no es estable en Rust 1.96) y `neon`, multiplicación ampliada `SMULL` con sumas por pares, para núcleos ARMv8.0 sin `dotprod`. `KernelDispatch::for_caps` elige `neon-dotprod` si la CPU tiene `dotprod`; si no, `neon`. Las dos dan los mismos bits.
+   - **Orden de suma de AVX2 en Q4_0**: por bloque, 8 sumas enteras de 4 productos (pesos sin desplazar, `0..15`) menos la suma de las 32 activaciones, conversión a `f32` y FMA en 8 carriles; reducción final en el orden de `hsum256_ps`, `((c0 + c4) + (c2 + c6)) + ((c1 + c5) + (c3 + c7))`. Mismas filas largas (`QWEN_LONG_ROW_COLS`) y mismos microkernels `matmat` de 8 columnas. Así NEON y AVX2 dan los mismos bits en estos kernels (prueba `test_simd_q4_0_matches_avx2_summation_order`, con la huella de la ruta AVX2).
+   - **El audio de ARM sigue sin ser el de x86**: el prefill usa BLAS, que redondea distinto en cada plataforma, y el resto de kernels es escalar en ARM. En ARM el audio se compara con la ruta escalar de la misma máquina (`QWEN_KERNELS=scalar`), no por hash con x86.
+5. **Reparto de filas entre hilos (`parallel_rows`)**: las `matvec`/`matmat` de 256 filas o más se reparten en `PARALLEL_ROWS_CHUNKS_PER_THREAD = 4` trozos por hilo con bordes múltiplos de 64 filas, que los hilos toman de un contador compartido. Cada fila se calcula con el mismo kernel y el mismo orden de suma, así que el resultado no depende del reparto: 1 hilo y 4 hilos dan los mismos bits (prueba `test_parallel_rows_partition_bit_exact`). Con la CPU ocupada, un hilo frenado ya no retrasa a los demás en la barrera.
 
 ---
 
@@ -50,7 +54,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 
 | Componente | Regla crítica | Motivo |
 |---|---|---|
-| **Kernels SIMD** | FMA explícito (`_mm256_fmadd_ps`) | Evita divergencia observada sin contracción FMA en frases cortas. |
+| **Kernels SIMD** | FMA explícito (`_mm256_fmadd_ps`, `vfmaq_f32`) | Evita divergencia observada sin contracción FMA en frases cortas. |
 | **`SpeechEncoder` (RVQ)** | Distancia L2 (`||x - e||^2`) en **IEEE-754 estricto** | Reordenamientos agresivos rompen la búsqueda de vecino más cercano en RVQ. |
 | **`convnext_mlp` (`SpeechDecoder`)** | **LayerNorm de 2 pasadas** (`mean`, luego `var`) | La variante de una pasada altera la señal respecto al streaming validado. |
 | **Activación Snake (`SpeechDecoder`)** | `y = x + exp(-log_beta) * sin^2(exp(log_alpha) * x)` en `F32` | Los parámetros `{alpha, beta}` del checkpoint están en escala logarítmica. |
@@ -84,6 +88,8 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | | `argmax_matvec_int8` vs referencia | Índice exacto o empate `< 0.02 * (\|max\| + 1e-3)` |
 | **Kernels `q4_0`** (`--self-test`) | `matmat_q4_0(B=8)` vs `B × matvec_q4_0` | **`L2_rel <= 1e-6`** (`0.0` en `AVX2` y escalar) |
 | | `matvec_q4_0` vs dequant `f32` ref | `rel_L2 < 3e-2` |
+| **Rutas SIMD frente a la escalar** (`--self-test`, cada ruta que pueda ejecutar la CPU: `avx2`, `neon`, `neon-dotprod`) | `matvec_int8`, `matmat_int8(B=3, 8)` | **Bit-idéntico** |
+| | `matvec_q4_0`, `qkv_q4_0`, `matmat_q4_0(B=3, 8)` | **`L2_rel <= 1e-6`** (otro orden de suma; AVX2 da ≤ 3,5e-7) |
 | **Kernels `bf16`** (`--self-test`) | `matvec_bf16` vs `f32` ref | `max_rel < 1e-2` |
 | | `matmat_bf16(B=8)` vs `B × matvec_bf16` | `L2_rel < 1e-4` |
 | **Speech Decoder aislado** | Streaming vs decodificación completa | **`SNR >= 100 dB`** |
