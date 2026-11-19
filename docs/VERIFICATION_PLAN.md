@@ -56,7 +56,7 @@ La CI del repositorio es CircleCI, con tres workflows sobre las mismas máquinas
 
 | Sistema | Máquina | Target | BLAS |
 |---|---|---|---|
-| Linux ARM64 | Docker `cimg/base`, `arm.large` (Neoverse N1, 4 vCPU) | `aarch64-unknown-linux-gnu` | `libopenblas-dev` |
+| Linux ARM64 | Docker `cimg/base`, `arm.large` (Neoverse N1, 4 vCPU) | `aarch64-unknown-linux-gnu` | OpenBLAS 0.3.30 propio (`scripts/build-openblas.sh`, en caché) |
 | macOS ARM64 | macOS Xcode 26.4, `m4pro.medium` (Apple M4 Pro) | `aarch64-apple-darwin` | `Accelerate` |
 | Windows x86_64 | Windows Server 2022 (orb `circleci/windows`), `large` (4 núcleos físicos) | `x86_64-pc-windows-gnu` | MSYS2 UCRT64 (`libopenblas.a` estático) |
 
@@ -68,6 +68,20 @@ La CI del repositorio es CircleCI, con tres workflows sobre las mismas máquinas
 - **`medicion`**: a mano, con el parámetro de pipeline `medir = true`, desde la web de CircleCI («Trigger Pipeline») o desde la API v2. Ejecuta `scripts/ci-medir-rtf.sh`:
   - `--caps` y `--self-test`;
   - 3 síntesis de la frase corta y la larga (`ryan`, inglés, `--quant-mixed -j 4 --seed 4`), con RTF, tiempos por etapa, TTFA y hash del PCM.
-- **`hilos-windows`**: a mano, con `hilos_windows = true`. Compara `-j 4`, `-j 2` y `-j 4` con `QWEN_SD_THREADS=2` en Windows (`scripts/ci-comparar-hilos.sh`).
+- **`kernels`**: a mano, con `kernels = true`, en los tres sistemas. Compara `QWEN_KERNELS=auto` con `QWEN_KERNELS=scalar`, intercalados por corrida (`scripts/ci-comparar-kernels.sh`): tiempos, RTF y hash del PCM de cada ruta, y el número de rutas SIMD que pasan el `--self-test`.
 
 Las pruebas que necesitan pesos reales se omiten (con un aviso en la salida) cuando el modelo no está en `models/`.
+
+---
+
+## 4. Medición de rendimiento
+
+Para decidir si un cambio de rendimiento se integra ([ADR-005](adr/005-cpu-inference-optimizations.md)):
+
+- **Paridad primero**: `--self-test`, `cargo test` y el hash del PCM frente a la tabla de [`NUMERIC_CONTRACT.md`](NUMERIC_CONTRACT.md) («Audio de referencia»). Si el audio cambia, el cambio necesita una escucha y una tabla nueva.
+- **A/B intercalado**: binario de control y binario nuevo alternados por corrida (o en orden ABBA), con las corridas de calentamiento descartadas, para que la deriva térmica no favorezca a ninguno. `--quant-mixed -j 4 --seed 4`, frase corta y larga de referencia, `--stream`, y una corrida del servidor por `POST /v1/tts/stream`. Mediana de 3 pares como mínimo.
+- **Con carga**: el A/B se repite con 1 hilo copiando 256 MiB en bucle (`scripts/SyntheticLoad.ps1 -Action Start -Threads 1 -ChunkMB 256`). Ahí se verifica el tiempo real.
+- **Métricas** (las imprime el motor): `Prefill (ms)`, `Talker step (ms/f)`, `Code Predictor (ms/f)`, `Speech decoder (ms)`, drenaje, TTFA y RTF. En RAM, el pico de commit privado (`PeakPagefileUsage` en Windows) es la métrica principal y el pico de *working set*, de no regresión. En cambios de capacidad inicial, el pico *durante* el crecimiento (`ensure_capacity`).
+- **Herramienta mínima**: un microbanco (`--matmat-bench`), una corrida para la RAM (es determinista) o 3 corridas sueltas bastan para descartar; el A/B completo es para la decisión.
+- **Sin interferencias**: nunca compilar ni lanzar pruebas en paralelo con una medición; los procesos del motor escriben su salida en un fichero.
+- **ARM64 y otras máquinas**: workflows `medicion` y `kernels` de la CI (§3). El audio de ARM se compara con la ruta escalar de la misma máquina.

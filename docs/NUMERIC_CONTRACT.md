@@ -63,7 +63,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | **Atención con ventana deslizante (`SpeechDecoder`)** | Un único kernel `causal_attention_windowed` (*online softmax* + FMA) para streaming y decodificación completa; en streaming, consultas en coordenadas de la caché compactable (`q_offset = kv_len - kv_base`), que conserva `window - 1` posiciones | Streaming y completo comparten aritmética (`SNR >= 100 dB`); el bucle escalar previo difería en ±1 LSB de PCM16. |
 | **`Talker` prefill** | Pesos `BF16` → `F32` por bloques de filas de **4 MiB** (`PREFILL_STAGE_ELEMS`) y una `sgemm` por bloque (`gate_up` intercalado por parejas de filas) | OpenBLAS redondea según el ancho del bloque y el muestreo autorregresivo amplifica cualquier diferencia hasta cambiar los códigos: **cambiar el tamaño de bloque cambia el audio** y exige una línea base nueva. |
 | **`Talker`: `codec_head`** | Solo se calculan las filas que sobreviven a `apply_talker_logit_rules`: los códigos de audio `0..2048` y `CODEC_EOS` = 2150, este junto a su pareja 2151 (`talker_codec_logits`, camino de una petición) | Las reglas fijan a `-1e30` el resto de `2048..3072` sin mirar su valor; calcular la pareja par conserva el emparejamiento de filas del kernel BF16 y da los mismos bits que el cálculo completo (pruebas `pipeline::tests`). El camino por lotes sigue calculando las 3 072 filas. |
-| **`CodePredictor`: pasadas de 2 posiciones** | **`cp_step2(pos)`** (`matmat(B=2)`) cuando las 5 capas están cuantizadas: posiciones `0`–`1` y, después, **verificación especulativa de 1 adivinanza**. Tras `c[g]` se adivina `ĉ = argmax(lm_heads[g+1](h[g+1]))` y una pasada calcula las posiciones `g+2` (entrada `c[g]`) y `g+3` (entrada `ĉ`); se acepta la segunda columna solo si el código real `c[g+1]` (`argmax` sobre la columna 0) es `ĉ`, y si no se descarta (su K/V se sobrescribe antes de leerse) | Cada matriz se lee una vez para las dos columnas; cada código sigue siendo el `argmax` de la misma cabeza sobre el mismo estado, y cada columna es bit-idéntica a un `cp_transformer_step` (pruebas `code_predictor::tests`, `--batch-test` y PCM idéntico a la referencia `fase4`, vigente entonces). Pasadas de pesos por fotograma: 15 → ~11,9 (acierta el 28–31 %). |
+| **`CodePredictor`: pasadas de 2 posiciones** | **`cp_step2(pos)`** (`matmat(B=2)`) cuando las 5 capas están cuantizadas: posiciones `0`–`1` y, después, **verificación especulativa de 1 adivinanza**. Tras `c[g]` se adivina `ĉ = argmax(lm_heads[g+1](h[g+1]))` y una pasada calcula las posiciones `g+2` (entrada `c[g]`) y `g+3` (entrada `ĉ`); se acepta la segunda columna solo si el código real `c[g+1]` (`argmax` sobre la columna 0) es `ĉ`, y si no se descarta (su K/V se sobrescribe antes de leerse) | Cada matriz se lee una vez para las dos columnas; cada código sigue siendo el `argmax` de la misma cabeza sobre el mismo estado, y cada columna es bit-idéntica a un `cp_transformer_step` (pruebas `code_predictor::tests`, `--batch-test` y PCM idéntico al de antes de introducirla). Pasadas de pesos por fotograma: 15 → ~11,9 (acierta el 28–31 %). |
 
 ---
 
@@ -72,7 +72,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 1. **Prefill completo**: cada petición arranca con `kv_len = 0` desde la posición `0` (sin reutilización parcial entre peticiones).
 2. **Hilos BLAS congelados durante generación**: prefill usa `nt` hilos; antes de lanzar el hilo del decodificador se fija `gen_blas = max(1, nt - 1)` (o `QWEN_BLAS_GEN_THREADS`) y no cambia hasta terminar el drenaje final.
 3. **Calendario fijo de fragmentos (con y sin streaming)**: primer chunk de `2` fotogramas (`160 ms`); siguientes `k = 0, 1, 2, ...` de `min(chunk_frames, 4 + 2 * (k / 8))`, con `chunk_frames = 10` (`DEFAULT_CHUNK_FRAMES`) salvo que la petición lo cambie. Los dos modos usan el mismo calendario porque las fronteras de fragmento fijan el redondeo del decoder: así el PCM es idéntico. **Decisión del 2026-11-19**:
-- **Coste aceptado**: sin *streaming* se renuncia a los bloques fijos de 10 heredados del motor C. El decoder trabaja un 4–17 % más y el RTF sube de +0,00 a +0,01 (A/B intercalado).
+- **Coste aceptado**: sin *streaming* se renuncia a los bloques fijos de 10 heredados del motor original en C. El decoder trabaja un 4–17 % más y el RTF sube de +0,00 a +0,01 (A/B intercalado).
 - **Por qué no bloques de 10 en todos los modos**: retrasaría el primer audio del *streaming* (estimado: ~450 → ~850 ms sin carga). La subida gradual del calendario evita cortes con RTF cercano a 1.
 - **Para recuperar esa eficiencia sin perder la identidad entre modos**: haría falta un decoder cuyo redondeo no dependa del tamaño del fragmento.
 4. **Tiling y workspace del decodificador**: `DecoderWorkspace` reutiliza 8 ranuras crecientes por worker. En modo paralelo, los bloques residuales `up2` y `up3` (`SD_TILE_FROM_BLOCK = 2`) procesan por tramos de **`256 KB`** (`SD_TILE_BYTES = 262144`) durante toda la petición (incluido el drenaje final).
@@ -98,7 +98,30 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | **Speech Decoder aislado** | Streaming vs decodificación completa | **`SNR >= 100 dB`** |
 | **Pipeline E2E** (misma semilla/params) | 2 corridas independientes | **Bit-idéntico** entre corridas y entre los cuatro modos: CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream` dan el mismo PCM (mismo calendario de fragmentos y mismas rampas de borde, invariantes 3 y 5). Comprobado en 12 combinaciones de voz, idioma y longitud, y es igual con y sin carga. |
 
-**Audio de referencia vigente** (desde las rampas de borde en todos los modos, 2026-11-19; `--seed 4 --quant-mixed -j 4 --stream -s ryan -l English`, textos corto y largo de `.work/plans/optimizations/phase-1/harness_f1.ps1`): `.work/plans/optimizations/phase-4/baseline_fase4b_{short,long}.wav`. SHA-256 del fichero: `B28F6143…D8BFF706` / `6B1CB6DE…06F75621`. Es la referencia por defecto de los harness (`-Baseline fase4b`). Se conservan como histórico:
-- `phase-4/baseline_fase4_*` (im2col del decoder, Paso 4.2), `1726C09A…F6D6E4EE` / `7F95D8BE…04CF045D`. Coincide fuera de las rampas; la verificación especulativa del Code Predictor (Paso 4.5) no la cambió.
-- `phase-3/baseline_fase3_*` (prefill por bloques), `BE0EB0B1…23335083` / `FD9B8968…3FD10643`.
-- `phase-1/baseline_fase1_*`. La matriz completa de referencias (voces `default` clonada, `ryan` y `vivian`; español e inglés; frase corta y larga; los cuatro modos) está en `.work/plans/optimizations/phase-4/baseline_post_k1/baseline.md`.
+### Audio de referencia (x86-64)
+
+Tras cualquier cambio que no deba tocar el audio, el PCM tiene que coincidir con esta tabla. Se mide en Windows x86_64 (Ryzen 7 5825U, ruta `avx2`, OpenBLAS de MSYS2 UCRT64) con `--quant-mixed -j 4 --seed 4` y la temperatura por defecto (0,325). El hash es el de `scripts/ci-comun.sh` (`pcm_hash`): los 16 primeros dígitos hexadecimales del SHA-256 del PCM, sin la cabecera WAV de 44 bytes. Es el mismo en los cuatro modos (CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream`), en todas las corridas y con y sin carga.
+
+- **Voces**: `ryan` y `vivian`, presets del modelo CustomVoice (`-s`); `default`, voz clonada del modelo Base a partir de `assets/Speech Sampler.wav` (perfil `default.qvoice` sin referencia ICL, SHA-256 `02488C75BBCFA749…`, cargado con `--load-voice … --graft`). El audio y el perfil no se versionan.
+- **Textos** (los de inglés son `TEXT_short` y `TEXT_long` de `scripts/ci-comun.sh`):
+  - inglés, corta: `Hello world, this is a quick baseline test.`
+  - inglés, larga: `In this long synthesis benchmark, we measure sustained memory bandwidth, Talker latency, Code Predictor throughput, and streaming Speech Decoder stability across multiple seconds of continuous speech generation.`
+  - español, corta: `Hola mundo, esta es una prueba rápida de referencia.`
+  - español, larga: `En esta prueba de síntesis larga medimos el ancho de banda de memoria sostenido, la latencia del Talker, el rendimiento del Code Predictor y la estabilidad del decodificador de voz en streaming durante varios segundos de generación continua.`
+
+| Voz | Idioma | Frase | Duración (s) | Hash del PCM |
+|---|---|---|---|---|
+| `ryan` | en | corta | 4,48 | `5483a06201f29d02` |
+| `ryan` | en | larga | 15,60 | `e5be5a8e2d4990e8` |
+| `ryan` | es | corta | 5,28 | `fcbd68e794d54409` |
+| `ryan` | es | larga | 16,72 | `31f57166277afec4` |
+| `vivian` | en | corta | 3,92 | `307ac8884c8f7dd0` |
+| `vivian` | en | larga | 15,04 | `6a240edcbb34b2b8` |
+| `vivian` | es | corta | 4,08 | `759f0ba666da7769` |
+| `vivian` | es | larga | 16,64 | `1ebabf1a687e194b` |
+| `default` | en | corta | 2,48 | `43731630d57d8880` |
+| `default` | en | larga | 12,40 | `1ba4589f273942be` |
+| `default` | es | corta | 4,48 | `848092132a0a9547` |
+| `default` | es | larga | 14,64 | `b9adc5cf06585e61` |
+
+Cambian esta tabla, y exigen regenerarla: el tamaño de bloque del prefill, cualquier cambio de redondeo en el Talker o el Code Predictor, el calendario de fragmentos y las rampas de borde. En ARM64 el audio se compara con la ruta escalar de la misma máquina (`QWEN_KERNELS=scalar`), no con esta tabla (§2.4).

@@ -21,7 +21,7 @@
 
 | Crate | Módulos principales | Política `unsafe` |
 |---|---|---|
-| **`qwen-kernels`** | `aligned`, `caps`, `pool`, `ftz`, `blas`, `quant`, `simd/{scalar,avx2}` *(internos del crate)*, `dispatch`, `selftest`, `bench`. | **Permitido y aislado** (intrínsecos `AVX2+FMA`, `std::alloc`, `MXCSR`/`FPCR`, FFI BLAS / `faer`); la API segura `KernelDispatch` valida límites antes de despachar. |
+| **`qwen-kernels`** | `aligned`, `caps`, `pool`, `ftz`, `blas`, `quant`, `simd/{scalar,avx2,neon}` *(internos del crate)*, `dispatch`, `selftest`, `bench`. | **Permitido y aislado** (intrínsecos `AVX2+FMA` y NEON, `asm!` para `SDOT`, `std::alloc`, `MXCSR`/`FPCR`, FFI BLAS / `faer`); la API segura `KernelDispatch` valida límites antes de despachar. |
 | **`qwen-core`** | `config`, `error`, `mmap_store`, `tokenizer`, `sampling`, `qvoice`, `markup`. | **Solo `Mmap::map` y cast de slices alineadas** en `mmap_store.rs`; resto 100 % seguro. |
 | **`qwen-engine`** | `model`, `talker`, `code_predictor`, `speech_decoder`, `speech_encoder`, `voice_clone`, `emotion`, `compose`, `batch`, `audio`, `pipeline`, `error`. | **`#![forbid(unsafe_code)]`** |
 | **`qwen-app`** | `main`, `cli`, `affinity`, `build.rs` + manifiesto UTF-8, `server/{mod,http,validation,scheduler}`. | **Solo llamada puntual** a Win32 (`SetProcessAffinityMask` / `GetLogicalProcessorInformationEx`). |
@@ -69,7 +69,8 @@ RequestExecution  [Efímero por petición — se destruye al finalizar]
    - `sd_pool: Arc<ComputePool>` — pool dedicado para `SpeechDecoder` (configurable con `QWEN_SD_THREADS`).
    - `blas: Arc<dyn BlasBackend>` — abstracción de `sgemm` y `set_threads` *(ver [ADR-002](adr/002-blas-strategy.md))*.
 2. **`ComputePool`**: sincronización con contador atómico de chunks (`AtomicUsize`), presupuesto de *spin-wait* (`QWEN_POOL_SPIN=4096`, o `0` si los hilos del productor ocupan todos los núcleos físicos: `spin_budget_for`) usando `std::hint::spin_loop()`, `Condvar` de respaldo y llamada única a `ftz_on()` al iniciar cada hilo trabajador.
-3. **`BlasBackend`**: `FfiBlas` (`OpenBLAS` en Linux/Windows, `Accelerate` en macOS) por defecto; `PureRustBlas` (`faer`) disponible con `--features faer-blas` y seleccionable con `QWEN_BLAS=faer`.
+   Si una tarea entra en pánico en un hilo trabajador, `parallel` lo relanza en quien llama y el trabajador sigue vivo.
+3. **`BlasBackend`**: `FfiBlas` (`OpenBLAS` en Linux/Windows, `Accelerate` en macOS; en Linux, estático y con `DYNAMIC_ARCH` si se compila con `scripts/build-openblas.sh`) por defecto; `PureRustBlas` (`faer`) disponible con `--features faer-blas` y seleccionable con `QWEN_BLAS=faer`.
 
 ---
 
@@ -92,3 +93,15 @@ RequestExecution  [Efímero por petición — se destruye al finalizar]
 2. **Trait `SynthesisScheduler`** con dos estrategias tras el mismo contrato:
    - **`ContinuousBatchScheduler` (`--batch-size N`, recomendado en servidor)**: un hilo planificador (`run_continuous_batch`) comparte un único `ComputePool` y `BatchWorkspace` *ragged* (KV por slot bajo demanda: `kv_cap` crece desde `KV_INITIAL_POSITIONS` hasta `kv_max`) para procesar hasta `N` peticiones simultáneas (WAV y streaming), derivando peticiones con markup multi-span o `rate != 1.0` a un hilo *fallback* dedicado.
    - **`WorkerPoolScheduler` (`--workers N`)**: `N` hilos *worker* con `SessionScratch` y `ComputeRuntime` propios; divide el presupuesto de hilos por *worker* y desactiva el *spin-wait* (`spin_budget = 0`) cuando hay sobresuscripción frente a núcleos físicos.
+
+---
+
+## 6. Rendimiento
+
+El tiempo de una síntesis es `prefill + max(productor, consumidor) + drenaje final`:
+
+- **Productor** (`Talker + CodePredictor`, en `pool`): debe generar cada fotograma en menos de 80 ms para que el *streaming* no se corte. Lo limita el ancho de banda de memoria: cada fotograma lee ~1 GiB de pesos cuantizados.
+- **Consumidor** (`SpeechDecoder`, en `sd_pool` y BLAS): casi todo su tiempo está en las convoluciones de los bloques de *upsample* (`sgemm`).
+- **Primer audio**: lo gobierna el prefill, y después el primer fragmento del decoder (2 fotogramas).
+
+Con 4 núcleos físicos, productor y consumidor se reparten las mismas CPU y ninguna plataforma llega a tiempo real. Las optimizaciones adoptadas y descartadas, con su efecto medido, y el rendimiento por plataforma están en [ADR-005](adr/005-cpu-inference-optimizations.md).

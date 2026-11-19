@@ -45,8 +45,8 @@ fn env_spin_budget() -> usize {
 /// que `QWEN_POOL_SPIN` lo fije: `0` (espera directa en `Condvar`) si esos hilos ya ocupan todos
 /// los núcleos y `QWEN_POOL_SPIN_DEFAULT` si no.
 ///
-/// Con los núcleos llenos, los hilos que esperan girando quitan CPU a los que calculan. Medido el
-/// 2026-11-19 con `-j 4` (productor y decodificador, 4 hilos cada uno), A/B intercalado:
+/// Con los núcleos llenos, los hilos que esperan girando quitan CPU a los que calculan. Medido
+/// con `-j 4` (productor y decodificador, 4 hilos cada uno), A/B intercalado:
 /// - **4 núcleos** (Linux ARM64 y Windows x86_64): sin espera activa, RTF 1,61–1,69 → 1,54–1,62 y
 ///   1,53–2,16 → 1,40–1,83; mismo audio.
 /// - **6 núcleos** (Apple M4 Pro): sin espera activa, RTF 0,25 → 0,43; por eso solo se quita
