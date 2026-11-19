@@ -41,7 +41,7 @@ commands:
                      speech_tokenizer/model.safetensors speech_tokenizer/preprocessor_config.json; do
               [ -s "$D/$f" ] || curl -fsSL --retry 3 -o "$D/$f" "$HF/$f"
             done
-            du -sh "$D"
+            ls -l "$D" "$D/speech_tokenizer"
       - save_cache:
           key: modelo-customvoice-v1
           paths:
