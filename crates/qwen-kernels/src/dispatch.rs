@@ -1568,7 +1568,10 @@ impl ComputeRuntime {
         self.caps
             .format_report(
             self.pool.n_threads(),
-            self.blas.name(),
+            &match self.blas.detail() {
+                Some(detail) => format!("{} ({detail})", self.blas.name()),
+                None => self.blas.name().to_string(),
+            },
             KernelChoice::from_env(),
             self.dispatch.name(),
         )

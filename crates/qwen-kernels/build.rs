@@ -36,14 +36,18 @@ fn main() {
         return;
     }
 
-    // Linux / Unix: preferir libopenblas.a estática si existe, si no enlace dinámico
+    // Linux / Unix: con OPENBLAS_LIB_DIR y libopenblas.a, enlace estático; si no, la libopenblas
+    // dinámica del sistema. Las bibliotecas de Fortran solo hacen falta si ese OpenBLAS se compiló
+    // con LAPACK en Fortran: se enlazan si están en el mismo directorio.
     if let Ok(lib_dir) = env::var("OPENBLAS_LIB_DIR") {
         println!("cargo:rustc-link-search=native={lib_dir}");
-        if PathBuf::from(&lib_dir).join("libopenblas.a").exists() {
+        let dir = PathBuf::from(&lib_dir);
+        if dir.join("libopenblas.a").exists() {
             println!("cargo:rustc-link-lib=static=openblas");
-            println!("cargo:rustc-link-lib=static=gfortran");
-            if target.contains("x86_64") {
-                println!("cargo:rustc-link-lib=static=quadmath");
+            for lib in ["gfortran", "quadmath"] {
+                if dir.join(format!("lib{lib}.a")).exists() {
+                    println!("cargo:rustc-link-lib=static={lib}");
+                }
             }
             return;
         }

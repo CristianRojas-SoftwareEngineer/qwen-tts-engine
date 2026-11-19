@@ -23,6 +23,10 @@ pub enum Transpose {
 /// Abstracción del backend BLAS denso en `f32` (`FfiBlas` por defecto o `PureRustBlas`).
 pub trait BlasBackend: Send + Sync {
     fn name(&self) -> &'static str;
+    /// Detalle de la implementación para `--caps` (en OpenBLAS, el kernel elegido para esta CPU).
+    fn detail(&self) -> Option<String> {
+        None
+    }
     fn set_threads(&self, n: usize);
     #[allow(clippy::too_many_arguments)]
     fn sgemm(
@@ -79,6 +83,9 @@ extern "C" {
 
     #[cfg(not(target_os = "macos"))]
     fn openblas_get_num_threads() -> c_int;
+
+    #[cfg(not(target_os = "macos"))]
+    fn openblas_get_corename() -> *const std::ffi::c_char;
 
     #[cfg(all(windows, target_env = "gnu"))]
     fn _putenv(envstring: *const std::ffi::c_char) -> c_int;
@@ -239,6 +246,24 @@ impl BlasBackend for FfiBlas {
             "Accelerate"
         } else {
             "OpenBLAS"
+        }
+    }
+
+    /// Kernel de OpenBLAS para esta CPU (`openblas_get_corename`): con `DYNAMIC_ARCH` lo elige al
+    /// arrancar; si no, es el `TARGET` con que se compiló.
+    fn detail(&self) -> Option<String> {
+        #[cfg(not(target_os = "macos"))]
+        {
+            let p = unsafe { openblas_get_corename() };
+            if p.is_null() {
+                return None;
+            }
+            let core = unsafe { std::ffi::CStr::from_ptr(p) };
+            Some(format!("core {}", core.to_string_lossy()))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            None
         }
     }
 
