@@ -395,3 +395,19 @@ fn test_simd_float_kernels_match_avx2_summation_order() {
         assert_eq!(h, AVX2_FINGERPRINT, "{}", simd.name());
     }
 }
+
+#[test]
+fn test_spin_budget_for_cores() {
+    use qwen_kernels::pool::QWEN_POOL_SPIN_DEFAULT;
+    use qwen_kernels::spin_budget_for;
+
+    // Solo sin QWEN_POOL_SPIN: la variable tiene prioridad sobre la regla.
+    if std::env::var_os("QWEN_POOL_SPIN").is_some() {
+        return;
+    }
+    assert_eq!(spin_budget_for(4, 4), 0, "los hilos llenan los núcleos");
+    assert_eq!(spin_budget_for(4, 2), 0);
+    assert_eq!(spin_budget_for(4, 6), QWEN_POOL_SPIN_DEFAULT);
+    assert_eq!(spin_budget_for(4, 8), QWEN_POOL_SPIN_DEFAULT);
+    assert_eq!(spin_budget_for(1, 0), 0, "cero núcleos cuenta como uno");
+}

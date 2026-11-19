@@ -17,7 +17,7 @@ use qwen_engine::{
     ContinuousBatchSink, ContinuousSlotJob, EngineError, Model06B, SessionScratch, StreamEdgeRamp,
     VoiceBindings,
 };
-use qwen_kernels::ComputeRuntime;
+use qwen_kernels::{spin_budget_for, ComputeRuntime};
 
 use super::http::{
     default_voice_context, handle_connection, handle_health, handle_speakers, handle_tts_full,
@@ -75,11 +75,7 @@ impl SynthesisScheduler for WorkerPoolScheduler {
 
         let total_threads = self.runtime.pool.n_threads();
         let worker_threads = (total_threads / self.n_workers).max(1);
-        let spin_budget = if self.n_workers * worker_threads >= self.physical_cores.max(1) {
-            0
-        } else {
-            4096
-        };
+        let spin_budget = spin_budget_for(self.n_workers * worker_threads, self.physical_cores);
 
         let (tx, rx) = mpsc::sync_channel::<(TcpStream, String)>(CONN_QUEUE_CAP);
         let rx = Arc::new(Mutex::new(rx));

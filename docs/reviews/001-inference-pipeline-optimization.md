@@ -474,6 +474,21 @@ Las fases 2–4 originales priorizaban el servidor multi-cliente y el batch, est
   - **Linux ARM64 sigue sin tiempo real**: el productor aún tarda 137 ms/f (el CP, 95 ms/f, con atención BF16, normas y cuantización de activaciones todavía escalares) y el decoder va 1,5× más lento que el audio. Los dos pasan al Paso 5.5.
   - **El audio cambia** respecto a la ruta escalar en la misma máquina (determinista en cada una): con la frase larga, el Mac genera 245 fotogramas con NEON frente a 188 con la escalar, y Linux, 176 frente a 216. Todos terminan en EOS. Los kernels NEON dan los mismos bits que AVX2, así que la diferencia es el efecto del muestreo autorregresivo sobre un redondeo distinto, no un error de los kernels; la aceptación es de oído (Paso 5.6).
 - **Resultado del Paso 5.6 para Q4_0 + INT8 (2026-11-19)**: escucha en el Mac de CircleCI con la voz clonada del usuario (modelo Base, español e inglés) y con `ryan`, ruta escalar frente a NEON. Veredicto del usuario: **aceptable**. Con su voz, RTF 0,29 con NEON frente a 1,13–1,21 con la ruta escalar.
+- **Resultado del Paso 5.5 (2026-11-19, primera parte: resto de kernels y espera activa)**:
+  - **Perfil de Linux ARM64** (`perf`, Neoverse N1, 4 vCPU, frase larga, tras la carga): `sgemm` de OpenBLAS (convoluciones del decoder, con el kernel genérico `ARMV8`) ~31 % de la CPU; kernels Q4_0/INT8 NEON ~33 %; hilos en espera activa (pool, `sched_yield`, núcleo) ~25 %; kernels aún escalares ~5 %.
+  - **Hecho**: todos los kernels de la tabla en NEON (`fafcd2a`), con los mismos bits que AVX2 donde no interviene `libm`. Y sin espera activa en los pools cuando los hilos del productor ocupan todos los núcleos físicos (`spin_budget_for`, la misma regla que ya usaba el servidor con varios trabajadores).
+  - **Medición** (CircleCI pipelines 23 y 24, intercalado, 3 corridas, frase corta y larga, `-j 4`):
+
+| Comparación | Linux ARM64 (N1, 4 vCPU) | macOS (M4 Pro, 6 núcleos) | Windows x86_64 (4 núcleos) |
+|---|---|---|---|
+| Resto de kernels en NEON frente a solo Q4_0/INT8 | RTF 1,78–1,88 → **1,61–1,69** (6/6) | 0,28–0,30 → **0,25–0,26** (6/6) | — (x86 no cambia) |
+| Sin espera activa (`QWEN_POOL_SPIN=0`) | 1,61–1,69 → **1,54–1,62** (6/6); decoder, larga, 22,0–22,3 → 19,8–20,1 s | 0,25–0,26 → **0,43, peor** (6/6) | 1,53–2,16 → **1,40–1,83** (6/6); decoder, larga, 20,8–24,4 → 11,5–14,2 s |
+| `QWEN_BLAS=faer` (Linux ARM64) | peor: 1,67–1,81 y decoder más lento | — | — |
+| `OPENBLAS_CORETYPE=NEOVERSEN1` / `QWEN_SD_THREADS=2` (Linux ARM64) | sin efecto / neutro | — | — |
+
+  - **Regla de la espera activa**: se quita solo si `-j` llega a los núcleos físicos (4 de 4), porque con 6 núcleos empeora. Con 8 núcleos (la laptop del usuario) no cambia nada: mismo audio y mismo comportamiento.
+  - **Linux ARM64 con 4 vCPU sigue sin tiempo real** (RTF ~1,55): el productor tarda ~118 ms por fotograma de 80 y el decoder ~1,2× la duración del audio, compartiendo las 4 CPU. Es la misma limitación que x86 con 4 núcleos (por eso el mínimo publicado en x86 es 8). CircleCI no ofrece a este proyecto máquinas ARM de más de 4 vCPU (`arm.xlarge`: *resource class not in plan*), así que el requisito para Linux ARM64 queda sin verificar.
+  - **El audio cambia** respecto a la versión anterior en ARM (los kernels de atención y normas ahora suman como AVX2): pendiente de escucha.
 
 ---
 

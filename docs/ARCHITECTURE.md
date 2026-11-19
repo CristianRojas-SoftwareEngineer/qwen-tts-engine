@@ -68,7 +68,7 @@ RequestExecution  [Efímero por petición — se destruye al finalizar]
    - `pool: Arc<ComputePool>` — pool persistente para `Talker` y `CodePredictor` *(ver [ADR-003](adr/003-concurrency-pool.md))*.
    - `sd_pool: Arc<ComputePool>` — pool dedicado para `SpeechDecoder` (configurable con `QWEN_SD_THREADS`).
    - `blas: Arc<dyn BlasBackend>` — abstracción de `sgemm` y `set_threads` *(ver [ADR-002](adr/002-blas-strategy.md))*.
-2. **`ComputePool`**: sincronización con contador atómico de chunks (`AtomicUsize`), presupuesto de *spin-wait* (`QWEN_POOL_SPIN=4096`) usando `std::hint::spin_loop()`, `Condvar` de respaldo y llamada única a `ftz_on()` al iniciar cada hilo trabajador.
+2. **`ComputePool`**: sincronización con contador atómico de chunks (`AtomicUsize`), presupuesto de *spin-wait* (`QWEN_POOL_SPIN=4096`, o `0` si los hilos del productor ocupan todos los núcleos físicos: `spin_budget_for`) usando `std::hint::spin_loop()`, `Condvar` de respaldo y llamada única a `ftz_on()` al iniciar cada hilo trabajador.
 3. **`BlasBackend`**: `FfiBlas` (`OpenBLAS` en Linux/Windows, `Accelerate` en macOS) por defecto; `PureRustBlas` (`faer`) disponible con `--features faer-blas` y seleccionable con `QWEN_BLAS=faer`.
 
 ---

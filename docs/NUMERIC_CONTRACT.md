@@ -42,10 +42,11 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 3. **Patrones `AVX2` (`qwen-kernels/src/simd/avx2.rs`)**:
    - **Prefetch**: en `int8`, anticipa `5120` bytes (`QWEN_INT8_PF_DIST = 5120`) por fila procesada; en `q4_0`, 16 bloques (288 bytes). Anticipar 5 120 bytes también en `q4_0` se midió el 2026-11-18 (frase larga con carga): neutro o peor (RTF 0,94–1,00 → 0,97–1,01).
    - **Filas largas**: en `int8_matvec_slice` y `q4_0_matvec_slice`, procesa **1 fila por iteración** cuando `cols >= 2048` (`QWEN_LONG_ROW_COLS`), manteniendo acumulación idéntica bit a bit frente a 2 filas (`matmat` y `q4_0_matvec_qkv_slice` mantienen 2 filas).
-4. **Kernels NEON (`qwen-kernels/src/simd/neon.rs`, aarch64)**: Q4_0 e INT8 (`matvec`, QKV fusionado y `matmat`); el resto de entradas de la tabla usa la ruta escalar hasta que se porten.
+4. **Kernels NEON (`qwen-kernels/src/simd/neon.rs`, aarch64)**: todas las entradas de la tabla, igual que AVX2. Q4_0 e INT8 (`matvec`, QKV fusionado y `matmat`) en dos variantes; el resto (cuantización de activaciones, normas RMS, BF16, atención, RoPE, conversiones, matvec `f32` del decoder y *snake*) en NEON base, con las mismas operaciones que AVX2 en el mismo orden: cada registro AVX2 de 8 `f32` es un par de registros NEON y la reducción final es la de `hsum256_ps`.
    - **Dos variantes con el mismo código**: `neon-dotprod` usa `SDOT` (emitido con `asm!`, porque `vdotq_s32` no es estable en Rust 1.96) y `neon`, multiplicación ampliada `SMULL` con sumas por pares, para núcleos ARMv8.0 sin `dotprod`. `KernelDispatch::for_caps` elige `neon-dotprod` si la CPU tiene `dotprod`; si no, `neon`. Las dos dan los mismos bits.
    - **Orden de suma de AVX2 en Q4_0**: por bloque, 8 sumas enteras de 4 productos (pesos sin desplazar, `0..15`) menos la suma de las 32 activaciones, conversión a `f32` y FMA en 8 carriles; reducción final en el orden de `hsum256_ps`, `((c0 + c4) + (c2 + c6)) + ((c1 + c5) + (c3 + c7))`. Mismas filas largas (`QWEN_LONG_ROW_COLS`) y mismos microkernels `matmat` de 8 columnas. Así NEON y AVX2 dan los mismos bits en estos kernels (prueba `test_simd_q4_0_matches_avx2_summation_order`, con la huella de la ruta AVX2).
-   - **El audio de ARM sigue sin ser el de x86**: el prefill usa BLAS, que redondea distinto en cada plataforma, y el resto de kernels es escalar en ARM. En ARM el audio se compara con la ruta escalar de la misma máquina (`QWEN_KERNELS=scalar`), no por hash con x86.
+   - **Mismos bits que AVX2** en todos los kernels que no usan `libm`: prueba `test_simd_float_kernels_match_avx2_summation_order`, con la huella de AVX2. La atención (`exp`) y el *snake* (`exp` de sus parámetros y `sin` de respaldo) dependen de la `libm` de cada plataforma.
+   - **El audio de ARM sigue sin ser el de x86**: el prefill y las convoluciones del decoder usan BLAS (OpenBLAS o Accelerate), que redondea distinto en cada plataforma, y `exp`/`sin` vienen de su `libm`. En ARM el audio se compara con la ruta escalar de la misma máquina (`QWEN_KERNELS=scalar`), no por hash con x86.
 5. **Reparto de filas entre hilos (`parallel_rows`)**: las `matvec`/`matmat` de 256 filas o más se reparten en `PARALLEL_ROWS_CHUNKS_PER_THREAD = 4` trozos por hilo con bordes múltiplos de 64 filas, que los hilos toman de un contador compartido. Cada fila se calcula con el mismo kernel y el mismo orden de suma, así que el resultado no depende del reparto: 1 hilo y 4 hilos dan los mismos bits (prueba `test_parallel_rows_partition_bit_exact`). Con la CPU ocupada, un hilo frenado ya no retrasa a los demás en la barrera.
 
 ---
@@ -89,7 +90,9 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | **Kernels `q4_0`** (`--self-test`) | `matmat_q4_0(B=8)` vs `B × matvec_q4_0` | **`L2_rel <= 1e-6`** (`0.0` en `AVX2` y escalar) |
 | | `matvec_q4_0` vs dequant `f32` ref | `rel_L2 < 3e-2` |
 | **Rutas SIMD frente a la escalar** (`--self-test`, cada ruta que pueda ejecutar la CPU: `avx2`, `neon`, `neon-dotprod`) | `matvec_int8`, `matmat_int8(B=3, 8)` | **Bit-idéntico** |
-| | `matvec_q4_0`, `qkv_q4_0`, `matmat_q4_0(B=3, 8)` | **`L2_rel <= 1e-6`** (otro orden de suma; AVX2 da ≤ 3,5e-7) |
+| | `matvec_q4_0`, `qkv_q4_0`, `matmat_q4_0(B=3, 8)` | **`L2_rel <= 1e-6`** (otro orden de suma; AVX2 y NEON dan ≤ 3,5e-7) |
+| | `quantize_act_int8`, `bf16_accum_f32`, `bf16_to_f32_vec`, `f32_to_bf16_vec`, suma residual de `rms_norm_residual` | **Bit-idéntico** |
+| | normas RMS, `matvec_bf16`, `matmat_bf16(B=3, 8)`, atención `f32` (con y sin ventana) y BF16 (en serie y repartida), RoPE, `f32_matvec_accum`, *snake* | **`L2_rel <= 1e-6`** (AVX2 da ≤ 6,2e-7); `argmax_bf16`, índice igual o empate |
 | **Kernels `bf16`** (`--self-test`) | `matvec_bf16` vs `f32` ref | `max_rel < 1e-2` |
 | | `matmat_bf16(B=8)` vs `B × matvec_bf16` | `L2_rel < 1e-4` |
 | **Speech Decoder aislado** | Streaming vs decodificación completa | **`SNR >= 100 dB`** |

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::blas::{BlasBackend, FfiBlas};
 use crate::caps::CpuCaps;
 use crate::ftz::ftz_on;
-use crate::pool::{resolve_num_threads, ComputePool};
+use crate::pool::{resolve_num_threads, spin_budget_for, ComputePool};
 use crate::quant::{Q2_0Block, Q4_0Block, Q2_0_BLOCK_SIZE, Q4_0_BLOCK_SIZE, QWEN_QACT_MAX};
 use crate::simd::scalar;
 
@@ -1500,6 +1500,17 @@ fn select_blas_backend() -> Arc<dyn BlasBackend> {
 
 impl ComputeRuntime {
     pub fn new(threads: Option<usize>) -> Self {
+        Self::build(threads, None)
+    }
+
+    /// Como `new`, para una síntesis a la vez en una máquina con `cores` núcleos físicos: los pools
+    /// del productor y del decodificador esperan sin girar si los hilos del productor ya ocupan
+    /// todos los núcleos (`spin_budget_for`).
+    pub fn for_cores(threads: Option<usize>, cores: usize) -> Self {
+        Self::build(threads, Some(cores))
+    }
+
+    fn build(threads: Option<usize>, cores: Option<usize>) -> Self {
         ftz_on();
         let caps = CpuCaps::detect();
         let dispatch = KernelDispatch::for_caps(&caps);
@@ -1509,8 +1520,16 @@ impl ComputeRuntime {
             .and_then(|v| v.trim().parse::<usize>().ok())
             .filter(|&v| v > 0)
             .unwrap_or(nt);
-        let pool = Arc::new(ComputePool::new(nt));
-        let sd_pool = Arc::new(ComputePool::new(sd_nt));
+        let (pool, sd_pool) = match cores {
+            Some(cores) => {
+                let spin = spin_budget_for(nt, cores);
+                (
+                    Arc::new(ComputePool::with_spin_budget(nt, spin)),
+                    Arc::new(ComputePool::with_spin_budget(sd_nt, spin)),
+                )
+            }
+            None => (Arc::new(ComputePool::new(nt)), Arc::new(ComputePool::new(sd_nt))),
+        };
         let blas = select_blas_backend();
         blas.set_threads(nt);
         Self {

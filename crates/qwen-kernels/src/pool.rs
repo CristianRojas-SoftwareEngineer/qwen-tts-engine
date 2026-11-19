@@ -26,15 +26,37 @@ pub fn default_num_threads() -> usize {
         .max(1)
 }
 
-fn env_spin_budget() -> usize {
-    match std::env::var("QWEN_POOL_SPIN") {
-        Ok(val) => val
-            .trim()
+/// Presupuesto de espera activa fijado con `QWEN_POOL_SPIN` (un valor no numérico cuenta como el
+/// de por defecto), o `None` si la variable no está.
+fn env_spin_budget_override() -> Option<usize> {
+    std::env::var("QWEN_POOL_SPIN").ok().map(|val| {
+        val.trim()
             .parse::<isize>()
             .map(|v| v.max(0) as usize)
-            .unwrap_or(QWEN_POOL_SPIN_DEFAULT),
-        Err(_) => QWEN_POOL_SPIN_DEFAULT,
-    }
+            .unwrap_or(QWEN_POOL_SPIN_DEFAULT)
+    })
+}
+
+fn env_spin_budget() -> usize {
+    env_spin_budget_override().unwrap_or(QWEN_POOL_SPIN_DEFAULT)
+}
+
+/// Presupuesto de espera activa para `threads` hilos de cálculo en `cores` núcleos físicos, salvo
+/// que `QWEN_POOL_SPIN` lo fije: `0` (espera directa en `Condvar`) si esos hilos ya ocupan todos
+/// los núcleos y `QWEN_POOL_SPIN_DEFAULT` si no.
+///
+/// Con los núcleos llenos, los hilos que esperan girando quitan CPU a los que calculan. Medido el
+/// 2026-11-19 con `-j 4` (productor y decodificador, 4 hilos cada uno), A/B intercalado:
+/// - **4 núcleos** (Linux ARM64 y Windows x86_64): sin espera activa, RTF 1,61–1,69 → 1,54–1,62 y
+///   1,53–2,16 → 1,40–1,83; mismo audio.
+/// - **6 núcleos** (Apple M4 Pro): sin espera activa, RTF 0,25 → 0,43; por eso solo se quita
+///   cuando los hilos llegan a los núcleos.
+pub fn spin_budget_for(threads: usize, cores: usize) -> usize {
+    env_spin_budget_override().unwrap_or(if threads >= cores.max(1) {
+        0
+    } else {
+        QWEN_POOL_SPIN_DEFAULT
+    })
 }
 
 struct JobSlot {

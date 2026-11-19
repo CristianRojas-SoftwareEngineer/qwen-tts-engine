@@ -529,7 +529,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         eprintln!("Output: {}", cfg.output);
     }
 
-    let runtime = Arc::new(ComputeRuntime::new(cfg.threads));
+    let runtime = Arc::new(ComputeRuntime::for_cores(cfg.threads, physical_cores));
     let load_opts = ModelLoadOptions {
         use_int8: cfg.use_int8,
         use_int4: cfg.use_int4,
