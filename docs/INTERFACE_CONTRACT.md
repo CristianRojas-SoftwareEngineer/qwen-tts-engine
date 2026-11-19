@@ -279,9 +279,6 @@ Sinks incluidos en `qwen_engine`: `MemorySink`, `WavStreamSink`, `StdoutRawSink`
 | `QWEN_NO_REF_TRIM` | Audio ref | off | Si está definida, desactiva `trim_trailing_silence` sobre `--ref-audio` / `--emo-ref`. |
 | `QWEN_GRAFT_NO_WOVR` | Carga `.qvoice` | off | Si está definida, omite la sección `WOVR` al cargar `.qvoice`. |
 | `QWEN_DUMP_CODES` | Pipeline | `None` | Ruta de archivo donde volcar los 16 codebooks por fotograma (`decode-dump`). |
-| `QWEN_BATCH_SEQ` | CLI `--batch` | off | Valor distinto de `"0"` fuerza ejecución secuencial por spans en `--batch`. |
-| `QWEN_BATCH_NOMATMUL` | Batching | off | Valor distinto de `"0"` desactiva la ruta `matmat` en `batch.rs`. |
-| `QWEN_BATCH_FORCE_MATVEC` | Batching | off | Valor distinto de `"0"` fuerza `matvec` incluso con `b_dim > 1`. |
 | `QWEN_BATCH_B` | `--batch-test` / `--batch-bench` / `--matmat-bench` | `8` | Tamaño de lote `B` en microbenchmarks (`1..=64`; valores fuera de rango usan `8`). |
 
 ### 4.2 Afinidad SMT en Windows y gestión de OpenBLAS

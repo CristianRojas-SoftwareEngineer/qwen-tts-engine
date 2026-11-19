@@ -609,7 +609,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
             })
             .collect();
         let outs =
-            generate_batch_multi(&runtime, &model, &voice, &reqs, false).map_err(|e| e.to_string())?;
+            generate_batch_multi(&runtime, &model, &voice, &reqs).map_err(|e| e.to_string())?;
         for (b, aud) in outs.iter().enumerate() {
             let fn_out = format!("bm_{b}.wav");
             if !aud.is_empty() {
@@ -690,11 +690,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
             cp_roughness: cfg.roughness,
         };
 
-        let force_seq = std::env::var("QWEN_BATCH_SEQ")
-            .ok()
-            .map(|v| !v.trim().is_empty() && v.trim() != "0")
-            .unwrap_or(false);
-        let audio = if chunks.len() >= 2 && !force_seq {
+        let audio = if chunks.len() >= 2 {
             let mut buf = generate_batch_longform(
                 &runtime,
                 &model,

@@ -3,7 +3,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::sync::OnceLock;
 use std::time::Instant;
 
 use qwen_core::config::{
@@ -31,23 +30,6 @@ use crate::talker::talker_step;
 
 pub const MAX_BATCH_SLOTS: usize = 64;
 const CP_KV_MAX: usize = 64;
-
-fn env_batch_nomatmul() -> bool {
-    static VAL: OnceLock<bool> = OnceLock::new();
-    *VAL.get_or_init(|| {
-        std::env::var("QWEN_BATCH_NOMATMUL")
-            .ok()
-            .map(|v| !v.trim().is_empty() && v.trim() != "0")
-            .unwrap_or(false)
-    })
-}
-
-fn env_batch_force_matvec() -> bool {
-    std::env::var("QWEN_BATCH_FORCE_MATVEC")
-        .ok()
-        .map(|v| !v.trim().is_empty() && v.trim() != "0")
-        .unwrap_or(false)
-}
 
 #[inline]
 fn batch_gather(xt: &mut [f32], src: &[f32], b_dim: usize, cols: usize, src_stride: usize) {
@@ -86,7 +68,7 @@ fn batch_proj_q(
 ) {
     let d = runtime.dispatch;
     let pool = &runtime.pool;
-    if force_matvec || env_batch_nomatmul() {
+    if force_matvec {
         for b in 0..b_dim {
             let s = &src[b * src_stride..b * src_stride + cols];
             let out = &mut dst[b * rows..(b + 1) * rows];
@@ -176,7 +158,7 @@ impl BatchWorkspace {
             kv_max,
             kv_cap,
             kv_len: 0,
-            force_matvec: env_batch_force_matvec(),
+            force_matvec: false,
             x: AlignedBuf::new_zeroed(b_dim * HIDDEN_SIZE),
             x_norm: AlignedBuf::new_zeroed(b_dim * HIDDEN_SIZE),
             q: AlignedBuf::new_zeroed(b_dim * Q_DIM),
@@ -1158,7 +1140,6 @@ pub fn generate_batch_multi(
     model: &Model06B,
     base_voice: &VoiceBindings,
     reqs: &[BatchReq],
-    force_matvec: bool,
 ) -> Result<Vec<Vec<f32>>, EngineError> {
     let nc = reqs.len();
     if nc == 0 {
@@ -1211,7 +1192,6 @@ pub fn generate_batch_multi(
 
         let kv_max = (max_pl + gen_cap + 4).min(ROPE_MAX_POS);
         let mut bw = BatchWorkspace::new(b_dim, kv_max)?;
-        bw.force_matvec = force_matvec || env_batch_force_matvec();
         for (b, (sk, sv)) in kv_snapshots.iter().enumerate() {
             bw.load_slot_kv(b, sk, sv, prompt_lens[b], prompt_lens[b]);
         }
@@ -1386,7 +1366,7 @@ pub fn generate_batch_longform(
             volume: cfg.volume,
         })
         .collect();
-    let bufs = generate_batch_multi(runtime, model, voice, &reqs, false)?;
+    let bufs = generate_batch_multi(runtime, model, voice, &reqs)?;
     let pause_n = if chunk_pause_s.is_finite() && chunk_pause_s > 0.0 {
         (chunk_pause_s.min(60.0) * SAMPLE_RATE as f32) as usize
     } else {
