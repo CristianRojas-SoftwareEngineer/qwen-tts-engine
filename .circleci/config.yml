@@ -1,0 +1,39 @@
+# CircleCI: comprobación de disponibilidad de las máquinas ARM64 de la Fase 5 (kernels NEON).
+# Cada job imprime «hola mundo» y la arquitectura, el modelo de CPU y si tiene producto escalar
+# entero (dotprod/SDOT), que es lo que usarán los kernels Q4_0 e INT8.
+version: 2.1
+
+jobs:
+  hola-linux-arm64:
+    docker:
+      - image: cimg/base:current
+    resource_class: arm.medium
+    steps:
+      - run:
+          name: Hola mundo (Linux ARM64)
+          command: |
+            echo "hola mundo desde Linux ARM64"
+            uname -m
+            grep -m1 -i "model name\|CPU part" /proc/cpuinfo || true
+            grep -m1 "^Features" /proc/cpuinfo | grep -o -w "asimddp" || echo "sin dotprod"
+            nproc
+
+  hola-macos-arm64:
+    macos:
+      xcode: "26.4.0"
+    resource_class: m4pro.medium
+    steps:
+      - run:
+          name: Hola mundo (macOS ARM64)
+          command: |
+            echo "hola mundo desde macOS ARM64"
+            uname -m
+            sysctl -n machdep.cpu.brand_string
+            echo "dotprod: $(sysctl -n hw.optional.arm.FEAT_DotProd)"
+            sysctl -n hw.ncpu
+
+workflows:
+  disponibilidad-arm64:
+    jobs:
+      - hola-linux-arm64
+      - hola-macos-arm64
