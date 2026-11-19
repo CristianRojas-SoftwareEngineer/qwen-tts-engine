@@ -72,6 +72,40 @@ impl DecoderQueue {
     }
 }
 
+/// Calcula los logits del `codec_head` que pueden sobrevivir a `apply_talker_logit_rules`: los
+/// códigos de audio (`0..CODEBOOK_SIZE`) y `CODEC_EOS`.
+///
+/// Las demás filas de `CODEBOOK_SIZE..CODEC_VOCAB_SIZE` (2 MiB de pesos BF16 por fotograma) no se
+/// leen: las reglas las fijan a `-1e30` sin mirar su valor, así que sus posiciones de `logits`
+/// quedan sin significado hasta entonces. `CODEC_EOS` se calcula junto a su pareja de fila par para
+/// conservar el emparejamiento de filas del kernel BF16 y dar los mismos bits que el cálculo completo.
+pub(crate) fn talker_codec_logits(
+    runtime: &ComputeRuntime,
+    model: &Model06B,
+    hidden: &[f32],
+    logits: &mut [f32],
+) {
+    let head = &model.talker.codec_head_bf16;
+    let d = runtime.dispatch;
+    d.matvec_bf16(
+        &runtime.pool,
+        &mut logits[..CODEBOOK_SIZE],
+        &head[..CODEBOOK_SIZE * HIDDEN_SIZE],
+        hidden,
+        CODEBOOK_SIZE,
+        HIDDEN_SIZE,
+    );
+    let eos0 = (CODEC_EOS as usize) & !1;
+    d.matvec_bf16(
+        &runtime.pool,
+        &mut logits[eos0..eos0 + 2],
+        &head[eos0 * HIDDEN_SIZE..(eos0 + 2) * HIDDEN_SIZE],
+        hidden,
+        2,
+        HIDDEN_SIZE,
+    );
+}
+
 /// Aplica clamp de logits, supresión de tokens códec especiales y boost progresivo de EOS.
 pub(crate) fn apply_talker_logit_rules(
     logits: &mut [f32],
@@ -694,14 +728,7 @@ pub fn synthesize_to_sink(
 
             {
                 let tb = &mut scratch.talker_bufs;
-                runtime.dispatch.matvec_bf16(
-                    &runtime.pool,
-                    &mut tb.logits,
-                    &model.talker.codec_head_bf16,
-                    &tb.last_hidden,
-                    CODEC_VOCAB_SIZE,
-                    HIDDEN_SIZE,
-                );
+                talker_codec_logits(runtime, model, &tb.last_hidden, &mut tb.logits);
                 apply_talker_logit_rules(&mut tb.logits, frame, text_content_len);
             }
 
@@ -928,4 +955,63 @@ pub fn synthesize_to_samples(
     }
     timing.samples_produced = samples.len();
     Ok((samples, timing))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::ModelLoadOptions;
+    use std::path::PathBuf;
+
+    /// Las filas que `talker_codec_logits` no calcula no influyen en los logits tras las reglas,
+    /// con cualquier valor previo, en cualquier fotograma y con y sin boost de EOS.
+    #[test]
+    fn logit_rules_ignore_rows_skipped_by_codec_head() {
+        let eos0 = (CODEC_EOS as usize) & !1;
+        for frame in [0usize, 1, 2, 50, 500] {
+            for tcl in [0usize, 5, 33] {
+                let base: Vec<f32> = (0..CODEC_VOCAB_SIZE).map(|i| ((i * 37 % 101) as f32 - 50.0) * 0.3).collect();
+                let mut a = base.clone();
+                let mut b = base.clone();
+                for (i, v) in b.iter_mut().enumerate().skip(CODEBOOK_SIZE) {
+                    if i != eos0 && i != eos0 + 1 {
+                        *v = f32::NAN;
+                    }
+                }
+                apply_talker_logit_rules(&mut a, frame, tcl);
+                apply_talker_logit_rules(&mut b, frame, tcl);
+                for i in 0..CODEC_VOCAB_SIZE {
+                    if i != eos0 + 1 {
+                        assert_eq!(a[i].to_bits(), b[i].to_bits(), "frame={frame} tcl={tcl} fila={i}");
+                    }
+                }
+                assert_eq!(b[eos0 + 1], -1e30);
+            }
+        }
+    }
+
+    /// `talker_codec_logits` da los mismos bits que el `codec_head` completo en las filas que calcula.
+    #[test]
+    fn codec_logits_match_full_head_bitwise() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/qwen3-tts-0.6b");
+        assert!(dir.exists(), "falta el modelo en {}", dir.display());
+        let runtime = ComputeRuntime::new(Some(4));
+        let model = Model06B::load(&dir, &runtime, ModelLoadOptions { quant_mixed: true, silent: true, ..Default::default() })
+            .expect("carga del modelo");
+        let hidden: Vec<f32> = (0..HIDDEN_SIZE).map(|i| ((i * 7919 % 211) as f32 - 105.0) * 0.01).collect();
+        let mut full = vec![0.0f32; CODEC_VOCAB_SIZE];
+        runtime.dispatch.matvec_bf16(
+            &runtime.pool,
+            &mut full,
+            &model.talker.codec_head_bf16,
+            &hidden,
+            CODEC_VOCAB_SIZE,
+            HIDDEN_SIZE,
+        );
+        let mut part = vec![f32::NAN; CODEC_VOCAB_SIZE];
+        talker_codec_logits(&runtime, &model, &hidden, &mut part);
+        for i in (0..CODEBOOK_SIZE).chain([CODEC_EOS as usize]) {
+            assert_eq!(full[i].to_bits(), part[i].to_bits(), "fila {i}");
+        }
+    }
 }

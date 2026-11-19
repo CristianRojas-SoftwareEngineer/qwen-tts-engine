@@ -17,6 +17,10 @@ use crate::simd::scalar;
 #[cfg(target_arch = "x86_64")]
 use crate::simd::avx2;
 
+/// Trozos por hilo en `parallel_rows`. Con 1 hilo copiando 256 MiB, 4 trozos bajan el productor
+/// (Talker + CP) ~3 ms por fotograma frente a 1 trozo fijo por hilo; con 2 la mejora no fue consistente.
+const PARALLEL_ROWS_CHUNKS_PER_THREAD: usize = 4;
+
 type QuantizeActFn = fn(&mut [i8], &[f32]) -> f32;
 type RmsNormFn = fn(&mut [f32], &[f32], &[f32], usize, usize, f32);
 type RmsNormResidualFn = fn(&mut [f32], &mut [f32], &[f32], &[f32], usize, f32);
@@ -490,22 +494,33 @@ impl KernelDispatch {
         run_segment(2, &mut v[..kv_dim], 0, kv_dim);
     }
 
+    /// Reparte las `rows` filas de `y` entre los hilos del pool en `PARALLEL_ROWS_CHUNKS_PER_THREAD`
+    /// trozos por hilo que cada hilo toma de un contador compartido según queda libre.
+    ///
+    /// Con la CPU ocupada, un hilo frenado por la carga ya no retrasa la barrera: los demás se
+    /// quedan con sus trozos pendientes. Los bordes de trozo son múltiplos de 64 filas y cada fila
+    /// se calcula con el mismo kernel y el mismo orden de suma, así que el resultado no depende del
+    /// reparto.
     fn parallel_rows<F>(pool: &ComputePool, y: &mut [f32], rows: usize, row_stride: usize, f: F)
     where
         F: Fn(&mut [f32], usize, usize) + Sync,
     {
         let nt = pool.n_threads();
         if nt > 1 && rows >= 256 {
+            let chunks = nt * PARALLEL_ROWS_CHUNKS_PER_THREAD;
+            let bound = |c: usize| if c >= chunks { rows } else { (c * rows / chunks) & !63 };
+            let next = AtomicUsize::new(0);
             let y_ptr = SendMutPtr::from_slice(y);
-            pool.parallel(nt, |tid, n| {
-                let r0 = tid * rows / n;
-                let r1 = (tid + 1) * rows / n;
-                let len = r1 - r0;
-                if len == 0 {
-                    return;
+            pool.parallel(nt, |_, _| loop {
+                let c = next.fetch_add(1, Ordering::Relaxed);
+                if c >= chunks {
+                    break;
                 }
-                let y_slice = unsafe { y_ptr.slice_mut(r0 * row_stride, len * row_stride) };
-                f(y_slice, r0, r1);
+                let (r0, r1) = (bound(c), bound(c + 1));
+                if r1 > r0 {
+                    let y_slice = unsafe { y_ptr.slice_mut(r0 * row_stride, (r1 - r0) * row_stride) };
+                    f(y_slice, r0, r1);
+                }
             });
             return;
         }

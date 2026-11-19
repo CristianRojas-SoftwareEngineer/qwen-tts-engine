@@ -219,3 +219,39 @@ fn test_scalar_dispatch_parity_and_bounds() {
         assert!((a - b).abs() < 1e-5);
     }
 }
+
+#[test]
+fn test_parallel_rows_partition_bit_exact() {
+    use qwen_kernels::quant::{quantize_bf16_to_int8, quantize_bf16_to_q4_0};
+    use qwen_kernels::KernelDispatch;
+
+    // El reparto dinámico por trozos (4 hilos) da los mismos bits que una sola pasada (1 hilo),
+    // también con un número de filas que no es múltiplo de 64.
+    let d = KernelDispatch::detect();
+    let serial = ComputePool::new(1);
+    let par = ComputePool::new(4);
+    let cols = 1024;
+    let x: Vec<f32> = (0..2 * cols).map(|i| ((i * 37 % 101) as f32 - 50.0) * 0.01).collect();
+    for rows in [1000usize, 3072] {
+        let wb: Vec<u16> = (0..rows * cols)
+            .map(|i| f32_to_bf16_round(((i * 7919 % 211) as f32 - 105.0) * 0.002))
+            .collect();
+        let (wi, si) = quantize_bf16_to_int8(&wb, rows, cols);
+        let wq = quantize_bf16_to_q4_0(&wb, rows, cols);
+        let bits = |v: &[f32]| v.iter().map(|f| f.to_bits()).collect::<Vec<u32>>();
+        let run = |pool: &ComputePool| {
+            let mut a = vec![0.0f32; rows];
+            let mut b = vec![0.0f32; rows];
+            let mut c = vec![0.0f32; rows];
+            let mut e = vec![0.0f32; 2 * rows];
+            let mut g = vec![0.0f32; 2 * rows];
+            d.matvec_bf16(pool, &mut a, &wb, &x, rows, cols);
+            d.matvec_int8(pool, &mut b, &wi, &si, &x, rows, cols);
+            d.matvec_q4_0(pool, &mut c, &wq, &x, rows, cols);
+            d.matmat_int8(pool, &mut e, &wi, &si, &x, rows, cols, 2);
+            d.matmat_q4_0(pool, &mut g, &wq, &x, rows, cols, 2);
+            [bits(&a), bits(&b), bits(&c), bits(&e), bits(&g)]
+        };
+        assert_eq!(run(&serial), run(&par), "rows={rows}");
+    }
+}
