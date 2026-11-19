@@ -98,8 +98,9 @@ impl CpuCaps {
                     "NEON SMULL widening"
                 };
                 let _ = writeln!(s, "  q4_0 + int8 dot:  {dot}, AVX2 summation order");
-                let _ = writeln!(s, "  bf16 + attn:      scalar");
-                let _ = writeln!(s, "  rms/bf16-conv:    scalar");
+                let _ = writeln!(s, "  bf16 + attn:      NEON (FMA, AVX2 summation order)");
+                let _ = writeln!(s, "  rms/bf16-conv:    NEON");
+                let _ = writeln!(s, "  snake (decoder):  NEON polynomial sin");
             }
             _ => {
                 let _ = writeln!(s, "  matvec + attn:    scalar");

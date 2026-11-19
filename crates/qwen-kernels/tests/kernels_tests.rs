@@ -340,3 +340,58 @@ fn test_simd_q4_0_matches_avx2_summation_order() {
         assert_eq!(h, AVX2_FINGERPRINT, "{}", simd.name());
     }
 }
+
+/// Como `test_simd_q4_0_matches_avx2_summation_order`, para los kernels de coma flotante que no
+/// usan `libm` (la atención usa `exp` y el *snake*, `exp` y `sin`, que cambian entre plataformas):
+/// normas RMS, BF16 (`matvec`, `matmat`, `argmax`), RoPE, matvec `f32` acumulado, cuantización de
+/// activaciones y conversiones. Longitudes con resto para cubrir las colas escalares.
+#[test]
+fn test_simd_float_kernels_match_avx2_summation_order() {
+    use qwen_kernels::{CpuCaps, KernelDispatch};
+
+    const AVX2_FINGERPRINT: u64 = 0x841cba85449e95a2;
+    let pool = ComputePool::new(1);
+    let fnv = |h: u64, v: &[f32]| {
+        v.iter().fold(h, |h, f| (h ^ f.to_bits() as u64).wrapping_mul(0x100000001b3))
+    };
+    let val = |i: usize, m: usize| ((i * 7919 % m) as f32 - (m / 2) as f32) * 0.003;
+    for &simd in KernelDispatch::available(&CpuCaps::detect()).iter().skip(1) {
+        let mut h = 0xcbf29ce484222325u64;
+        let (rows, cols) = (37usize, 1027usize);
+        let x: Vec<f32> = (0..3 * cols).map(|i| val(i, 211)).collect();
+        let w: Vec<f32> = (0..cols).map(|i| 1.0 + val(i, 97)).collect();
+        let wb: Vec<u16> = (0..rows * cols).map(|i| f32_to_bf16_round(val(i, 389))).collect();
+        let mut y = vec![0.0f32; 3 * cols];
+
+        simd.rms_norm(&mut y, &x, &w, 3, cols, 1e-6);
+        h = fnv(h, &y);
+        let mut xh = x[..2 * 16 * 64].to_vec();
+        simd.rms_norm_per_head(&mut xh, &w[..64], 2, 16, 64, 1e-6);
+        h = fnv(h, &xh);
+        simd.matvec_bf16(&pool, &mut y[..rows], &wb, &x, rows, cols);
+        h = fnv(h, &y[..rows]);
+        simd.matmat_bf16(&pool, &mut y[..3 * rows], &wb, &x, rows, cols, 3);
+        h = fnv(h, &y[..3 * rows]);
+        h = fnv(h, &[simd.argmax_matvec_bf16(&x, &wb, cols, rows) as f32]);
+        let cs: Vec<f32> = (0..4 * 64).map(|i| val(i, 53)).collect();
+        let mut xr = x[..16 * 128].to_vec();
+        simd.apply_rope_neox_inplace(&mut xr, 16, 128, &cs, &cs[64..], 2);
+        h = fnv(h, &xr);
+        let wf: Vec<f32> = (0..rows * cols).map(|i| val(i, 173)).collect();
+        let mut ya = x[..rows].to_vec();
+        simd.f32_matvec_accum(&mut ya, &wf, &x, rows, cols);
+        h = fnv(h, &ya);
+        let mut q = vec![0i8; cols];
+        let s = simd.quantize_act_int8(&mut q, &x[..cols]);
+        h = fnv(h, &[s]);
+        h = fnv(h, &q.iter().map(|&b| b as f32).collect::<Vec<f32>>());
+        let mut u = vec![0u16; cols];
+        simd.f32_to_bf16_vec(&mut u, &x[..cols]);
+        let mut d = x[..cols].to_vec();
+        simd.bf16_accum_f32(&mut d, &u);
+        h = fnv(h, &d);
+
+        println!("{}: huella de los kernels de coma flotante = {h:#018x}", simd.name());
+        assert_eq!(h, AVX2_FINGERPRINT, "{}", simd.name());
+    }
+}

@@ -494,6 +494,166 @@ fn selftest_simd_vs_scalar_case(
     failures
 }
 
+/// Compara con la ruta escalar los kernels de coma flotante y de conversión de una ruta SIMD:
+/// cuantización de activaciones y conversiones BF16, bit a bit; el resto (otro orden de suma o, en
+/// el *snake*, un polinomio en vez de `sin`), `L2_rel <= 1e-6`. Las longitudes no son múltiplos
+/// del ancho del vector, para cubrir los restos escalares.
+fn selftest_simd_float_vs_scalar(
+    rt: &ComputeRuntime,
+    simd: &KernelDispatch,
+    rng: &mut Lcg,
+    out: &mut String,
+) -> usize {
+    const TOL: f64 = 1e-6;
+    let sc = KernelDispatch::scalar();
+    let pool = &rt.pool;
+    let name = simd.name();
+    let mut vec_f = |n: usize, scale: f32| (0..n).map(|_| rng.next_f() * scale).collect::<Vec<f32>>();
+    let same_bits = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(p, q)| p.to_bits() == q.to_bits());
+    let l2 = |what: &str, a: &[f32], b: &[f32]| {
+        let e = rel_l2_f32(a, b);
+        (what.to_string(), e <= TOL, format!("L2_rel={e:.2e}"))
+    };
+    let mut results: Vec<(String, bool, String)> = Vec::new();
+
+    // Cuantización de activaciones (n con resto).
+    let x = vec_f(1029, 3.0);
+    let (mut qa, mut qb) = (vec![0i8; 1029], vec![0i8; 1029]);
+    let (sa, sb) = (simd.quantize_act_int8(&mut qa, &x), sc.quantize_act_int8(&mut qb, &x));
+    let ok = qa == qb && sa.to_bits() == sb.to_bits();
+    results.push(("quantize_act_int8".into(), ok, "bit a bit".into()));
+
+    // Normas RMS.
+    let (seq, dim) = (3usize, 1029usize);
+    let x = vec_f(seq * dim, 2.0);
+    let w = vec_f(dim, 1.5);
+    let (mut ya, mut yb) = (vec![0.0f32; seq * dim], vec![0.0f32; seq * dim]);
+    simd.rms_norm(&mut ya, &x, &w, seq, dim, 1e-6);
+    sc.rms_norm(&mut yb, &x, &w, seq, dim, 1e-6);
+    results.push(l2("rms_norm", &ya, &yb));
+    let res = vec_f(dim, 1.0);
+    let (mut xa, mut xb) = (x[..dim].to_vec(), x[..dim].to_vec());
+    simd.rms_norm_residual(&mut ya[..dim], &mut xa, &res, &w, dim, 1e-6);
+    sc.rms_norm_residual(&mut yb[..dim], &mut xb, &res, &w, dim, 1e-6);
+    let e = rel_l2_f32(&ya[..dim], &yb[..dim]);
+    let ok = same_bits(&xa, &xb) && e <= TOL;
+    results.push(("rms_norm_residual".into(), ok, format!("L2_rel={e:.2e}, suma residual bit a bit")));
+    let (heads, hd) = (16usize, 128usize);
+    let x = vec_f(2 * heads * hd, 2.0);
+    let (mut xa, mut xb) = (x.clone(), x);
+    simd.rms_norm_per_head(&mut xa, &w[..hd], 2, heads, hd, 1e-6);
+    sc.rms_norm_per_head(&mut xb, &w[..hd], 2, heads, hd, 1e-6);
+    results.push(l2("rms_norm_per_head", &xa, &xb));
+
+    // BF16: matvec (filas impares, columnas con resto), matmat y argmax.
+    let (rows, cols) = (257usize, 1027usize);
+    let wb: Vec<u16> = vec_f(rows * cols, 1.0).iter().map(|&v| f32_to_bf16_round(v)).collect();
+    let x = vec_f(cols * 8, 1.0);
+    let (mut ya, mut yb) = (vec![0.0f32; rows * 8], vec![0.0f32; rows * 8]);
+    simd.matvec_bf16(pool, &mut ya[..rows], &wb, &x, rows, cols);
+    sc.matvec_bf16(pool, &mut yb[..rows], &wb, &x, rows, cols);
+    results.push(l2("matvec_bf16", &ya[..rows], &yb[..rows]));
+    for b in [3usize, 8] {
+        simd.matmat_bf16(pool, &mut ya[..rows * b], &wb, &x, rows, cols, b);
+        sc.matmat_bf16(pool, &mut yb[..rows * b], &wb, &x, rows, cols, b);
+        results.push(l2(&format!("matmat_bf16(B={b})"), &ya[..rows * b], &yb[..rows * b]));
+    }
+    sc.matvec_bf16(pool, &mut yb[..rows], &wb, &x, rows, cols);
+    let ia = simd.argmax_matvec_bf16(&x, &wb, cols, rows);
+    let ib = sc.argmax_matvec_bf16(&x, &wb, cols, rows);
+    let tie = (yb[ia] - yb[ib]).abs() <= 1e-6 * yb[ib].abs();
+    results.push(("argmax_bf16".into(), ia == ib || tie, format!("simd={ia} scalar={ib}")));
+
+    // Atención: f32 con y sin ventana, y caché BF16 en serie y repartida entre hilos.
+    let (n_heads, n_kv, seq_q, seq_k) = (16usize, 8usize, 5usize, 64usize);
+    let (qh, kvh) = (n_heads * hd, n_kv * hd);
+    let q = vec_f(seq_q * qh, 1.0);
+    let k = vec_f(seq_k * kvh, 1.0);
+    let v = vec_f(seq_k * kvh, 1.0);
+    let scale = 1.0 / (hd as f32).sqrt();
+    let q_off = seq_k - seq_q;
+    let (mut oa, mut ob) = (vec![0.0f32; seq_q * qh], vec![0.0f32; seq_q * qh]);
+    for window in [0usize, 16] {
+        simd.causal_attention_windowed(
+            &mut oa, &q, &k, &v, seq_q, seq_k, n_heads, n_kv, hd, scale, q_off, window,
+        );
+        sc.causal_attention_windowed(
+            &mut ob, &q, &k, &v, seq_q, seq_k, n_heads, n_kv, hd, scale, q_off, window,
+        );
+        results.push(l2(&format!("attn_f32(window={window})"), &oa, &ob));
+    }
+    let kb: Vec<u16> = k.iter().map(|&f| f32_to_bf16_round(f)).collect();
+    let vb: Vec<u16> = v.iter().map(|&f| f32_to_bf16_round(f)).collect();
+    simd.causal_attention_bf16kv(&mut oa, &q, &kb, &vb, seq_q, seq_k, n_heads, n_kv, hd, scale, q_off);
+    sc.causal_attention_bf16kv(&mut ob, &q, &kb, &vb, seq_q, seq_k, n_heads, n_kv, hd, scale, q_off);
+    results.push(l2("attn_bf16kv", &oa, &ob));
+    simd.causal_attention_bf16kv_heads_parallel(
+        pool, &mut oa[..qh], &q[..qh], &kb, &vb, 1, seq_k, n_heads, n_kv, hd, scale, seq_k - 1,
+    );
+    sc.causal_attention_bf16kv_heads_parallel(
+        pool, &mut ob[..qh], &q[..qh], &kb, &vb, 1, seq_k, n_heads, n_kv, hd, scale, seq_k - 1,
+    );
+    results.push(l2("attn_bf16kv repartida entre hilos", &oa[..qh], &ob[..qh]));
+
+    // RoPE.
+    let half = hd / 2;
+    let cos = vec_f(4 * half, 1.0);
+    let sin = vec_f(4 * half, 1.0);
+    let x = vec_f(n_heads * hd, 2.0);
+    let (mut xa, mut xb) = (x.clone(), x);
+    simd.apply_rope_neox_inplace(&mut xa, n_heads, hd, &cos, &sin, 3);
+    sc.apply_rope_neox_inplace(&mut xb, n_heads, hd, &cos, &sin, 3);
+    results.push(l2("rope_neox", &xa, &xb));
+
+    // Conversiones BF16 (n con resto).
+    let n = 1029usize;
+    let src = vec_f(n, 4.0);
+    let sb16: Vec<u16> = src.iter().map(|&f| f32_to_bf16_round(f)).collect();
+    let (mut da, mut db) = (src.clone(), src.clone());
+    simd.bf16_accum_f32(&mut da, &sb16);
+    sc.bf16_accum_f32(&mut db, &sb16);
+    let mut ok = same_bits(&da, &db);
+    simd.bf16_to_f32_vec(&mut da, &sb16);
+    sc.bf16_to_f32_vec(&mut db, &sb16);
+    ok &= same_bits(&da, &db);
+    let (mut ua, mut ub) = (vec![0u16; n], vec![0u16; n]);
+    simd.f32_to_bf16_vec(&mut ua, &src);
+    sc.f32_to_bf16_vec(&mut ub, &src);
+    ok &= ua == ub;
+    results.push(("bf16_accum, bf16_to_f32, f32_to_bf16".into(), ok, "bit a bit".into()));
+
+    // Decodificador: matvec f32 acumulado y snake.
+    let (rows, cols) = (97usize, 1027usize);
+    let wf = vec_f(rows * cols, 1.0);
+    let x = vec_f(cols, 1.0);
+    let y0 = vec_f(rows, 1.0);
+    let (mut ya, mut yb) = (y0.clone(), y0);
+    simd.f32_matvec_accum(&mut ya, &wf, &x, rows, cols);
+    sc.f32_matvec_accum(&mut yb, &wf, &x, rows, cols);
+    results.push(l2("f32_matvec_accum", &ya, &yb));
+    let (channels, length) = (64usize, 1029usize);
+    let data = vec_f(channels * length, 4.0);
+    let la = vec_f(channels, 1.0);
+    let lb = vec_f(channels, 1.0);
+    let (mut da, mut db) = (data.clone(), data);
+    simd.snake_activation(pool, &mut da, channels, length, &la, &lb);
+    sc.snake_activation(pool, &mut db, channels, length, &la, &lb);
+    results.push(l2("snake", &da, &db));
+
+    let mut failures = 0usize;
+    for (what, ok, detail) in results {
+        let _ = writeln!(
+            out,
+            "  [{name}] {what} vs scalar: {detail}  {}",
+            if ok { "PASS" } else { "FAIL" }
+        );
+        if !ok {
+            failures += 1;
+        }
+    }
+    failures
+}
+
 pub fn run_kernel_selftest(rt: &ComputeRuntime) -> (usize, String) {
     let mut out = String::new();
     let mut rng = Lcg(0x9E3779B97F4A7C15u64);
@@ -525,6 +685,7 @@ pub fn run_kernel_selftest(rt: &ComputeRuntime) -> (usize, String) {
         for &(rows, cols) in &[(3072usize, 1024usize), (257, 320), (1024, 2048), (255, 3072)] {
             failures += selftest_simd_vs_scalar_case(rt, simd, &mut rng, rows, cols, &mut out);
         }
+        failures += selftest_simd_float_vs_scalar(rt, simd, &mut rng, &mut out);
     }
 
     let _ = writeln!(

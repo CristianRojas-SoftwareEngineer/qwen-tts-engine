@@ -16,6 +16,8 @@ use crate::simd::scalar;
 
 #[cfg(target_arch = "x86_64")]
 use crate::simd::avx2;
+#[cfg(target_arch = "aarch64")]
+use crate::simd::neon;
 
 /// Trozos por hilo en `parallel_rows`. Con 1 hilo copiando 256 MiB, 4 trozos bajan el productor
 /// (Talker + CP) ~3 ms por fotograma frente a 1 trozo fijo por hilo; con 2 la mejora no fue consistente.
@@ -36,6 +38,21 @@ type AttnF32Fn =
     fn(&mut [f32], &[f32], &[f32], &[f32], usize, usize, usize, usize, usize, f32, usize, usize);
 type AttnBf16KvFn = fn(
     &mut [f32],
+    &[f32],
+    &[u16],
+    &[u16],
+    usize,
+    usize,
+    usize,
+    usize,
+    usize,
+    f32,
+    usize,
+    usize,
+    usize,
+);
+type AttnBf16KvPtrFn = unsafe fn(
+    *mut f32,
     &[f32],
     &[u16],
     &[u16],
@@ -106,6 +123,9 @@ pub struct KernelDispatch {
     argmax_bf16_fn: ArgmaxBf16Fn,
     attn_f32_fn: AttnF32Fn,
     attn_bf16kv_fn: AttnBf16KvFn,
+    /// Atención BF16 de las cabezas `[h_begin, h_end)` sobre un puntero de salida compartido: la
+    /// usa la versión repartida entre hilos.
+    attn_bf16kv_ptr_fn: AttnBf16KvPtrFn,
     rope_neox_fn: RopeNeoxFn,
     bf16_accum_f32_fn: Bf16VecOpFn,
     bf16_to_f32_vec_fn: Bf16VecOpFn,
@@ -130,6 +150,7 @@ static SCALAR_DISPATCH: KernelDispatch = KernelDispatch {
     argmax_bf16_fn: scalar::argmax_matvec_bf16,
     attn_f32_fn: scalar::causal_attention_f32_heads,
     attn_bf16kv_fn: scalar::causal_attention_bf16kv_heads,
+    attn_bf16kv_ptr_fn: scalar::causal_attention_bf16kv_heads_ptr,
     rope_neox_fn: scalar::apply_rope_neox_inplace,
     bf16_accum_f32_fn: scalar::bf16_accum_f32,
     bf16_to_f32_vec_fn: scalar::bf16_to_f32_vec,
@@ -330,6 +351,7 @@ static AVX2_DISPATCH: KernelDispatch = KernelDispatch {
     argmax_bf16_fn: avx2_wrappers::argmax_bf16,
     attn_f32_fn: avx2_wrappers::attn_f32,
     attn_bf16kv_fn: avx2_wrappers::attn_bf16kv,
+    attn_bf16kv_ptr_fn: avx2::causal_attention_bf16kv_heads_ptr,
     rope_neox_fn: avx2_wrappers::rope_neox,
     bf16_accum_f32_fn: avx2_wrappers::bf16_accum_f32,
     bf16_to_f32_vec_fn: avx2_wrappers::bf16_to_f32_vec,
@@ -338,19 +360,34 @@ static AVX2_DISPATCH: KernelDispatch = KernelDispatch {
     snake_row_fn: avx2_wrappers::snake_row,
 };
 
-/// Tabla NEON para aarch64: Q4_0 e INT8 con NEON (`$m` = `sdot` o `widen`); el resto, escalar
-/// hasta que se porte.
+/// Tabla NEON para aarch64: Q4_0 e INT8 con la variante `$m` (`sdot` o `widen`) y el resto de
+/// kernels con NEON base.
 #[cfg(target_arch = "aarch64")]
 macro_rules! neon_dispatch {
     ($name:literal, $m:ident) => {
         KernelDispatch {
             name: $name,
-            int8_matvec_slice_fn: crate::simd::neon::$m::int8_matvec_slice,
-            int8_matmat_slice_fn: crate::simd::neon::$m::int8_matmat_slice,
-            q4_0_matvec_slice_fn: crate::simd::neon::$m::q4_0_matvec_slice,
-            q4_0_matvec_qkv_slice_fn: crate::simd::neon::$m::q4_0_matvec_qkv_slice,
-            q4_0_matmat_slice_fn: crate::simd::neon::$m::q4_0_matmat_slice,
-            ..SCALAR_DISPATCH
+            quantize_act_int8_fn: neon::quantize_act_int8,
+            rms_norm_fn: neon::rms_norm,
+            rms_norm_residual_fn: neon::rms_norm_residual,
+            rms_norm_per_head_fn: neon::rms_norm_per_head,
+            bf16_matvec_slice_fn: neon::bf16_matvec_slice,
+            bf16_matmat_slice_fn: neon::bf16_matmat_slice,
+            int8_matvec_slice_fn: neon::$m::int8_matvec_slice,
+            int8_matmat_slice_fn: neon::$m::int8_matmat_slice,
+            q4_0_matvec_slice_fn: neon::$m::q4_0_matvec_slice,
+            q4_0_matvec_qkv_slice_fn: neon::$m::q4_0_matvec_qkv_slice,
+            q4_0_matmat_slice_fn: neon::$m::q4_0_matmat_slice,
+            argmax_bf16_fn: neon::argmax_matvec_bf16,
+            attn_f32_fn: neon::causal_attention_f32_heads,
+            attn_bf16kv_fn: neon::causal_attention_bf16kv_heads,
+            attn_bf16kv_ptr_fn: neon::causal_attention_bf16kv_heads_ptr,
+            rope_neox_fn: neon::apply_rope_neox_inplace,
+            bf16_accum_f32_fn: neon::bf16_accum_f32,
+            bf16_to_f32_vec_fn: neon::bf16_to_f32_vec,
+            f32_to_bf16_vec_fn: neon::f32_to_bf16_vec,
+            f32_matvec_accum_fn: neon::f32_matvec_accum,
+            snake_row_fn: neon::snake_row,
         }
     };
 }
@@ -1201,39 +1238,16 @@ impl KernelDispatch {
             return;
         }
         let out_ptr = SendMutPtr::from_slice(out);
-        #[cfg(target_arch = "x86_64")]
-        let use_avx2 = std::ptr::eq(self, &AVX2_DISPATCH);
-        #[cfg(not(target_arch = "x86_64"))]
-        let use_avx2 = false;
-
+        let heads_fn = self.attn_bf16kv_ptr_fn;
         pool.parallel(nt, |tid, n| {
             let h0 = n_heads * tid / n;
             let h1 = n_heads * (tid + 1) / n;
             if h0 >= h1 {
                 return;
             }
+            // SAFETY: cada hilo escribe solo las cabezas `[h0, h1)` de `out`, disjuntas entre hilos.
             unsafe {
-                #[cfg(target_arch = "x86_64")]
-                if use_avx2 {
-                    avx2::causal_attention_bf16kv_heads_ptr(
-                        out_ptr.as_ptr(),
-                        q,
-                        k_bf16,
-                        v_bf16,
-                        seq_q,
-                        seq_k,
-                        n_heads,
-                        n_kv_heads,
-                        head_dim,
-                        scale,
-                        q_offset,
-                        h0,
-                        h1,
-                    );
-                    return;
-                }
-                let _ = use_avx2;
-                scalar::causal_attention_bf16kv_heads_ptr(
+                heads_fn(
                     out_ptr.as_ptr(),
                     q,
                     k_bf16,
