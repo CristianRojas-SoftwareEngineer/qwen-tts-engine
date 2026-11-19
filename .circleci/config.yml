@@ -1,39 +1,80 @@
-# CircleCI: comprobación de disponibilidad de las máquinas ARM64 de la Fase 5 (kernels NEON).
-# Cada job imprime «hola mundo» y la arquitectura, el modelo de CPU y si tiene producto escalar
-# entero (dotprod/SDOT), que es lo que usarán los kernels Q4_0 e INT8.
+# CircleCI: medición del motor en ARM64 (Fase 5, kernels NEON).
+# Cada job compila el motor, descarga el modelo CustomVoice (con caché), ejecuta --caps y --self-test,
+# y sintetiza la frase corta y la larga de la línea base 3 veces (scripts/ci-medir-rtf.sh).
 version: 2.1
 
-jobs:
-  hola-linux-arm64:
-    docker:
-      - image: cimg/base:current
-    resource_class: arm.medium
+commands:
+  descargar_modelo:
+    description: Descarga Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice en models/qwen3-tts-0.6b (con caché)
+    steps:
+      - restore_cache:
+          keys:
+            - modelo-customvoice-v1
+      - run:
+          name: Descargar el modelo (si no está en caché)
+          command: |
+            set -euo pipefail
+            D=models/qwen3-tts-0.6b
+            HF=https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice/resolve/main
+            mkdir -p "$D/speech_tokenizer"
+            for f in config.json generation_config.json merges.txt model.safetensors preprocessor_config.json \
+                     tokenizer_config.json vocab.json speech_tokenizer/config.json speech_tokenizer/configuration.json \
+                     speech_tokenizer/model.safetensors speech_tokenizer/preprocessor_config.json; do
+              [ -s "$D/$f" ] || curl -fsSL --retry 3 -o "$D/$f" "$HF/$f"
+            done
+            du -sh "$D"
+      - save_cache:
+          key: modelo-customvoice-v1
+          paths:
+            - models/qwen3-tts-0.6b
+
+  instalar_rust:
     steps:
       - run:
-          name: Hola mundo (Linux ARM64)
+          name: Instalar Rust estable
           command: |
-            echo "hola mundo desde Linux ARM64"
-            uname -m
-            grep -m1 -i "model name\|CPU part" /proc/cpuinfo || true
-            grep -m1 "^Features" /proc/cpuinfo | grep -o -w "asimddp" || echo "sin dotprod"
-            nproc
+            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            echo 'source "$HOME/.cargo/env"' >> "$BASH_ENV"
 
-  hola-macos-arm64:
+  compilar_y_medir:
+    steps:
+      - run:
+          name: Compilar qwen_tts (release)
+          command: |
+            rustc --version
+            cargo build --release -p qwen-app
+      - run:
+          name: Medir (--caps, --self-test, síntesis corta y larga × 3)
+          command: bash scripts/ci-medir-rtf.sh 4 medicion
+      - store_artifacts:
+          path: medicion
+
+jobs:
+  medir-linux-arm64:
+    docker:
+      - image: cimg/base:current
+    resource_class: arm.large
+    steps:
+      - checkout
+      - run:
+          name: Instalar OpenBLAS
+          command: sudo apt-get update -qq && sudo apt-get install -y -qq libopenblas-dev
+      - instalar_rust
+      - descargar_modelo
+      - compilar_y_medir
+
+  medir-macos-arm64:
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
     steps:
-      - run:
-          name: Hola mundo (macOS ARM64)
-          command: |
-            echo "hola mundo desde macOS ARM64"
-            uname -m
-            sysctl -n machdep.cpu.brand_string
-            echo "dotprod: $(sysctl -n hw.optional.arm.FEAT_DotProd)"
-            sysctl -n hw.ncpu
+      - checkout
+      - instalar_rust
+      - descargar_modelo
+      - compilar_y_medir
 
 workflows:
-  disponibilidad-arm64:
+  medicion-arm64:
     jobs:
-      - hola-linux-arm64
-      - hola-macos-arm64
+      - medir-linux-arm64
+      - medir-macos-arm64
