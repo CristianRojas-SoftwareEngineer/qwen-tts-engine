@@ -13,12 +13,12 @@ cabecera_tabla() {
     printf '%-10s %-6s %-4s %-6s %-9s %-11s %-11s %-12s %-8s %s\n' variante texto rep RTF fotogramas "talker ms/f" "CP ms/f" "decoder ms" "TTFA ms" "hash PCM"
 }
 
-# medir_una <bin> <hilos> <short|long> <rep> <variante> <carpeta>: una síntesis (ryan, inglés,
+# medir_una <bin> <hilos> <short|long> <rep> <variante> <carpeta>: una síntesis (voz default, inglés,
 # --quant-mixed, --seed 4) y una fila de la tabla. Hereda el entorno (p. ej. QWEN_SD_THREADS).
 medir_una() {
     local bin="$1" threads="$2" key="$3" rep="$4" variant="$5" out="$6"
     local text_var="TEXT_$key" log="$out/${variant}_${key}_${rep}.log" wav="$out/${variant}_${key}_${rep}.wav"
-    "$bin" -d models/qwen3-tts-0.6b -s ryan -l English --quant-mixed -j "$threads" --seed 4 -t "${!text_var}" -o "$wav" > "$log" 2>&1
+    "$bin" -d models/qwen3-tts-0.6b-base -l English --quant-mixed -j "$threads" --seed 4 -t "${!text_var}" -o "$wav" > "$log" 2>&1
     local rtf frames tk cp dec ttfa
     rtf=$(grep -o 'RTF [0-9.]*' "$log" | tail -1 | cut -d' ' -f2)
     frames=$(grep -o 'Generated [0-9]* frames' "$log" | cut -d' ' -f2)

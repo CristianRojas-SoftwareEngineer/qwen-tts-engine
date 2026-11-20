@@ -4,7 +4,7 @@
 # solo trae el kernel genérico ARMV8.
 #
 # Pruebas (en cada push, salvo en las ejecuciones manuales de medición): clippy -D warnings,
-# cargo test --workspace --release (con el modelo CustomVoice restaurado de la caché) y --self-test.
+# cargo test --workspace --release (con el modelo Base restaurado de la caché) y --self-test.
 #
 # Medición (solo a mano, para no gastar créditos en cada push). Parámetros (booleanos):
 #   medir         Linux ARM64, macOS ARM64 y Windows x86_64: --caps, --self-test y 3 síntesis
@@ -31,7 +31,7 @@ parameters:
 
 commands:
   descargar_modelo:
-    description: Descarga Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice en models/qwen3-tts-0.6b (con caché)
+    description: Descarga Qwen/Qwen3-TTS-12Hz-0.6B-Base en models/qwen3-tts-0.6b-base (con caché)
     parameters:
       shell:
         type: string
@@ -39,14 +39,14 @@ commands:
     steps:
       - restore_cache:
           keys:
-            - modelo-customvoice-v1
+            - modelo-base-v1
       - run:
           name: Descargar el modelo (si no está en caché)
           shell: << parameters.shell >>
           command: |
             set -euo pipefail
-            D=models/qwen3-tts-0.6b
-            HF=https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice/resolve/main
+            D=models/qwen3-tts-0.6b-base
+            HF=https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/resolve/main
             mkdir -p "$D/speech_tokenizer"
             for f in config.json generation_config.json merges.txt model.safetensors preprocessor_config.json \
                      tokenizer_config.json vocab.json speech_tokenizer/config.json speech_tokenizer/configuration.json \
@@ -55,9 +55,9 @@ commands:
             done
             ls -l "$D" "$D/speech_tokenizer"
       - save_cache:
-          key: modelo-customvoice-v1
+          key: modelo-base-v1
           paths:
-            - models/qwen3-tts-0.6b
+            - models/qwen3-tts-0.6b-base
 
   openblas_propio:
     description: >-

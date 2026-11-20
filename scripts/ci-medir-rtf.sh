@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mide el motor en la máquina actual (pensado para CircleCI): --caps, --self-test y síntesis de la
-# frase corta y la larga de referencia (ryan, inglés, --quant-mixed, --seed 4), 3 corridas cada una.
+# frase corta y la larga de referencia (voz default, inglés, --quant-mixed, --seed 4), 3 corridas cada una.
 # Uso: scripts/ci-medir-rtf.sh <hilos> <carpeta de salida>   (BIN = ruta del binario)
 set -euo pipefail
 source "$(dirname "$0")/ci-comun.sh"

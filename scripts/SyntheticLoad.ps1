@@ -35,7 +35,7 @@ Handle devuelto por Start. Tiene prioridad sobre Tag en Status y Stop.
 
 .EXAMPLE
 $load = & .\scripts\SyntheticLoad.ps1 -Action Start -Threads 1 -Tag rtf
-try { & .\target\release\qwen_tts.exe -d models\qwen3-tts-0.6b ... }
+try { & .\target\release\qwen_tts.exe -d models\qwen3-tts-0.6b-base ... }
 finally { & .\scripts\SyntheticLoad.ps1 -Action Stop -Handle $load }
 
 .EXAMPLE
