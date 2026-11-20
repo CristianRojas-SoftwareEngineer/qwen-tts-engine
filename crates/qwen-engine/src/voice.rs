@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use qwen_core::config::{MEL_DIM, NUM_CODEBOOKS, SAMPLE_RATE};
+use qwen_core::config::{DEFAULT_LANGUAGE_ID, MEL_DIM, NUM_CODEBOOKS, SAMPLE_RATE};
 use qwen_core::QVoiceFile;
 use qwen_kernels::ComputeRuntime;
 
@@ -116,7 +116,7 @@ impl Voice {
             .collect();
         Self {
             name: DEFAULT_VOICE_NAME.to_string(),
-            language_id: None,
+            language_id: Some(DEFAULT_LANGUAGE_ID),
             xvector,
             icl: None,
         }

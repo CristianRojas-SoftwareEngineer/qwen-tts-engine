@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use qwen_core::config::{
-    CODEBOOK_SIZE, CODEC_BOS, CODEC_NO_THINK, CODEC_PAD, CODEC_THINK, CODEC_THINK_BOS,
+    CODEBOOK_SIZE, CODEC_BOS, CODEC_PAD, CODEC_THINK, CODEC_THINK_BOS,
     CODEC_THINK_EOS, HIDDEN_SIZE, HOP_SAMPLES, NUM_CODEBOOKS, TOKEN_ASSISTANT, TOKEN_IM_START,
     TOKEN_NEWLINE, TOKEN_TTS_BOS, TOKEN_TTS_EOS, TOKEN_TTS_PAD,
 };
@@ -88,12 +88,11 @@ enum Sec2Token {
 
 /// Construye el prompt de `text` con la voz `voice`.
 ///
-/// `language_id = None` usa la rama sin idioma (`CODEC_NO_THINK`).
 pub(crate) fn build_prompt(
     runtime: &ComputeRuntime,
     model: &Model06B,
     voice: &Voice,
-    language_id: Option<i32>,
+    language_id: i32,
     text: &str,
     scratch: &mut SessionScratch,
 ) -> Result<Prompt, EngineError> {
@@ -122,17 +121,7 @@ pub(crate) fn build_prompt(
     let text_content_len = text_tokens.len();
 
     // Secuencia de códec de la sección 2: prefijo de idioma, locutor y `CODEC_PAD`.
-    let mut codec_prefix = Vec::with_capacity(4);
-    if let Some(lang_id) = language_id {
-        codec_prefix.push(CODEC_THINK);
-        codec_prefix.push(CODEC_THINK_BOS);
-        codec_prefix.push(lang_id);
-        codec_prefix.push(CODEC_THINK_EOS);
-    } else {
-        codec_prefix.push(CODEC_NO_THINK);
-        codec_prefix.push(CODEC_THINK_BOS);
-        codec_prefix.push(CODEC_THINK_EOS);
-    }
+    let codec_prefix = [CODEC_THINK, CODEC_THINK_BOS, language_id, CODEC_THINK_EOS];
     let spk_emb: &[f32] = voice.xvector.as_slice();
     // Posición explícita del locutor, tras el prefijo; después va `CODEC_PAD`.
     let sec2: Vec<Sec2Token> = codec_prefix

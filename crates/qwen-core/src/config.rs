@@ -81,9 +81,17 @@ pub const CODEC_PAD: i32 = 2148;
 pub const CODEC_BOS: i32 = 2149;
 pub const CODEC_EOS: i32 = 2150;
 pub const CODEC_THINK: i32 = 2154;
-pub const CODEC_NO_THINK: i32 = 2155;
 pub const CODEC_THINK_BOS: i32 = 2156;
 pub const CODEC_THINK_EOS: i32 = 2157;
+
+/// Idioma por defecto cuando ni el pedido ni la voz declaran uno: español.
+pub const DEFAULT_LANGUAGE_ID: i32 = 2054;
+
+/// Única regla de idioma: el pedido (`-l`/`language`); si no hay, el de la voz; si tampoco,
+/// [`DEFAULT_LANGUAGE_ID`].
+pub fn effective_language(requested: Option<i32>, voice: Option<i32>) -> i32 {
+    requested.or(voice).unwrap_or(DEFAULT_LANGUAGE_ID)
+}
 
 pub fn lookup_language(name: &str) -> Option<i32> {
     match name.trim().to_ascii_lowercase().as_str() {

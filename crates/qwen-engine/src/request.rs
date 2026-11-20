@@ -5,6 +5,7 @@
 
 //! Petición de síntesis: todo lo que el motor necesita para una síntesis, ya resuelto.
 
+use qwen_core::config::DEFAULT_LANGUAGE_ID;
 use qwen_core::SamplingParams;
 
 /// Tope de fotogramas por síntesis cuando el llamador no fija otro.
@@ -43,8 +44,8 @@ impl LogLevel {
 /// Parámetros de muestreo, audio y registro de una síntesis.
 #[derive(Debug, Clone)]
 pub struct SynthesisRequest {
-    /// Idioma del prompt; `None` no envía token de idioma.
-    pub language_id: Option<i32>,
+    /// Idioma del prompt, ya resuelto con `effective_language`.
+    pub language_id: i32,
     pub sampling: SamplingParams,
     /// Tope de fotogramas generados.
     pub max_frames: usize,
@@ -65,7 +66,7 @@ pub struct SynthesisRequest {
 impl Default for SynthesisRequest {
     fn default() -> Self {
         Self {
-            language_id: None,
+            language_id: DEFAULT_LANGUAGE_ID,
             sampling: SamplingParams::default(),
             max_frames: DEFAULT_MAX_FRAMES,
             chunk_frames: DEFAULT_CHUNK_FRAMES,

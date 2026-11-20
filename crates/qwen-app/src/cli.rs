@@ -140,7 +140,7 @@ pub fn print_usage(prog: &str) {
     eprintln!("  -d, --model-dir <path>     Model directory (Qwen3-TTS 0.6B Base)");
     eprintln!("  -t, --text <string>        Text to synthesize");
     eprintln!("  -o, --output <path>        Output WAV file (default: output.wav)");
-    eprintln!("  -l, --language <name>      Language (default: the voice language, else English)");
+    eprintln!("  -l, --language <name>      Language (default: the voice language, else Spanish)");
     eprintln!("  -T, --temperature <float>  Sampling temperature (default: 0.325)");
     eprintln!("  -k, --top-k <int>          Top-k sampling (default: 50)");
     eprintln!("  -p, --top-p <float>        Top-p sampling (default: 1.0)");

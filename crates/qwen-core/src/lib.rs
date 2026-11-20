@@ -14,7 +14,9 @@ pub mod qvoice;
 pub mod sampling;
 pub mod tokenizer;
 
-pub use config::{language_name, lookup_language, ModelConfig06B};
+pub use config::{
+    effective_language, language_name, lookup_language, ModelConfig06B, DEFAULT_LANGUAGE_ID,
+};
 pub use error::CoreError;
 pub use markup::{
     is_para_event_tag, plan_script, resolve_sampling, MarkupMode, MarkupPlanner, PlannedScript,

@@ -418,7 +418,7 @@ pub fn handle_tts_full(
         "[HTTP] TTS: \"{}\" (voice={}, lang={}, seed={})",
         planned.text,
         voice.name,
-        vreq.language_id.unwrap_or(0),
+        req.language_id,
         req.sampling.seed
     );
 
@@ -497,7 +497,7 @@ pub fn handle_tts_stream(
         "[HTTP] TTS stream: \"{}\" (voice={}, lang={}, seed={})",
         planned.text,
         voice.name,
-        vreq.language_id.unwrap_or(0),
+        req.language_id,
         req.sampling.seed
     );
 

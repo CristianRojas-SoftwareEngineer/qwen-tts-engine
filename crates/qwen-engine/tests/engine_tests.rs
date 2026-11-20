@@ -136,7 +136,7 @@ fn test_e2e_determinism_and_abort() {
     let voice = Voice::builtin_default();
 
     let req = SynthesisRequest {
-        language_id: Some(lang),
+        language_id: lang,
         log: LogLevel::Silent,
         ..Default::default()
     };

@@ -5,7 +5,10 @@
 
 use std::path::PathBuf;
 
-use qwen_core::config::{language_name, lookup_language, HIDDEN_SIZE, TEXT_HIDDEN_SIZE};
+use qwen_core::config::{
+    effective_language, language_name, lookup_language, DEFAULT_LANGUAGE_ID, HIDDEN_SIZE,
+    TEXT_HIDDEN_SIZE,
+};
 use qwen_core::{
     BpeTokenizer, LcgRng, MarkupPlanner, MmapStore, ModelConfig06B, QVoiceFile, Sampler, SpanSpec,
 };
@@ -74,6 +77,14 @@ fn test_config_only_base_loads_and_rejects_others() {
     } else {
         eprintln!("Skipping real Base config check (model absent)");
     }
+}
+
+#[test]
+fn test_effective_language_precedence() {
+    assert_eq!(DEFAULT_LANGUAGE_ID, 2054);
+    assert_eq!(effective_language(Some(2050), Some(2070)), 2050);
+    assert_eq!(effective_language(None, Some(2070)), 2070);
+    assert_eq!(effective_language(None, None), 2054);
 }
 
 #[test]

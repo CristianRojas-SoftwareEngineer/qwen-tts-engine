@@ -8,7 +8,7 @@
 //! Es el único sitio que aplica `plan_script`, `resolve_sampling` y la regla de idioma de cada
 //! interfaz, tanto para la CLI como para el servidor HTTP.
 
-use qwen_core::config::{lookup_language, FRAME_RATE};
+use qwen_core::config::{effective_language, lookup_language, FRAME_RATE};
 use qwen_core::{
     plan_script, resolve_sampling, MarkupMode, PlannedScript, SamplingParams, Script, SeedChoice,
 };
@@ -33,10 +33,10 @@ pub fn log_level(cli: &CliArgs) -> LogLevel {
 
 /// Prepara la petición de la CLI. El idioma de `-l` ya fue validado antes de cargar el modelo.
 ///
-/// Regla de idioma vigente hasta la regla única: `-l`, si no el de la voz, si no inglés (2050).
+/// Idioma: `-l`, si no el de la voz, si no español (`effective_language`).
 pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScript) {
     let cli_language_id = cli.language.as_deref().and_then(lookup_language);
-    let language_id = cli_language_id.or(voice.language_id).or(Some(2050));
+    let language_id = effective_language(cli_language_id, voice.language_id);
 
     let max_frames = match cli.max_duration {
         Some(dur) if dur > 0.0 => ((dur * FRAME_RATE) as usize).max(1),
@@ -103,8 +103,7 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScrip
 /// Prepara la petición HTTP. `stream` es `true` en `/v1/tts/stream`.
 ///
 /// Reglas por entrega: `chunk_frames` solo cuenta en streaming (en `/v1/tts` es el valor por
-/// defecto) y `rate` solo en la entrega completa. Idioma vigente hasta la regla única: el de la
-/// petición, si no el de la voz, si no ninguno.
+/// defecto) y `rate` solo en la entrega completa. Idioma: `effective_language`.
 pub fn from_http(
     vreq: &ValidatedTtsRequest,
     voice: &Voice,
@@ -121,7 +120,7 @@ pub fn from_http(
     let sampling = resolve_sampling(base, vreq.seed, vreq.temperature, planned.para);
 
     let req = SynthesisRequest {
-        language_id: vreq.language_id.or(voice.language_id),
+        language_id: effective_language(vreq.language_id, voice.language_id),
         sampling,
         max_frames: DEFAULT_MAX_FRAMES,
         chunk_frames: if stream {
@@ -158,17 +157,17 @@ mod tests {
     }
 
     #[test]
-    fn http_language_request_then_voice_then_none() {
+    fn http_language_request_then_voice_then_spanish() {
         let v = parse(r#"{"text":"Hola."}"#, false);
         assert_eq!(
-            from_http(&v, &voice(Some(2054)), false).0.language_id,
-            Some(2054)
+            from_http(&v, &voice(Some(2050)), false).0.language_id,
+            2050
         );
-        assert_eq!(from_http(&v, &voice(None), false).0.language_id, None);
+        assert_eq!(from_http(&v, &voice(None), false).0.language_id, 2054);
         let e = parse(r#"{"text":"Hola.","language":"English"}"#, false);
         assert_eq!(
             from_http(&e, &voice(Some(2054)), false).0.language_id,
-            Some(2050)
+            2050
         );
     }
 

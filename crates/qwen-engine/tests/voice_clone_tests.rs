@@ -123,7 +123,7 @@ fn test_default_voice_is_embedded() {
     let voice = Voice::builtin_default();
     assert_eq!(voice.name, "default");
     assert!(voice.icl.is_none(), "the default voice must be a plain x-vector");
-    assert_eq!(voice.language_id, None);
+    assert_eq!(voice.language_id, Some(2054));
     let emb = &voice.xvector;
     assert_eq!(emb.len(), ENC_DIM);
     assert!(emb.iter().all(|v| v.is_finite()));
@@ -231,7 +231,7 @@ fn test_clone_from_default_voice_e2e() {
     let ref_wav = dir.join("ref.wav");
     let ref_text = "The weather is beautiful today, perfect for a walk in the park.";
     let req = |lang: i32| SynthesisRequest {
-        language_id: Some(lang),
+        language_id: lang,
         sampling: SamplingParams {
             seed: DEFAULT_SEED,
             ..SamplingParams::default()
@@ -405,7 +405,7 @@ fn test_clone_from_default_voice_e2e() {
     );
     assert!(spans.len() >= 3);
     let compose_req = SynthesisRequest {
-        language_id: Some(2070),
+        language_id: 2070,
         sampling,
         cp_roughness: 0.35,
         log: LogLevel::Silent,
