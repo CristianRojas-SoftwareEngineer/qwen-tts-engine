@@ -7,12 +7,12 @@
 # cargo test --workspace --release (con el modelo Base restaurado de la caché) y --self-test.
 #
 # Medición (solo a mano, para no gastar créditos en cada push). Parámetros (booleanos):
-#   medir         Linux ARM64, macOS ARM64 y Windows x86_64: --caps, --self-test y 3 síntesis
-#                 de la frase corta y la larga (scripts/ci-medir-rtf.sh).
+#   measure       Linux ARM64, macOS ARM64 y Windows x86_64: --caps, --self-test y 3 síntesis
+#                 de la frase corta y la larga (scripts/ci-measure-rtf.sh).
 #   kernels       Los tres sistemas: QWEN_KERNELS=auto frente a QWEN_KERNELS=scalar, intercalados
-#                 (scripts/ci-comparar-kernels.sh).
+#                 (scripts/ci-compare-kernels.sh).
 # Lanzamiento: POST https://circleci.com/api/v2/project/gh/CristianRojas-SoftwareEngineer/qwen-tts-engine/pipeline
-#   {"branch": "main", "parameters": {"medir": true}}
+#   {"branch": "main", "parameters": {"measure": true}}
 # (o, en la web de CircleCI, «Trigger Pipeline» con el parámetro correspondiente = true).
 version: 2.1
 
@@ -20,7 +20,7 @@ orbs:
   win: circleci/windows@5.0
 
 parameters:
-  medir:
+  measure:
     type: boolean
     default: false
     description: Ejecuta la medición en Linux ARM64, macOS ARM64 y Windows x86_64.
@@ -30,7 +30,7 @@ parameters:
     description: Compara QWEN_KERNELS=auto con QWEN_KERNELS=scalar en los tres sistemas.
 
 commands:
-  descargar_modelo:
+  download_model:
     description: Descarga Qwen/Qwen3-TTS-12Hz-0.6B-Base en models/qwen3-tts-0.6b-base (con caché)
     parameters:
       shell:
@@ -39,7 +39,7 @@ commands:
     steps:
       - restore_cache:
           keys:
-            - modelo-base-v1
+            - base-model-v1
       - run:
           name: Descargar el modelo (si no está en caché)
           shell: << parameters.shell >>
@@ -55,11 +55,11 @@ commands:
             done
             ls -l "$D" "$D/speech_tokenizer"
       - save_cache:
-          key: modelo-base-v1
+          key: base-model-v1
           paths:
             - models/qwen3-tts-0.6b-base
 
-  openblas_propio:
+  build_own_openblas:
     description: >-
       OpenBLAS estático compilado con scripts/build-openblas.sh (DYNAMIC_ARCH, con caché), enlazado
       con OPENBLAS_LIB_DIR: el kernel de cada CPU ARM no depende del OpenBLAS de la distribución.
@@ -80,7 +80,7 @@ commands:
           paths:
             - ~/openblas
 
-  instalar_rust_unix:
+  install_rust_unix:
     steps:
       - run:
           name: Instalar Rust (versión de rust-toolchain.toml)
@@ -91,7 +91,7 @@ commands:
             rustup toolchain install
             rustc -V
 
-  pruebas_unix:
+  test_unix:
     steps:
       - run:
           name: clippy (-D warnings)
@@ -107,7 +107,7 @@ commands:
             ./target/release/qwen_tts --caps
             ./target/release/qwen_tts --self-test
 
-  compilar_y_medir_unix:
+  build_and_measure_unix:
     steps:
       - run:
           name: Compilar qwen_tts (release)
@@ -117,11 +117,11 @@ commands:
       - run:
           name: Medir (--caps, --self-test, síntesis corta y larga × 3)
           no_output_timeout: 10m
-          command: bash scripts/ci-medir-rtf.sh 4 medicion
+          command: bash scripts/ci-measure-rtf.sh 4 measurement
       - store_artifacts:
-          path: medicion
+          path: measurement
 
-  comparar_kernels_unix:
+  compare_kernels_unix:
     steps:
       - run:
           name: Compilar qwen_tts (release)
@@ -129,11 +129,11 @@ commands:
       - run:
           name: Comparar kernels (auto frente a scalar)
           no_output_timeout: 15m
-          command: bash scripts/ci-comparar-kernels.sh kernels
+          command: bash scripts/ci-compare-kernels.sh kernels
       - store_artifacts:
           path: kernels
 
-  preparar_windows:
+  prepare_windows:
     description: MSYS2 UCRT64 (gcc, OpenBLAS), Rust para x86_64-pc-windows-gnu, modelo y compilación
     steps:
       - checkout
@@ -154,7 +154,7 @@ commands:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             & "$env:USERPROFILE\.cargo\bin\rustup.exe" toolchain install
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - descargar_modelo:
+      - download_model:
           shell: bash.exe
       - run:
           name: Compilar qwen_tts.exe (release, x86_64-pc-windows-gnu)
@@ -166,33 +166,33 @@ commands:
             cargo build --release -p qwen-app --target x86_64-pc-windows-gnu
 
 jobs:
-  pruebas-linux-arm64:
+  test-linux-arm64:
     docker:
       - image: cimg/base:current
     resource_class: arm.large
     steps:
       - checkout
-      - openblas_propio
-      - instalar_rust_unix
-      - descargar_modelo
-      - pruebas_unix
+      - build_own_openblas
+      - install_rust_unix
+      - download_model
+      - test_unix
 
-  pruebas-macos-arm64:
+  test-macos-arm64:
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
     steps:
       - checkout
-      - instalar_rust_unix
-      - descargar_modelo
-      - pruebas_unix
+      - install_rust_unix
+      - download_model
+      - test_unix
 
-  pruebas-windows-x64:
+  test-windows-x64:
     executor:
       name: win/server-2022
       size: large
     steps:
-      - preparar_windows
+      - prepare_windows
       - run:
           name: clippy, cargo test y --self-test (x86_64-pc-windows-gnu)
           shell: bash.exe
@@ -206,35 +206,35 @@ jobs:
             target/x86_64-pc-windows-gnu/release/qwen_tts.exe --caps
             target/x86_64-pc-windows-gnu/release/qwen_tts.exe --self-test
 
-  medir-linux-arm64:
+  measure-linux-arm64:
     docker:
       - image: cimg/base:current
     resource_class: arm.large
     steps:
       - checkout
-      - openblas_propio
-      - instalar_rust_unix
-      - descargar_modelo
-      - compilar_y_medir_unix
+      - build_own_openblas
+      - install_rust_unix
+      - download_model
+      - build_and_measure_unix
 
-  medir-macos-arm64:
+  measure-macos-arm64:
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
     steps:
       - checkout
-      - instalar_rust_unix
-      - descargar_modelo
-      - compilar_y_medir_unix
+      - install_rust_unix
+      - download_model
+      - build_and_measure_unix
 
-  medir-windows-x64:
+  measure-windows-x64:
     # `medium` tiene 2 núcleos físicos: el motor se fija a uno por núcleo y, con -j 4 (más los
     # hilos del decoder), sus barreras se estorban y la síntesis no avanza. `large` da 4.
     executor:
       name: win/server-2022
       size: large
     steps:
-      - preparar_windows
+      - prepare_windows
       - run:
           name: Medir (--caps, --self-test, síntesis corta y larga × 3)
           shell: bash.exe
@@ -242,9 +242,9 @@ jobs:
           command: |
             export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
             unset OPENBLAS_NUM_THREADS
-            BIN=target/x86_64-pc-windows-gnu/release/qwen_tts.exe bash scripts/ci-medir-rtf.sh 4 medicion
+            BIN=target/x86_64-pc-windows-gnu/release/qwen_tts.exe bash scripts/ci-measure-rtf.sh 4 measurement
       - store_artifacts:
-          path: medicion
+          path: measurement
 
   kernels-linux-arm64:
     docker:
@@ -252,10 +252,10 @@ jobs:
     resource_class: arm.large
     steps:
       - checkout
-      - openblas_propio
-      - instalar_rust_unix
-      - descargar_modelo
-      - comparar_kernels_unix
+      - build_own_openblas
+      - install_rust_unix
+      - download_model
+      - compare_kernels_unix
 
   kernels-macos-arm64:
     macos:
@@ -263,16 +263,16 @@ jobs:
     resource_class: m4pro.medium
     steps:
       - checkout
-      - instalar_rust_unix
-      - descargar_modelo
-      - comparar_kernels_unix
+      - install_rust_unix
+      - download_model
+      - compare_kernels_unix
 
   kernels-windows-x64:
     executor:
       name: win/server-2022
       size: large
     steps:
-      - preparar_windows
+      - prepare_windows
       - run:
           name: Comparar kernels (auto frente a scalar)
           shell: bash.exe
@@ -280,26 +280,26 @@ jobs:
           command: |
             export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
             unset OPENBLAS_NUM_THREADS
-            BIN=target/x86_64-pc-windows-gnu/release/qwen_tts.exe bash scripts/ci-comparar-kernels.sh kernels
+            BIN=target/x86_64-pc-windows-gnu/release/qwen_tts.exe bash scripts/ci-compare-kernels.sh kernels
       - store_artifacts:
           path: kernels
 
 workflows:
-  pruebas:
+  test:
     when:
       and:
-        - not: << pipeline.parameters.medir >>
+        - not: << pipeline.parameters.measure >>
         - not: << pipeline.parameters.kernels >>
     jobs:
-      - pruebas-linux-arm64
-      - pruebas-macos-arm64
-      - pruebas-windows-x64
-  medicion:
-    when: << pipeline.parameters.medir >>
+      - test-linux-arm64
+      - test-macos-arm64
+      - test-windows-x64
+  measure:
+    when: << pipeline.parameters.measure >>
     jobs:
-      - medir-linux-arm64
-      - medir-macos-arm64
-      - medir-windows-x64
+      - measure-linux-arm64
+      - measure-macos-arm64
+      - measure-windows-x64
   kernels:
     when: << pipeline.parameters.kernels >>
     jobs:

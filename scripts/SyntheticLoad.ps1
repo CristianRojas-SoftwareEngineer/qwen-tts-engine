@@ -1,16 +1,16 @@
-<#
+﻿<#
 .SYNOPSIS
-Genera y controla carga sintetica de ancho de banda de memoria para medir RTF.
+Genera y controla carga sintética de ancho de banda de memoria para medir RTF.
 
 .DESCRIPTION
 Cada hilo de carga es un proceso PowerShell independiente que copia un bloque
 de memoria en bucle con [System.Buffer]::BlockCopy. La herramienta solo crea,
 inspecciona y detiene esa carga: no conoce el motor, no mide RTF y no escribe
-resultados de medicion. El estado se guarda en un fichero JSON pequeno en la
+resultados de medición. El estado se guarda en un archivo JSON pequeño en la
 carpeta temporal del usuario, clave por Tag, para poder invocar Start y Stop
 en procesos distintos.
 
-No usar dot-sourcing ('.\scripts\SyntheticLoad.ps1' sin '&'): se ejecutaria con
+No usar dot-sourcing ('.\scripts\SyntheticLoad.ps1' sin '&'): se ejecutaría con
 los valores por defecto. Invocar siempre como comando:
     & .\scripts\SyntheticLoad.ps1 -Action Start -Tag rtf
 
@@ -19,13 +19,13 @@ Start crea la carga, Status la inspecciona, Stop la detiene y SelfTest verifica
 la herramienta sin dejar procesos.
 
 .PARAMETER Threads
-Numero de procesos de carga. 0 no inicia ninguno y devuelve un handle vacio.
+Número de procesos de carga. 0 no inicia ninguno y devuelve un handle vacio.
 
 .PARAMETER ChunkMB
-Tamano del bloque copiado por cada proceso. Cada proceso reserva 2 x ChunkMB.
+Tamaño del bloque copiado por cada proceso. Cada proceso reserva 2 x ChunkMB.
 
 .PARAMETER DurationSec
-Duracion automatica en segundos. 0 mantiene la carga hasta Stop.
+Duración automática en segundos. 0 mantiene la carga hasta Stop.
 
 .PARAMETER Tag
 Identificador del conjunto de procesos. Solo caracteres A-Z a-z 0-9 _ y -.
@@ -80,7 +80,7 @@ function Get-SyntheticLoadPwshPath {
         $cmd = Get-Command $name -ErrorAction SilentlyContinue
         if ($cmd) { return $cmd.Source }
     }
-    throw 'No se encontro el ejecutable de PowerShell.'
+    throw 'No se encontró el ejecutable de PowerShell.'
 }
 
 function Get-SyntheticLoadStatePath {
@@ -107,7 +107,7 @@ function Get-SyntheticLoadState {
 
     if ($null -ne $InputHandle) {
         if (-not $InputHandle.PSObject.Properties['Processes']) {
-            throw 'Handle de carga no valido: falta la propiedad Processes.'
+            throw 'Handle de carga no válido: falta la propiedad Processes.'
         }
         return $InputHandle
     }
@@ -149,7 +149,7 @@ function Assert-PhysicalMemory {
     $total = [int64] 0
     try { $total = [int64] (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory } catch { $total = [int64] 8 * 1GB }
     if ($total -gt 0 -and $needed -gt ($total / 2)) {
-        throw "La carga pediria $([math]::Round($needed/1GB,2)) GiB y supera la mitad de la RAM del equipo."
+        throw "La carga pediría $([math]::Round($needed/1GB,2)) GiB y supera la mitad de la RAM del equipo."
     }
 }
 
@@ -219,7 +219,7 @@ function Start-SyntheticLoadAction {
         Start-Sleep -Milliseconds 300
         foreach ($p in @($processes)) {
             if ($null -eq (Test-SyntheticLoadIdentity -ProcessId $p.Id -StartTimeIso $p.StartTime)) {
-                throw "El proceso de carga $($p.Id) termino durante el arranque."
+                throw "El proceso de carga $($p.Id) terminó durante el arranque."
             }
         }
     } catch {
@@ -259,7 +259,7 @@ function Get-SyntheticLoadStatus {
         }
     }
     if (-not @($rows).Count) {
-        Write-Information "Tag='$($state.Tag)': sin procesos de carga (Threads=0 o duracion agotada)." -InformationAction Continue
+        Write-Information "Tag='$($state.Tag)': sin procesos de carga (Threads=0 o duración agotada)." -InformationAction Continue
     }
     return @($rows)
 }

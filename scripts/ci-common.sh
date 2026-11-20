@@ -9,13 +9,13 @@ pcm_hash() {
     else tail -c +45 "$1" | shasum -a 256 | cut -c1-16; fi
 }
 
-cabecera_tabla() {
+print_table_header() {
     printf '%-10s %-6s %-4s %-6s %-9s %-11s %-11s %-12s %-8s %s\n' variante texto rep RTF fotogramas "talker ms/f" "CP ms/f" "decoder ms" "TTFA ms" "hash PCM"
 }
 
-# medir_una <bin> <hilos> <short|long> <rep> <variante> <carpeta>: una síntesis (voz default, inglés,
+# measure_one <bin> <hilos> <short|long> <rep> <variante> <carpeta>: una síntesis (voz default, inglés,
 # --quant-mixed, --seed 4) y una fila de la tabla. Hereda el entorno (p. ej. QWEN_SD_THREADS).
-medir_una() {
+measure_one() {
     local bin="$1" threads="$2" key="$3" rep="$4" variant="$5" out="$6"
     local text_var="TEXT_$key" log="$out/${variant}_${key}_${rep}.log" wav="$out/${variant}_${key}_${rep}.wav"
     "$bin" -d models/qwen3-tts-0.6b-base -l English --quant-mixed -j "$threads" --seed 4 -t "${!text_var}" -o "$wav" > "$log" 2>&1

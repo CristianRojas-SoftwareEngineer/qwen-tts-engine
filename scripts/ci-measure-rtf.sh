@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Mide el motor en la máquina actual (pensado para CircleCI): --caps, --self-test y síntesis de la
 # frase corta y la larga de referencia (voz default, inglés, --quant-mixed, --seed 4), 3 corridas cada una.
-# Uso: scripts/ci-medir-rtf.sh <hilos> <carpeta de salida>   (BIN = ruta del binario)
+# Uso: scripts/ci-measure-rtf.sh <hilos> <carpeta de salida>   (BIN = ruta del binario)
 set -euo pipefail
-source "$(dirname "$0")/ci-comun.sh"
+source "$(dirname "$0")/ci-common.sh"
 
 THREADS="${1:-4}"
-OUT="${2:-medicion}"
+OUT="${2:-measurement}"
 BIN="${BIN:-target/release/qwen_tts}"
 mkdir -p "$OUT"
 
@@ -22,9 +22,9 @@ echo "== --self-test"
 tail -1 "$OUT/self-test.log"
 
 echo "== Síntesis"
-cabecera_tabla
+print_table_header
 for rep in 1 2 3; do
     for key in short long; do
-        medir_una "$BIN" "$THREADS" "$key" "$rep" "-j$THREADS" "$OUT"
+        measure_one "$BIN" "$THREADS" "$key" "$rep" "-j$THREADS" "$OUT"
     done
 done

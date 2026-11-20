@@ -105,10 +105,10 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 
 ### Audio de referencia (x86-64)
 
-Tras cualquier cambio que no deba tocar el audio, el PCM tiene que coincidir con esta tabla. Se mide en Windows x86_64 (Ryzen 7 5825U, ruta `avx2`, OpenBLAS de MSYS2 UCRT64) con `--quant-mixed -j 4 --seed 4` y la temperatura por defecto (0,325). El hash es el de `scripts/ci-comun.sh` (`pcm_hash`): los 16 primeros dígitos hexadecimales del SHA-256 del PCM, sin la cabecera WAV de 44 bytes. Es el mismo en los cuatro modos (CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream`) y en todas las corridas. El idioma se indica con `-l` (`Spanish` o `English`).
+Tras cualquier cambio que no deba tocar el audio, el PCM tiene que coincidir con esta tabla. Se mide en Windows x86_64 (Ryzen 7 5825U, ruta `avx2`, OpenBLAS de MSYS2 UCRT64) con `--quant-mixed -j 4 --seed 4` y la temperatura por defecto (0,325). El hash es el de `scripts/ci-common.sh` (`pcm_hash`): los 16 primeros dígitos hexadecimales del SHA-256 del PCM, sin la cabecera WAV de 44 bytes. Es el mismo en los cuatro modos (CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream`) y en todas las corridas. El idioma se indica con `-l` (`Spanish` o `English`).
 
 - **Voz**: `default`, la voz incorporada en el binario (x-vector de 4096 bytes, SHA-256 `d2ceafbb7c5f75c488ecf60eef8e5cafc4a76e8e5e240e7339d44bec80543b94`), sin `--load-voice`, con el modelo Base (`-d models/qwen3-tts-0.6b-base`).
-- **Textos** (los de inglés son `TEXT_short` y `TEXT_long` de `scripts/ci-comun.sh`):
+- **Textos** (los de inglés son `TEXT_short` y `TEXT_long` de `scripts/ci-common.sh`):
   - inglés, corta: `Hello world, this is a quick baseline test.`
   - inglés, larga: `In this long synthesis benchmark, we measure sustained memory bandwidth, Talker latency, Code Predictor throughput, and streaming Speech Decoder stability across multiple seconds of continuous speech generation.`
   - español, corta: `Hola mundo, esta es una prueba rápida de referencia.`

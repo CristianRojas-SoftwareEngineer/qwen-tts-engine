@@ -62,14 +62,14 @@ La CI del repositorio es CircleCI, con tres workflows sobre las mismas máquinas
 | Windows x86_64 | Windows Server 2022 (orb `circleci/windows`), `large` (4 núcleos físicos) | `x86_64-pc-windows-gnu` | MSYS2 UCRT64 (`libopenblas.a` estático) |
 
 **Workflows**:
-- **`pruebas`**: en cada push.
+- **`test`**: en cada push.
   - `clippy --workspace --all-targets -- -D warnings`;
   - `cargo test --workspace --release`, con el modelo Base restaurado de la caché, así que las pruebas que lo necesitan se ejecutan;
   - `--caps` y `--self-test`.
-- **`medicion`**: a mano, con el parámetro de pipeline `medir = true`, desde la web de CircleCI («Trigger Pipeline») o desde la API v2. Ejecuta `scripts/ci-medir-rtf.sh`:
+- **`measure`**: a mano, con el parámetro de pipeline `measure = true`, desde la web de CircleCI («Trigger Pipeline») o desde la API v2. Ejecuta `scripts/ci-measure-rtf.sh`:
   - `--caps` y `--self-test`;
   - 3 síntesis de la frase corta y la larga (voz `default`, inglés, `--quant-mixed -j 4 --seed 4`), con RTF, tiempos por etapa, TTFA y hash del PCM.
-- **`kernels`**: a mano, con `kernels = true`, en los tres sistemas. Compara `QWEN_KERNELS=auto` con `QWEN_KERNELS=scalar`, intercalados por corrida (`scripts/ci-comparar-kernels.sh`): tiempos, RTF y hash del PCM de cada ruta, y el número de rutas SIMD que pasan el `--self-test`.
+- **`kernels`**: a mano, con `kernels = true`, en los tres sistemas. Compara `QWEN_KERNELS=auto` con `QWEN_KERNELS=scalar`, intercalados por corrida (`scripts/ci-compare-kernels.sh`): tiempos, RTF y hash del PCM de cada ruta, y el número de rutas SIMD que pasan el `--self-test`.
 
 Las pruebas que necesitan pesos reales se omiten (con un aviso en la salida) cuando el modelo no está en `models/`.
 
@@ -85,4 +85,4 @@ Para decidir si un cambio de rendimiento se integra ([ADR-005](adr/005-cpu-infer
 - **Métricas** (las imprime el motor): `Prefill (ms)`, `Talker step (ms/f)`, `Code Predictor (ms/f)`, `Speech decoder (ms)`, drenaje, TTFA y RTF. En RAM, el pico de commit privado (`PeakPagefileUsage` en Windows) es la métrica principal y el pico de *working set*, de no regresión. En cambios de capacidad inicial, el pico *durante* el crecimiento (`ensure_capacity`).
 - **Herramienta mínima**: un microbanco (`--matmat-bench`), una corrida para la RAM (es determinista) o 3 corridas sueltas bastan para descartar; el A/B completo es para la decisión.
 - **Sin interferencias**: nunca compilar ni lanzar pruebas en paralelo con una medición; los procesos del motor escriben su salida en un fichero.
-- **ARM64 y otras máquinas**: workflows `medicion` y `kernels` de la CI (§3). El audio de ARM se compara con la ruta escalar de la misma máquina.
+- **ARM64 y otras máquinas**: workflows `measure` y `kernels` de la CI (§3). El audio de ARM se compara con la ruta escalar de la misma máquina.
