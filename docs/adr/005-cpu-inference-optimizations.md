@@ -80,17 +80,29 @@ El protocolo de medición está en [`VERIFICATION_PLAN.md`](../VERIFICATION_PLAN
 
 ## Consecuencias
 
-### Rendimiento resultante (`--quant-mixed -j 4`, sin carga salvo que se indique)
+### Rendimiento resultante
 
-| Plataforma | RTF | Tiempo real |
-|---|---|---|
-| Windows x86_64, Ryzen 7 5825U (8 núcleos) | Frase larga 0,58–0,67 sin carga y 0,83–0,92 con carga; frase corta 0,63–0,80 y 0,90–1,14 | Sí, salvo frases muy cortas con carga (pesan prefill y primer fragmento) |
-| macOS, Apple M4 Pro virtual (6 núcleos) | 0,25–0,26 | Sí |
-| Linux ARM64, Neoverse V1 (4 vCPU) | 1,12–1,21 | No: el productor tarda ~85 ms/f |
-| Linux ARM64, Neoverse N1 (4 vCPU) | 1,54–1,62 | No |
-| Windows x86_64 con 4 núcleos (CircleCI) | 1,40–1,83 | No |
+Todas las filas usan `--quant-mixed -j 4 --seed 4` por la CLI. Las máquinas de CircleCI se midieron con la versión final del motor; el equipo de referencia, justo antes del reparto dinámico de filas, el único cambio posterior que afecta a x86 (abajo). Solo hubo dos clases de equipo disponibles, y no se comparan entre sí:
 
-TTFA en el servidor por `/v1/tts/stream`: 442–644 ms sin carga y 548–816 ms con carga (8 núcleos).
+- **Equipo de referencia**: la laptop de desarrollo, el uso real del motor. Es el único medido también con carga (1 hilo copiando 256 MiB en bucle).
+- **Máquinas de CircleCI**: máquinas virtuales para cubrir las demás arquitecturas. Los núcleos son los de la mayor máquina disponible en el plan del proyecto: 6 en macOS (el único Mac), 4 en Linux ARM64 (`arm.xlarge`, de 8 vCPU, no está en el plan) y 4 en Windows (`medium`, de 2, no llega a sintetizar). Medidas sin carga.
+
+| Equipo | Núcleos | Qué se midió | RTF sin carga | RTF con carga | Tiempo real |
+|---|---|---|---|---|---|
+| **Referencia**: laptop Windows x86_64, AMD Ryzen 7 5825U | 8 | Frase larga; voces `ryan`, `vivian` y clonada, en español e inglés (6 combinaciones); mediana de 3 corridas por combinación | 0,58–0,64 | 0,89–0,92 | Sí |
+| CircleCI macOS, Apple M4 Pro (virtual) | 6 | Frase corta y larga; `ryan` en inglés; 3 corridas de cada una | 0,25–0,26 | sin medir | Sí |
+| CircleCI Linux ARM64, Arm Neoverse V1 (*machine* Ubuntu 22.04, OpenBLAS propio) | 4 vCPU | Igual que macOS | 1,12–1,21 | sin medir | No |
+| CircleCI Linux ARM64, Arm Neoverse N1 (Docker `cimg/base`) | 4 vCPU | Igual que macOS | 1,54–1,62 | sin medir | No |
+| CircleCI Windows x86_64 (virtual, tiempos muy irregulares) | 4 | Igual que macOS | 1,40–1,83 | sin medir | No |
+
+Cómo leer los rangos:
+- En la referencia, cada extremo es la mediana de una combinación: va de la combinación más rápida a la más lenta.
+- En CircleCI, cada extremo es una corrida: va de la más rápida a la más lenta, mezclando la frase corta y la larga.
+
+Detalles del equipo de referencia:
+- **Con carga, después del reparto dinámico de filas**: solo se volvió a medir `ryan` en inglés, que bajó de 0,87–0,88 a 0,83–0,85. Las demás combinaciones no se remidieron.
+- **Frase corta** (2,5–5,3 s de audio): 0,63–0,80 sin carga y 0,90–1,14 con carga. Pesan el prefill y el primer fragmento: la frase más corta (2,5 s) pasa de 1 con carga.
+- **Primer audio** en el servidor por `/v1/tts/stream`: 442–644 ms sin carga y 548–816 ms con carga.
 
 ### Positivas
 

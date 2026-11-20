@@ -45,12 +45,13 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 
 | Plataforma | CPU | Núcleos físicos | RAM | Disco | Estado |
 |---|---|---|---|---|---|
-| **Windows x86_64** (`x86_64-pc-windows-gnu`) | x86_64 con **AVX2 y FMA** (Intel Core de 4.ª generación / Haswell o posterior; AMD Ryzen / Zen o posterior) | **8** | 8 GB, doble canal | ~5 GB (los dos modelos) | ✅ Verificado: RTF 0,66 sin carga y 0,92 con carga, con 8 núcleos (AMD Ryzen 7 5825U) |
+| **Windows x86_64** (`x86_64-pc-windows-gnu`) | x86_64 con **AVX2 y FMA** (Intel Core de 4.ª generación / Haswell o posterior; AMD Ryzen / Zen o posterior) | **8** | 8 GB, doble canal | ~5 GB (los dos modelos) | ✅ Verificado en el equipo de referencia (AMD Ryzen 7 5825U, 8 núcleos), frase larga: RTF 0,58–0,64 sin carga y 0,89–0,92 con carga |
 | **Linux x86_64** (`x86_64-unknown-linux-gnu`) | Igual que Windows | **8** | 8 GB, doble canal | ~5 GB | ⚠️ Misma ruta de kernels AVX2 que Windows; requisitos esperados iguales, sin medición propia en Linux |
 | **macOS ARM64** (`aarch64-apple-darwin`) | Apple Silicon (M1 o posterior) | — | 8 GB | ~5 GB | ✅ Sin carga: RTF 0,25–0,26 en un Apple M4 Pro virtual de 6 núcleos (CircleCI `m4pro.medium`), con todos los kernels en NEON; la ruta escalar daba 1,36–1,56 en la misma máquina. Sin medir con carga ni en otros Mac, así que no hay mínimo de núcleos verificado. |
 | **Linux ARM64** (`aarch64-unknown-linux-gnu`) | ARMv8.2 o posterior con NEON y `dotprod` (Neoverse N1/V1, Cortex-A76 o posterior); también corre en ARMv8.0, más lento | más de 4 (sin verificar) | 8 GB | ~5 GB | ❌ Sin tiempo real con 4 vCPU, aunque cerca: RTF 1,12–1,21 en un Arm Neoverse V1 de 4 vCPU con el OpenBLAS propio (1,20–1,33 con el de Ubuntu 22.04) y 1,54–1,62 en un Neoverse N1 de 4 vCPU; la ruta escalar daba ~5,4. Con 4 núcleos, el productor (85–118 ms por fotograma de 80) y el decoder se reparten las mismas CPU, igual que en x86 con 4 núcleos. No se ha podido medir con 8 vCPU: CircleCI no ofrece a este proyecto máquinas ARM más grandes. |
 
 Notas sobre estos requisitos:
+- **De dónde salen las cifras.** Windows x86_64 se midió en el equipo de referencia, con y sin carga. macOS y Linux ARM64 se midieron en máquinas virtuales de CircleCI, solo sin carga, con la mayor máquina disponible (6 y 4 núcleos), así que no son comparables entre sí ni con Windows. Detalle de cada medición en [ADR-005](docs/adr/005-cpu-inference-optimizations.md).
 - **Núcleos físicos, no hilos.** El motor se fija a un hilo lógico por núcleo físico (Windows). Con menos de 8 núcleos, el decodificador y OpenBLAS compiten con el productor por las mismas CPU. Mediciones en el mismo equipo, limitado por afinidad:
   - **6 núcleos:** RTF 0,89 sin carga, pero 1,13 con carga.
   - **4 núcleos:** 0,97 sin carga y 1,45 con carga.
