@@ -243,7 +243,7 @@ fn test_parallel_rows_partition_bit_exact() {
     use qwen_kernels::quant::{quantize_bf16_to_int8, quantize_bf16_to_q4_0};
     use qwen_kernels::KernelDispatch;
 
-    // El reparto dinámico por trozos (4 hilos) da los mismos bits que una sola pasada (1 hilo),
+    // El reparto dinámico por chunks (4 hilos) da los mismos bits que una sola pasada (1 hilo),
     // también con un número de filas que no es múltiplo de 64.
     let d = KernelDispatch::detect();
     let serial = ComputePool::new(1);
@@ -309,7 +309,7 @@ fn test_available_dispatch_tables() {
 }
 
 /// Las rutas SIMD suman Q4_0 en el mismo orden (el de AVX2), así que dan los mismos bits en x86 y
-/// en ARM. La huella de referencia sale de la ruta AVX2; si cambia el orden de suma de cualquier
+/// en ARM. El hash de referencia sale de la ruta AVX2; si cambia el orden de suma de cualquier
 /// ruta SIMD, esta prueba falla.
 #[test]
 fn test_simd_q4_0_matches_avx2_summation_order() {
@@ -336,7 +336,7 @@ fn test_simd_q4_0_matches_avx2_summation_order() {
             simd.matmat_q4_0(&pool, &mut y, &wq, &x, rows, cols, 3);
             h = fnv(h, &y);
         }
-        println!("{}: huella Q4_0 = {h:#018x}", simd.name());
+        println!("{}: hash Q4_0 = {h:#018x}", simd.name());
         assert_eq!(h, AVX2_FINGERPRINT, "{}", simd.name());
     }
 }
@@ -391,7 +391,7 @@ fn test_simd_float_kernels_match_avx2_summation_order() {
         simd.bf16_accum_f32(&mut d, &u);
         h = fnv(h, &d);
 
-        println!("{}: huella de los kernels de coma flotante = {h:#018x}", simd.name());
+        println!("{}: hash de los kernels de coma flotante = {h:#018x}", simd.name());
         assert_eq!(h, AVX2_FINGERPRINT, "{}", simd.name());
     }
 }

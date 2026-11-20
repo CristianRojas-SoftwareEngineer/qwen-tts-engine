@@ -7,7 +7,7 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 ![Rust: Stable](https://img.shields.io/badge/Rust-stable-orange.svg)
 ![Model: Qwen3--TTS 0.6B](https://img.shields.io/badge/Model-Qwen3--TTS%200.6B-informational.svg)
 
-**Qwen TTS Engine** convierte texto en audio PCM de 24 kHz directamente en CPU mediante un binario CLI (`qwen_tts`), un servidor HTTP compatible con OpenAI (`--serve`) y una librería Rust embebida (`qwen-engine`).
+**Qwen TTS Engine** convierte texto en audio PCM de 24 kHz directamente en CPU mediante un binario CLI (`qwen_tts`), un servidor HTTP compatible con OpenAI (`--serve`) y una biblioteca Rust embebida (`qwen-engine`).
 
 ---
 
@@ -48,11 +48,11 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 | **Windows x86_64** (`x86_64-pc-windows-gnu`) | x86_64 con **AVX2 y FMA** (Intel Core de 4.ª generación / Haswell o posterior; AMD Ryzen / Zen o posterior) | **8** | 8 GB, doble canal | ~2,5 GB (el modelo) | ✅ Verificado en el equipo de referencia (AMD Ryzen 7 5825U, 8 núcleos), frase larga: RTF 0,58–0,64 sin carga y 0,89–0,92 con carga |
 | **Linux x86_64** (`x86_64-unknown-linux-gnu`) | Igual que Windows | **8** | 8 GB, doble canal | ~2,5 GB | ⚠️ Misma ruta de kernels AVX2 que Windows; requisitos esperados iguales, sin medición propia en Linux |
 | **macOS ARM64** (`aarch64-apple-darwin`) | Apple Silicon (M1 o posterior) | — | 8 GB | ~2,5 GB | ✅ Sin carga: RTF 0,25–0,26 en un Apple M4 Pro virtual de 6 núcleos (CircleCI `m4pro.medium`), con todos los kernels en NEON; la ruta escalar daba 1,36–1,56 en la misma máquina. Sin medir con carga ni en otros Mac, así que no hay mínimo de núcleos verificado. |
-| **Linux ARM64** (`aarch64-unknown-linux-gnu`) | ARMv8.2 o posterior con NEON y `dotprod` (Neoverse N1/V1, Cortex-A76 o posterior); también corre en ARMv8.0, más lento | más de 4 (sin verificar) | 8 GB | ~2,5 GB | ❌ Sin tiempo real con 4 vCPU, aunque cerca: RTF 1,12–1,21 en un Arm Neoverse V1 de 4 vCPU con el OpenBLAS propio (1,20–1,33 con el de Ubuntu 22.04) y 1,54–1,62 en un Neoverse N1 de 4 vCPU; la ruta escalar daba ~5,4. Con 4 núcleos, el productor (85–118 ms por fotograma de 80) y el decoder se reparten las mismas CPU, igual que en x86 con 4 núcleos. No se ha podido medir con 8 vCPU: CircleCI no ofrece a este proyecto máquinas ARM más grandes. |
+| **Linux ARM64** (`aarch64-unknown-linux-gnu`) | ARMv8.2 o posterior con NEON y `dotprod` (Neoverse N1/V1, Cortex-A76 o posterior); también corre en ARMv8.0, más lento | más de 4 (sin verificar) | 8 GB | ~2,5 GB | ❌ Sin tiempo real con 4 vCPU, aunque cerca: RTF 1,12–1,21 en un Arm Neoverse V1 de 4 vCPU con el OpenBLAS propio (1,20–1,33 con el de Ubuntu 22.04) y 1,54–1,62 en un Neoverse N1 de 4 vCPU; la ruta escalar daba ~5,4. Con 4 núcleos, el productor (85–118 ms por frame de 80) y el decoder se reparten las mismas CPU, igual que en x86 con 4 núcleos. No se ha podido medir con 8 vCPU: CircleCI no ofrece a este proyecto máquinas ARM más grandes. |
 
 Notas sobre estos requisitos:
 - **De dónde salen las cifras.** Windows x86_64 se midió en el equipo de referencia, con y sin carga. macOS y Linux ARM64 se midieron en máquinas virtuales de CircleCI, solo sin carga, con la mayor máquina disponible (6 y 4 núcleos), así que no son comparables entre sí ni con Windows. Detalle de cada medición en [ADR-005](docs/adr/005-cpu-inference-optimizations.md).
-- **Núcleos físicos, no hilos.** El motor se fija a un hilo lógico por núcleo físico (Windows). Con menos de 8 núcleos, el decodificador y OpenBLAS compiten con el productor por las mismas CPU. Mediciones en el mismo equipo, limitado por afinidad:
+- **Núcleos físicos, no hilos.** El motor se fija a un hilo lógico por núcleo físico (Windows). Con menos de 8 núcleos, el decoder y OpenBLAS compiten con el productor por las mismas CPU. Mediciones en el mismo equipo, limitado por afinidad:
   - **6 núcleos:** RTF 0,89 sin carga, pero 1,13 con carga.
   - **4 núcleos:** 0,97 sin carga y 1,45 con carga.
 - **Sin AVX2**, el motor usa la ruta escalar y va unas 5–6 veces más lento (RTF ~3,8 en el mismo equipo).
@@ -61,9 +61,9 @@ Notas sobre estos requisitos:
 
 ### Dependencias por plataforma (perfil BLAS nativo por defecto)
 
-| Plataforma | Toolchain y librerías | Notas |
+| Plataforma | Toolchain y bibliotecas | Notas |
 |---|---|---|
-| **Windows (`x86_64-pc-windows-gnu`)** | Rust estable (`x86_64-pc-windows-gnu`) + MSYS2 UCRT64 (`mingw-w64-ucrt-x86_64-gcc`, `mingw-w64-ucrt-x86_64-openblas`, `mingw-w64-ucrt-x86_64-binutils`) en `PATH` (`C:\msys64\ucrt64\bin`) | Si OpenBLAS está en otra ruta, define `OPENBLAS_LIB_DIR` (default `C:/msys64/ucrt64/lib`). |
+| **Windows (`x86_64-pc-windows-gnu`)** | Rust estable (`x86_64-pc-windows-gnu`) + MSYS2 UCRT64 (`mingw-w64-ucrt-x86_64-gcc`, `mingw-w64-ucrt-x86_64-openblas`, `mingw-w64-ucrt-x86_64-binutils`) en `PATH` (`C:\msys64\ucrt64\bin`) | Si OpenBLAS está en otra ruta, define `OPENBLAS_LIB_DIR` (por defecto `C:/msys64/ucrt64/lib`). |
 | **Linux** | Rust estable + `libopenblas-dev`, o un OpenBLAS propio (abajo) | **Para distribuir el binario, y sobre todo en ARM64, enlaza un OpenBLAS propio**: `scripts/build-openblas.sh "$HOME/openblas"` (OpenBLAS 0.3.30 estático, solo BLAS, `DYNAMIC_ARCH`: elige el kernel de cada CPU al arrancar; ~4–6 min en 4 vCPU ARM) y `OPENBLAS_LIB_DIR="$HOME/openblas/lib" cargo build --release -p qwen-app`. El de la distribución puede traer solo el kernel genérico: Ubuntu 22.04 en ARM64 usa `armv8` y el decoder va un 30 % más lento. `qwen_tts --caps` muestra el kernel en la línea `BLAS (prefill)`. |
 | **macOS** | Rust estable + Xcode Command Line Tools | Enlaza con el framework del sistema `Accelerate`. |
 

@@ -19,8 +19,8 @@ use crate::simd::avx2;
 #[cfg(target_arch = "aarch64")]
 use crate::simd::neon;
 
-/// Trozos por hilo en `parallel_rows`. Con 1 hilo copiando 256 MiB, 4 trozos bajan el productor
-/// (Talker + CP) ~3 ms por fotograma frente a 1 trozo fijo por hilo; con 2 la mejora no fue consistente.
+/// Chunks por hilo en `parallel_rows`. Con 1 hilo copiando 256 MiB, 4 chunks bajan el productor
+/// (Talker + CP) ~3 ms por frame frente a 1 chunk fijo por hilo; con 2 la mejora no fue consistente.
 const PARALLEL_ROWS_CHUNKS_PER_THREAD: usize = 4;
 
 type QuantizeActFn = fn(&mut [i8], &[f32]) -> f32;
@@ -628,10 +628,10 @@ impl KernelDispatch {
     }
 
     /// Reparte las `rows` filas de `y` entre los hilos del pool en `PARALLEL_ROWS_CHUNKS_PER_THREAD`
-    /// trozos por hilo que cada hilo toma de un contador compartido según queda libre.
+    /// chunks por hilo que cada hilo toma de un contador compartido según queda libre.
     ///
     /// Con la CPU ocupada, un hilo frenado por la carga ya no retrasa la barrera: los demás se
-    /// quedan con sus trozos pendientes. Los bordes de trozo son múltiplos de 64 filas y cada fila
+    /// quedan con sus chunks pendientes. Los bordes de chunk son múltiplos de 64 filas y cada fila
     /// se calcula con el mismo kernel y el mismo orden de suma, así que el resultado no depende del
     /// reparto.
     fn parallel_rows<F>(pool: &ComputePool, y: &mut [f32], rows: usize, row_stride: usize, f: F)
@@ -1519,7 +1519,7 @@ impl ComputeRuntime {
     }
 
     /// Como `new`, para una síntesis a la vez en una máquina con `cores` núcleos físicos: los pools
-    /// del productor y del decodificador esperan sin girar si los hilos del productor ya ocupan
+    /// del productor y del decoder esperan sin girar si los hilos del productor ya ocupan
     /// todos los núcleos (`spin_budget_for`).
     pub fn for_cores(threads: Option<usize>, cores: usize) -> Self {
         Self::build(threads, Some(cores))

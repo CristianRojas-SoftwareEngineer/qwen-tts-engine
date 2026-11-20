@@ -237,8 +237,8 @@ pub fn send_chunked_header(stream: &mut TcpStream) -> std::io::Result<()> {
     send_all(stream, hdr)
 }
 
-/// Envía un fragmento *chunked* con PCM s16le ya procesado (ganancia y rampas de borde aplicadas
-/// por `EdgeRampSink`). Un fragmento vacío no se envía: cerraría la respuesta.
+/// Envía un chunk de la respuesta *chunked* con PCM s16le ya procesado (ganancia y rampas de borde aplicadas
+/// por `EdgeRampSink`). Un chunk vacío no se envía: cerraría la respuesta.
 pub fn send_pcm_chunk(stream: &mut TcpStream, pcm: &[u8]) -> std::io::Result<()> {
     if pcm.is_empty() {
         return Ok(());
@@ -337,7 +337,7 @@ impl PcmWrite for HttpChunkWriter<'_> {
     }
 }
 
-/// Fotogramas de la síntesis de calentamiento: el primer fragmento (2) y uno completo (10).
+/// Frames de la síntesis de calentamiento: el primer chunk (2) y uno completo (10).
 const WARM_UP_FRAMES: usize = 12;
 
 /// Síntesis corta y descartada al arrancar el servidor (único calentamiento).

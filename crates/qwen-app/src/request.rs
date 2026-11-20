@@ -20,7 +20,7 @@ use qwen_engine::{
 use crate::cli::CliArgs;
 use crate::server::validation::ValidatedTtsRequest;
 
-/// Nivel de registro de la CLI: `--silent` manda sobre `--debug`.
+/// Nivel de log de la CLI: `--silent` manda sobre `--debug`.
 pub fn log_level(cli: &CliArgs) -> LogLevel {
     if cli.silent {
         LogLevel::Silent

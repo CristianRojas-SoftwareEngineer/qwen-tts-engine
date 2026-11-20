@@ -359,7 +359,7 @@ fn test_clone_from_default_voice_e2e() {
         Some("Another transcript.")
     );
 
-    // El tope de fotogramas ICL se aplica al construir la voz
+    // El tope de frames ICL se aplica al construir la voz
     let n_file_frames = icl_file.n_ref_frames();
     assert!(n_file_frames > 3);
     let capped = Voice::load(

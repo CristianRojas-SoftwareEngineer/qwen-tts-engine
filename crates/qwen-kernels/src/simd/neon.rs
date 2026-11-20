@@ -20,7 +20,7 @@
 //! los mismos bits que AVX2. INT8 acumula en enteros, así que coincide bit a bit con la ruta escalar.
 //!
 //! El resto de kernels (cuantización de activaciones, normas, BF16, atención, RoPE, conversiones y
-//! los del decodificador) usa NEON base y reproduce las operaciones de AVX2 en el mismo orden.
+//! los del decoder) usa NEON base y reproduce las operaciones de AVX2 en el mismo orden.
 //!
 //! El `SDOT` se emite con `asm!` porque el intrínseco `vdotq_s32` no es estable en Rust 1.96
 //! (`stdarch_neon_dotprod`).
@@ -996,7 +996,7 @@ pub(crate) fn causal_attention_f32_heads(
 }
 
 /// # Safety
-/// `op` debe apuntar a un búfer de al menos `seq_q * n_heads * head_dim` `f32`; varios hilos solo
+/// `op` debe apuntar a un buffer de al menos `seq_q * n_heads * head_dim` `f32`; varios hilos solo
 /// pueden llamarla a la vez con rangos `[h_begin, h_end)` disjuntos.
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn causal_attention_bf16kv_heads_ptr(

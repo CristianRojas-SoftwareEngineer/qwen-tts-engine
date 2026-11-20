@@ -273,7 +273,7 @@ fn enc_causal_conv1d(
     out
 }
 
-/// Codificador Speech Tokenizer en IEEE-754 estricto: audio mono a 24 kHz -> `[n_frames, 16]` códigos.
+/// Encoder Speech Tokenizer en IEEE-754 estricto: audio mono a 24 kHz -> `[n_frames, 16]` códigos.
 pub fn speech_encoder_encode(
     runtime: &ComputeRuntime,
     enc: &SpeechEncoderWeights,

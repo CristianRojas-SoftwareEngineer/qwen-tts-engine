@@ -4,7 +4,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! La voz de una síntesis: x-vector del locutor y, opcionalmente, el contexto ICL (texto y
-//! códigos del audio de referencia) ya recortado al tope de fotogramas.
+//! códigos del audio de referencia) ya recortado al tope de frames.
 
 use std::path::Path;
 
@@ -27,7 +27,7 @@ pub const DEFAULT_VOICE_NAME: &str = "default";
 
 /// Contexto ICL de una voz: transcripción y códigos del audio de referencia.
 ///
-/// Nunca está vacío y `ref_codes` ya está recortado al tope de fotogramas con que se construyó
+/// Nunca está vacío y `ref_codes` ya está recortado al tope de frames con que se construyó
 /// la voz (`icl_frames_cap` o, si está definida, `QWEN_ICL_FRAMES`).
 #[derive(Debug, Clone)]
 pub struct IclPrompt {
@@ -54,7 +54,7 @@ pub struct VoiceLoadOptions {
     pub ref_text_override: Option<String>,
     /// Usa el contexto ICL si el archivo lo trae; `false` deja solo el x-vector.
     pub use_icl: bool,
-    /// Tope de fotogramas ICL (0 = sin tope). `QWEN_ICL_FRAMES`, si está definida, manda.
+    /// Tope de frames ICL (0 = sin tope). `QWEN_ICL_FRAMES`, si está definida, manda.
     pub icl_frames_cap: usize,
     pub log: LogLevel,
 }
@@ -88,7 +88,7 @@ pub fn ensure_qvoice_path(path: &Path) -> Result<(), EngineError> {
     }
 }
 
-/// Tope efectivo de fotogramas ICL: `QWEN_ICL_FRAMES` si es un entero válido, si no `cap`.
+/// Tope efectivo de frames ICL: `QWEN_ICL_FRAMES` si es un entero válido, si no `cap`.
 fn effective_icl_cap(cap: usize) -> usize {
     if let Ok(v) = std::env::var("QWEN_ICL_FRAMES") {
         if let Ok(n) = v.trim().parse::<usize>() {
@@ -98,7 +98,7 @@ fn effective_icl_cap(cap: usize) -> usize {
     cap
 }
 
-/// Recorta `ref_codes` a los primeros fotogramas permitidos por el tope efectivo.
+/// Recorta `ref_codes` a los primeros frames permitidos por el tope efectivo.
 fn cap_ref_codes(ref_codes: &mut Vec<i32>, cap: usize) {
     let cap = effective_icl_cap(cap);
     let n_frames = ref_codes.len() / NUM_CODEBOOKS;
@@ -134,7 +134,7 @@ impl Voice {
                 .unwrap_or("")
                 .to_string();
         }
-        // Fotogramas ICL del archivo antes del recorte, solo para el log.
+        // Frames ICL del archivo antes del recorte, solo para el log.
         let ref_text_empty = opts
             .ref_text_override
             .as_deref()

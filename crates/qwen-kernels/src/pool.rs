@@ -26,7 +26,7 @@ pub fn default_num_threads() -> usize {
         .max(1)
 }
 
-/// Presupuesto de espera activa fijado con `QWEN_POOL_SPIN` (un valor no numérico cuenta como el
+/// Presupuesto de spin-wait fijado con `QWEN_POOL_SPIN` (un valor no numérico cuenta como el
 /// de por defecto), o `None` si la variable no está.
 fn env_spin_budget_override() -> Option<usize> {
     std::env::var("QWEN_POOL_SPIN").ok().map(|val| {
@@ -41,15 +41,15 @@ fn env_spin_budget() -> usize {
     env_spin_budget_override().unwrap_or(QWEN_POOL_SPIN_DEFAULT)
 }
 
-/// Presupuesto de espera activa para `threads` hilos de cálculo en `cores` núcleos físicos, salvo
+/// Presupuesto de spin-wait para `threads` hilos de cálculo en `cores` núcleos físicos, salvo
 /// que `QWEN_POOL_SPIN` lo fije: `0` (espera directa en `Condvar`) si esos hilos ya ocupan todos
 /// los núcleos y `QWEN_POOL_SPIN_DEFAULT` si no.
 ///
 /// Con los núcleos llenos, los hilos que esperan girando quitan CPU a los que calculan. Medido
-/// con `-j 4` (productor y decodificador, 4 hilos cada uno), A/B intercalado:
-/// - **4 núcleos** (Linux ARM64 y Windows x86_64): sin espera activa, RTF 1,61–1,69 → 1,54–1,62 y
+/// con `-j 4` (productor y decoder, 4 hilos cada uno), A/B intercalado:
+/// - **4 núcleos** (Linux ARM64 y Windows x86_64): sin spin-wait, RTF 1,61–1,69 → 1,54–1,62 y
 ///   1,53–2,16 → 1,40–1,83; mismo audio.
-/// - **6 núcleos** (Apple M4 Pro): sin espera activa, RTF 0,25 → 0,43; por eso solo se quita
+/// - **6 núcleos** (Apple M4 Pro): sin spin-wait, RTF 0,25 → 0,43; por eso solo se quita
 ///   cuando los hilos llegan a los núcleos.
 pub fn spin_budget_for(threads: usize, cores: usize) -> usize {
     env_spin_budget_override().unwrap_or(if threads >= cores.max(1) {
@@ -94,7 +94,7 @@ struct PoolInner {
     generation: AtomicU64,
     completed: AtomicUsize,
     stop: AtomicBool,
-    // Protegido por `submit_mtx` durante `parallel()`; los workers solo leen entre
+    // Protegido por `submit_mtx` durante `parallel()`; los trabajadores solo leen entre
     // el incremento de `generation` (Release/SeqCst) y el de `completed` (AcqRel).
     job_slot: UnsafeCell<JobSlot>,
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -157,7 +157,7 @@ impl Drop for WorkerCompletionGuard<'_> {
     }
 }
 
-/// Pool de hilos persistente e instanciable (sin estado global) con espera activa
+/// Pool de hilos persistente e instanciable (sin estado global) con spin-wait
 /// (`QWEN_POOL_SPIN=4096` + `spin_loop()`), `Condvar` y `ftz_on()` por trabajador.
 #[derive(Clone)]
 pub struct ComputePool {
@@ -231,7 +231,7 @@ impl ComputePool {
     }
 
     /// Ejecuta `f(tid, nt)` para `tid` en `0..nt` sobre el pool (el hilo llamador participa)
-    /// y bloquea hasta completar todos los fragmentos.
+    /// y bloquea hasta completar las `nt` tareas.
     pub fn parallel<F>(&self, nt: usize, f: F)
     where
         F: Fn(usize, usize) + Sync,

@@ -848,7 +848,7 @@ mod tests {
         assert!(sink.writer.is_empty(), "con menos de 80 ms no se emite nada");
         sink.write_samples(&vec![0.5f32; 2840]).unwrap();
         let out = &sink.writer;
-        // 3 840 muestras recibidas (2 fotogramas): se emiten todas salvo las 960 de la rampa de salida.
+        // 3 840 muestras recibidas (2 frames): se emiten todas salvo las 960 de la rampa de salida.
         assert_eq!(out.len(), (3840 - 960) * 2);
     }
 }

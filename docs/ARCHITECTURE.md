@@ -46,16 +46,16 @@ Voice  [Inmutable por voz — unos pocos KB; la voz `default` va embebida en el 
  ├── name: String                         // `default`, el nombre guardado en el `.qvoice` o el del archivo
  ├── language_id: Option<i32>             // idioma declarado (`default` declara español)
  ├── xvector: Vec<f32>                    // x-vector de 1024 valores
- └── icl: Option<IclPrompt>               // { ref_text, ref_codes }, ya recortado al tope de fotogramas
+ └── icl: Option<IclPrompt>               // { ref_text, ref_codes }, ya recortado al tope de frames
      (`Voice::load` solo lee el `.qvoice`; no modifica `Model06B`.)
 
 Synthesizer<'a>  [Efímero, `Copy`: referencias a los tres niveles anteriores]
  └── { runtime: &ComputeRuntime, model: &Model06B, voice: &Voice }   // el contexto fijo de una sesión
 
 SessionScratch  [Mutable, exclusivo por sesión — cero locks internos]
- ├── talker_kv / cp_kv                    // KV caches BF16 (Talker inicia en KV_INITIAL_POSITIONS = 256 y duplica bajo demanda)
+ ├── talker_kv / cp_kv                    // cachés KV BF16 (Talker inicia en KV_INITIAL_POSITIONS = 256 y duplica bajo demanda)
  ├── talker_bufs / cp_bufs                // AlignedBuf<64> + down_q2_rough opcional (el staging F32 de pesos del prefill es local y transitorio de talker_prefill)
- ├── sd_stream + sd_ws                    // colas/acarreos streaming + 8 ranuras DecoderWorkspace
+ ├── sd_stream + sd_ws                    // colas/acarreos streaming + 8 slots DecoderWorkspace
  └── emb_lru + sampler + rng: LcgRng      // caché texto local + muestreador + RNG propio
 
 SynthesisRequest  [Efímero por síntesis — plano, `Clone`]
@@ -86,16 +86,16 @@ AbortHandle  [Efímero por síntesis]      // Arc<AtomicBool> + poll opcional ac
 
 1. **Un solo camino de síntesis** (`Synthesizer::synthesize`): dos ejes independientes, el guion y la entrega.
    - **`Script`** (`qwen-core`): `Plain(String)` o `Spans(Vec<SpanSpec>)`. `plan_script(texto, MarkupMode)` es el único sitio que sustituye los `[tags]` paralingüísticos y divide el texto en tramos (`Utterance` o `Pause`), sin estado global.
-   - **`Delivery`**: `Buffer` (todo el audio en memoria, con `time_stretch`, `tail_trim` y `onset_fade`) o `Stream(&mut dyn AudioSink)` (fragmentos a un destino, sin acabado).
+   - **`Delivery`**: `Buffer` (todo el audio en memoria, con `time_stretch`, `tail_trim` y `onset_fade`) o `Stream(&mut dyn AudioSink)` (chunks a un destino, sin acabado).
    - Las cuatro combinaciones (`Plain`/`Spans` por `Buffer`/`Stream`) comparten el mismo generador, y `Buffer` y `Stream` dan el mismo PCM (salvo el acabado de la entrega completa). `Plain` es un bucle productor-consumidor; `Spans` sintetiza cada tramo como `Plain` con ganancia `x·(v·o)` y los une con pausas y fundido cruzado de 45 ms (`compose.rs`).
    - **`AudioSink`** es el único destino de audio; `EdgeRampSink<W: PcmWrite>` hace solo rampas de borde y retención, y los escritores (`WavFileWriter`, `StdoutWriter`, `Vec<u8>` y el HTTP *chunked* de `qwen-app`) solo escriben bytes. La ganancia la aplica `synthesize` justo antes del destino.
    - **Una regla de idioma** (`effective_language`): pedido, voz o español. La preparación de la petición está en `qwen-app/src/request.rs` (`from_cli` y `from_http`), el único sitio que aplica `plan_script`, `resolve_sampling` y `effective_language`.
 2. **Ejecución por tramo**:
    - **Prefill**: siempre completo (`kv_len = 0`) vía `BlasBackend` usando `nt` hilos.
-   - **Paso de generación**: fija `blas.set_threads(gen_blas)` antes de iniciar el hilo decodificador y lo mantiene constante hasta terminar el drenaje final.
+   - **Paso de generación**: fija `blas.set_threads(gen_blas)` antes de iniciar el hilo decoder y lo mantiene constante hasta terminar el drenaje final.
    - **Paralelismo productor-consumidor (`std::thread::scope`)**:
-     - **Hilo productor (`Talker + CodePredictor`)**: genera `[i32; 16]` por fotograma, comprueba `abort.is_cancelled()` antes de cada paso y empuja los códigos a `DecoderQueue`.
-     - **Hilo consumidor (`SpeechDecoder`)**: agrupa tramos según el calendario creciente (`2` en el primer fragmento y `min(chunk_frames, 4 + 2 * (k / 8))` para `k = 0, 1, 2, ...` en los siguientes), ejecuta `speech_decoder_decode_streaming` con `DecoderWorkspace` + tiling en `up2`/`up3` (`256 KB`) y la misma atención con ventana deslizante que la decodificación completa (`causal_attention_windowed` sobre la caché KV compactable), y entrega PCM a `AudioSink`.
+     - **Hilo productor (`Talker + CodePredictor`)**: genera `[i32; 16]` por frame, comprueba `abort.is_cancelled()` antes de cada paso y empuja los códigos a `DecoderQueue`.
+     - **Hilo consumidor (`SpeechDecoder`)**: agrupa los frames en chunks según el calendario creciente (`2` en el primer chunk y `min(chunk_frames, 4 + 2 * (k / 8))` para `k = 0, 1, 2, ...` en los siguientes), ejecuta `speech_decoder_decode_streaming` con `DecoderWorkspace` + tiling en `up2`/`up3` (`256 KB`) y la misma atención con ventana deslizante que la decodificación completa (`causal_attention_windowed` sobre la caché KV compactable), y entrega PCM a `AudioSink`.
      - Cualquier error de escritura en `AudioSink` activa `queue.aborted` de inmediato y `thread::scope` garantiza *join* limpio sin hilos huérfanos.
 
 ---
@@ -112,8 +112,8 @@ AbortHandle  [Efímero por síntesis]      // Arc<AtomicBool> + poll opcional ac
 
 El tiempo de una síntesis es `prefill + max(productor, consumidor) + drenaje final`:
 
-- **Productor** (`Talker + CodePredictor`, en `pool`): debe generar cada fotograma en menos de 80 ms para que el *streaming* no se corte. Lo limita el ancho de banda de memoria: cada fotograma lee ~1 GiB de pesos cuantizados.
+- **Productor** (`Talker + CodePredictor`, en `pool`): debe generar cada frame en menos de 80 ms para que el *streaming* no se corte. Lo limita el ancho de banda de memoria: cada frame lee ~1 GiB de pesos cuantizados.
 - **Consumidor** (`SpeechDecoder`, en `sd_pool` y BLAS): casi todo su tiempo está en las convoluciones de los bloques de *upsample* (`sgemm`).
-- **Primer audio**: lo gobierna el prefill, y después el primer fragmento del decoder (2 fotogramas).
+- **Primer audio**: lo gobierna el prefill, y después el primer chunk del decoder (2 frames).
 
 Con 4 núcleos físicos, productor y consumidor se reparten las mismas CPU y ninguna plataforma llega a tiempo real. Las optimizaciones adoptadas y descartadas, con su efecto medido, y el rendimiento por plataforma están en [ADR-005](adr/005-cpu-inference-optimizations.md).

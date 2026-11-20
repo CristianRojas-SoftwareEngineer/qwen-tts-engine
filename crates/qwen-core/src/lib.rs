@@ -3,8 +3,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Núcleo de configuración `0.6B`, almacenamiento `mmap` de `safetensors`,
-//! tokenizador BPE, muestreador determinista, perfiles `.qvoice` v4 y planificador de marcado.
+//! El crate `qwen-core` reúne la configuración `0.6B`, el almacenamiento `mmap` de `safetensors`,
+//! el tokenizador BPE, el muestreador determinista, los perfiles `.qvoice` v4 y el planificador de marcado.
 
 pub mod config;
 pub mod error;

@@ -369,7 +369,7 @@ pub fn causal_attention_bf16kv_heads(
 }
 
 /// # Safety
-/// `out_ptr` debe apuntar a un búfer válido de al menos `seq_q * n_heads * head_dim` floats;
+/// `out_ptr` debe apuntar a un buffer válido de al menos `seq_q * n_heads * head_dim` floats;
 /// hilos concurrentes pueden llamarla solo con rangos `[h_begin, h_end)` disjuntos.
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn causal_attention_bf16kv_heads_ptr(

@@ -133,7 +133,7 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
    - **Sección 4 (1 pos)**: `tts_pad + codec_bos`.
 4. **Modo ICL (`--ref-text` + `ref_codes`)**:
    - **Sección 3' (`N_ref + N + 1` pos)**: `text_proj(BPE(ref_text) + BPE(text)) + tts_eos` + `codec_pad`.
-   - **Sección 4' (`n_ref_frames + 1` pos)**: cada posición lleva `tts_pad` sumado con `codec_bos` en `pos 0` y, en `pos 1..n_ref_frames`, con `talker.codec_embedding(ref_codes[f][0]) + sum_{g=1..15} cp_codec_emb[g-1](ref_codes[f][g])`. *(En modo ICL se recortan los primeros `QWEN_ICL_TRIM_FRAMES = 2` fotogramas = `3840` muestras al inicio del audio generado.)*
+   - **Sección 4' (`n_ref_frames + 1` pos)**: cada posición lleva `tts_pad` sumado con `codec_bos` en `pos 0` y, en `pos 1..n_ref_frames`, con `talker.codec_embedding(ref_codes[f][0]) + sum_{g=1..15} cp_codec_emb[g-1](ref_codes[f][g])`. *(En modo ICL se recortan los primeros `QWEN_ICL_TRIM_FRAMES = 2` frames = `3840` muestras al inicio del audio generado.)*
 
 ### 4.3 Recorte, EOS boosting, muestreo y marcado
 
@@ -142,4 +142,4 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 - **Muestreo (`qwen-core/src/sampling.rs`)**: temperatura por defecto `DEFAULT_TEMPERATURE = 0.325` y semilla por defecto `DEFAULT_SEED = 4` (`qwen-core/src/config.rs`); penalización de repetición sobre `prev_tokens` → si `T < 1e-6`, argmax greedy; si no, `softmax(logits / T)` → *top-k* → *top-p* → renormalización → LCG `seed = seed.wrapping_mul(1103515245).wrapping_add(12345)`, `r = ((seed >> 16) & 0x7FFF) / 32768.0`.
 - **Paralingüística inline y `--compose` (`markup.rs`, `compose.rs`)**: `plan_script` aplica los dos pasos, también con `--compose` y con `--stream`/`--stdout`.
   - Paso 1 (`paralinguistic_substitute`): sustituye `[laugh]`/`[laughs]` (`"哈哈哈"`, `seed=2024, T=1.1`), `[sigh]`/`[sighs]` (`"唉"`, `seed=42, T=1.1`), `[yawn]`/`[yawns]` (`"哈啊"`, `seed=42, T=1.1`), `[wow]` (`"哇"`, `seed=2024, T=1.1`), `[giggle]`/`[giggles]` (`"嘿嘿"`, `seed=42, T=1.1`) y `[scoff]` (`"切"`, `seed=42, T=1.0`).
-  - Paso 2 (`MarkupPlanner::parse_spans`): si persisten `[pause:...]`, `[break:...]`, `[0.5]`, `|` o `--compose`, divide en tramos con *prefill* frío por tramo. Una etiqueta desconocida (por ejemplo `[sad]` o `[xyz]`) no es marcado y queda como texto.
+  - Paso 2 (`MarkupPlanner::parse_spans`): si persisten `[pause:...]`, `[break:...]`, `[0.5]`, `|` o `--compose`, divide en tramos con *prefill* frío por tramo. Un tag desconocido (por ejemplo `[sad]` o `[xyz]`) no es marcado y queda como texto.

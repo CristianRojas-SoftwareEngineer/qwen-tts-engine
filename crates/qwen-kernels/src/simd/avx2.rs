@@ -571,7 +571,7 @@ const MM_BATCH_CHUNK: usize = 8;
 
 /// Una fila de pesos INT8 contra `NB` activaciones: cada bloque de 32 pesos se
 /// lee una sola vez y alimenta `NB` acumuladores enteros independientes. La suma
-/// entera es exacta, de modo que el resultado es bit-identico a `NB` llamadas a
+/// entera es exacta, de modo que el resultado es bit-idéntico a `NB` llamadas a
 /// `int8_matvec_*` (mismo `(s as f32) * scale * sx`).
 #[inline]
 #[target_feature(enable = "avx2,fma")]
@@ -603,7 +603,7 @@ unsafe fn int8_matmat_row<const NB: usize>(
 }
 
 /// `y[r, b] = W_int8[r, :] · x_b` para las filas `r0..r1` y `b_dim` columnas de lote
-/// (`qxt[b * cols ..]` cuantizadas por columna, `cols` multiplo de 32). Los pesos se
+/// (`qxt[b * cols ..]` cuantizadas por columna, `cols` múltiplo de 32). Los pesos se
 /// leen una vez por grupo de `MM_BATCH_CHUNK` columnas.
 #[allow(clippy::too_many_arguments)]
 #[target_feature(enable = "avx2,fma")]
@@ -773,7 +773,7 @@ pub(crate) unsafe fn q4_0_matvec_qkv_slice(
 /// Una fila de pesos Q4_0 contra `NB` activaciones: cada bloque se decodifica una
 /// sola vez y se acumula en `NB` registros con la misma secuencia de operaciones que
 /// `q4_0_block` (resta de `sumq`, `cvt`, `fmadd` por bloque y `hsum256_ps` final),
-/// por lo que el resultado es bit-identico a `NB` llamadas a `q4_0_matvec_*`.
+/// por lo que el resultado es bit-idéntico a `NB` llamadas a `q4_0_matvec_*`.
 #[inline]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn q4_0_matmat_row<const NB: usize>(

@@ -19,7 +19,7 @@ Start crea la carga, Status la inspecciona, Stop la detiene y SelfTest verifica
 la herramienta sin dejar procesos.
 
 .PARAMETER Threads
-Número de procesos de carga. 0 no inicia ninguno y devuelve un handle vacio.
+Número de procesos de carga. 0 no inicia ninguno y devuelve un handle vacío.
 
 .PARAMETER ChunkMB
 Tamaño del bloque copiado por cada proceso. Cada proceso reserva 2 x ChunkMB.
@@ -309,7 +309,7 @@ function Test-SyntheticLoadAction {
         $clean = ($stop.Remaining -eq 0 -and -not (Test-Path -LiteralPath (Get-SyntheticLoadStatePath -LoadTag $testTag)))
         $passed = ($alive -and $memoryOk -and $clean)
         return [pscustomobject]@{
-            Result        = if ($passed) { 'PASS' } else { 'FAIL' }
+            Result        = if ($passed) { 'OK' } else { 'FALLO' }
             Tag           = $testTag
             Pid           = $pid0
             WorkingSetMiB = if ($rows.Count -gt 0) { $rows[0].WorkingSetMiB } else { 0 }
@@ -318,7 +318,7 @@ function Test-SyntheticLoadAction {
     } catch {
         Remove-SyntheticLoadState -LoadTag $testTag
         return [pscustomobject]@{
-            Result = 'FAIL'; Tag = $testTag; Pid = $null; WorkingSetMiB = 0; Detail = $_.Exception.Message
+            Result = 'FALLO'; Tag = $testTag; Pid = $null; WorkingSetMiB = 0; Detail = $_.Exception.Message
         }
     }
 }

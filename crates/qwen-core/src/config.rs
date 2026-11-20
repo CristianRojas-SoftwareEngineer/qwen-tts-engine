@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use crate::error::CoreError;
 
-// Geometría fija de Qwen3-TTS 0.6B (`SPEC_06B.md`, `ADR-001`)
+// Geometría fija de Qwen3-TTS 0.6B Base: el motor solo carga este modelo, así que las dimensiones son constantes de compilación
 pub const SAMPLE_RATE: usize = 24000;
 pub const FRAME_RATE: f32 = 12.5;
 pub const HOP_SAMPLES: usize = 1920;

@@ -622,7 +622,7 @@ fn selftest_simd_float_vs_scalar(
     ok &= ua == ub;
     results.push(("bf16_accum, bf16_to_f32, f32_to_bf16".into(), ok, "bit a bit".into()));
 
-    // Decodificador: matvec f32 acumulado y snake.
+    // Decoder: matvec f32 acumulado y snake.
     let (rows, cols) = (97usize, 1027usize);
     let wf = vec_f(rows * cols, 1.0);
     let x = vec_f(cols, 1.0);

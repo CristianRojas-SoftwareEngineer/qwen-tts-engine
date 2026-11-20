@@ -205,14 +205,14 @@ fn apply_threads_on_this_thread() {
 /// Fija los hilos con que se inicializa OpenBLAS, si el usuario no los fijó por entorno.
 ///
 /// En `x86_64-pc-windows-gnu` OpenBLAS se enlaza estático con OpenMP. Su constructor corre
-/// antes de `main` y reserva un búfer de 128 MiB (memoria comprometida) por cada hilo que
+/// antes de `main` y reserva un buffer de 128 MiB (memoria comprometida) por cada hilo que
 /// indique `OMP_NUM_THREADS`; sin la variable, uno por CPU lógica. `openblas_set_num_threads`
 /// posterior no devuelve esa memoria, y pedir más hilos que los iniciales cuelga la primera
 /// `sgemm` (OpenBLAS 0.3.34). Por eso el binario llama a esta función antes que los
 /// constructores de OpenBLAS y libgomp, con el número de hilos que va a usar.
 ///
 /// `_putenv` actualiza la tabla de entorno de la CRT, que es la que lee `getenv`. En el resto
-/// de plataformas no hace nada: Linux no cobra el commit por adelantado y macOS usa Accelerate.
+/// de plataformas no hace nada: Linux no cobra la memoria comprometida (*commit*) por adelantado y macOS usa Accelerate.
 pub fn set_initial_openblas_threads(n: usize) {
     #[cfg(all(windows, target_env = "gnu"))]
     {

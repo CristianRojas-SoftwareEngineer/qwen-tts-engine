@@ -24,7 +24,7 @@ use crate::voice::Voice;
 pub enum Delivery<'a> {
     /// Todo el audio en memoria, con el acabado de la entrega completa.
     Buffer,
-    /// Fragmentos PCM hacia el destino, sin acabado y sin `rate` distinto de 1.
+    /// Chunks PCM hacia el destino, sin acabado y sin `rate` distinto de 1.
     Stream(&'a mut (dyn AudioSink + Send)),
 }
 
@@ -51,7 +51,7 @@ impl Synthesizer<'_> {
     ///
     /// - `Script::Plain` con `Buffer`: ganancia, `time_stretch` y, al final, `tail_trim` y
     ///   `onset_fade`.
-    /// - `Script::Plain` con `Stream`: fragmentos con la ganancia aplicada justo antes del
+    /// - `Script::Plain` con `Stream`: chunks con la ganancia aplicada justo antes del
     ///   destino.
     /// - `Script::Spans`: una sola composición para las dos entregas (ganancia `x·(v·o)` por
     ///   tramo, pausas y fundido cruzado de 45 ms); con `Buffer` además el acabado final.

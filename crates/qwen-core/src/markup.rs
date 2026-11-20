@@ -23,7 +23,7 @@ pub enum SpanSpec {
 pub enum MarkupMode {
     /// Sustitución paralingüística y composición si queda marcado.
     Auto,
-    /// `--no-compose`: las etiquetas pasan literales al modelo.
+    /// `--no-compose`: los tags pasan literales al modelo.
     Literal,
     /// `--compose`: el texto es una especificación de tramos.
     Compose,
@@ -40,9 +40,9 @@ pub enum Script {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlannedScript {
     pub script: Script,
-    /// Semilla y temperatura de la primera etiqueta paralingüística sustituida, si hubo.
+    /// Semilla y temperatura del primer tag paralingüístico sustituido, si hubo.
     pub paralinguistic: Option<(u32, f32)>,
-    /// Texto tras la sustitución paralingüística (solo para registros).
+    /// Texto tras la sustitución paralingüística (solo para logs).
     pub text: String,
 }
 
@@ -82,8 +82,8 @@ pub fn plan_script(text: &str, mode: MarkupMode) -> PlannedScript {
     }
 }
 
-/// Resuelve el muestreo final. Precedencia: lo explícito del usuario, después la etiqueta
-/// paralingüística y por último el valor de `base`. `Clock` se resuelve con `time_based_seed()`.
+/// Resuelve el muestreo final. Precedencia: lo explícito del usuario, después el tag
+/// paralingüístico y por último el valor de `base`. `Clock` se resuelve con `time_based_seed()`.
 pub fn resolve_sampling(
     base: SamplingParams,
     seed: SeedChoice,
@@ -160,7 +160,7 @@ pub struct MarkupPlanner;
 impl MarkupPlanner {
     /// Sustitución paralingüística inline para `0.6B`.
     /// Reemplaza `[laugh]`, `[sigh]`, etc. por onomatopeyas delimitadas por comas
-    /// en una única generación, fijando la semilla y temperatura de la primera etiqueta.
+    /// en una única generación, fijando la semilla y temperatura del primer tag.
     pub fn paralinguistic_substitute(text: &str) -> ParalinguisticSubstitution {
         let mut out = String::with_capacity(text.len() + 48);
         let mut did = false;
@@ -278,7 +278,7 @@ impl MarkupPlanner {
     }
 
     /// Parsea marcado inline / `--compose` en `Vec<SpanSpec>`.
-    /// Las etiquetas desconocidas (por ejemplo `[xyz]`) quedan como texto.
+    /// Los tags desconocidos (por ejemplo `[xyz]`) quedan como texto.
     pub fn parse_spans(input: &str) -> Vec<SpanSpec> {
         let mut spans = Vec::new();
         let mut seg = String::new();
@@ -429,7 +429,7 @@ mod tests {
         let mixed = resolve_sampling(base, SeedChoice::Fixed(9), None, paralinguistic);
         assert_eq!((mixed.seed, mixed.temperature), (9, 1.1));
 
-        // `Clock` manda sobre la etiqueta; el resto de campos viene de `base`.
+        // `Clock` manda sobre el tag; el resto de campos viene de `base`.
         let c = resolve_sampling(base, SeedChoice::Clock, None, paralinguistic);
         assert_eq!(c.top_k, base.top_k);
         assert_eq!(c.temperature, 1.1);

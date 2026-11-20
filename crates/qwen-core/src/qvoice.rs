@@ -22,7 +22,7 @@ pub const QVOICE_VERSION: u32 = 4;
 pub const MAX_VOICE_NAME_LEN: usize = 256;
 /// Tamaño máximo del texto de referencia, en bytes.
 pub const MAX_REF_TEXT_LEN: usize = 1_000_000;
-/// Número máximo de fotogramas de referencia ICL.
+/// Número máximo de frames de referencia ICL.
 pub const MAX_REF_FRAMES: usize = 1_000_000;
 
 /// Representación en memoria de un perfil de voz `.qvoice` v4.
@@ -73,7 +73,7 @@ impl QVoiceFile {
         !self.ref_codes.is_empty() && !self.ref_text.is_empty()
     }
 
-    /// Número de fotogramas de referencia ICL.
+    /// Número de frames de referencia ICL.
     pub fn n_ref_frames(&self) -> usize {
         self.ref_codes.len() / NUM_CODEBOOKS
     }

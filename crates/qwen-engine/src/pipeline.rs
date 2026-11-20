@@ -74,7 +74,7 @@ impl DecoderQueue {
 /// Calcula los logits del `codec_head` que pueden sobrevivir a `apply_talker_logit_rules`: los
 /// códigos de audio (`0..CODEBOOK_SIZE`) y `CODEC_EOS`.
 ///
-/// Las demás filas de `CODEBOOK_SIZE..CODEC_VOCAB_SIZE` (2 MiB de pesos BF16 por fotograma) no se
+/// Las demás filas de `CODEBOOK_SIZE..CODEC_VOCAB_SIZE` (2 MiB de pesos BF16 por frame) no se
 /// leen: las reglas las fijan a `-1e30` sin mirar su valor, así que sus posiciones de `logits`
 /// quedan sin significado hasta entonces. `CODEC_EOS` se calcula junto a su pareja de fila par para
 /// conservar el emparejamiento de filas del kernel BF16 y dar los mismos bits que el cálculo completo.
@@ -160,7 +160,7 @@ pub(crate) fn build_step_embed(
     }
 }
 
-/// Calcula el tamaño objetivo de chunk en fotogramas según la rampa progresiva (la misma con y sin
+/// Calcula el tamaño objetivo de chunk en frames según la rampa progresiva (la misma con y sin
 /// streaming).
 #[inline]
 pub(crate) fn next_stream_chunk_target(
@@ -180,7 +180,7 @@ pub(crate) fn next_stream_chunk_target(
 }
 
 /// Datos fijos de una ejecución de texto plano: lo que `generate_to_sink` necesita además del
-/// espacio de trabajo, el texto y el destino.
+/// workspace, el texto y el destino.
 #[derive(Clone, Copy)]
 pub(crate) struct Run<'a> {
     pub runtime: &'a ComputeRuntime,
@@ -190,7 +190,7 @@ pub(crate) struct Run<'a> {
     pub abort: &'a AbortHandle,
 }
 
-/// Ejecuta la síntesis de un texto plano y entrega progresivamente los fragmentos de audio PCM a
+/// Ejecuta la síntesis de un texto plano y entrega progresivamente los chunks de audio PCM a
 /// `sink`, con la ganancia ya aplicada.
 pub(crate) fn generate_to_sink(
     job: &Run<'_>,
@@ -295,8 +295,8 @@ pub(crate) fn generate_to_sink(
             let mut first_chunk_emitted = false;
 
             loop {
-                // Mismo calendario de fragmentos con y sin streaming: las fronteras de
-                // fragmento fijan el redondeo del decodificador, así el PCM es idéntico.
+                // Mismo calendario de chunks con y sin streaming: las fronteras de
+                // chunk fijan el redondeo del decoder, así el PCM es idéntico.
                 let (target, ramped) =
                     next_stream_chunk_target(first_chunk_emitted, ramp_chunks, chunk_frames);
 
@@ -637,7 +637,7 @@ mod tests {
     use std::path::PathBuf;
 
     /// Las filas que `talker_codec_logits` no calcula no influyen en los logits tras las reglas,
-    /// con cualquier valor previo, en cualquier fotograma y con y sin boost de EOS.
+    /// con cualquier valor previo, en cualquier frame y con y sin boost de EOS.
     #[test]
     fn logit_rules_ignore_rows_skipped_by_codec_head() {
         let eos0 = (CODEC_EOS as usize) & !1;

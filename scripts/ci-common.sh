@@ -10,7 +10,7 @@ pcm_hash() {
 }
 
 print_table_header() {
-    printf '%-10s %-6s %-4s %-6s %-9s %-11s %-11s %-12s %-8s %s\n' variante texto rep RTF fotogramas "talker ms/f" "CP ms/f" "decoder ms" "TTFA ms" "hash PCM"
+    printf '%-10s %-6s %-4s %-6s %-9s %-11s %-11s %-12s %-8s %s\n' variante texto rep RTF frames "talker ms/f" "CP ms/f" "decoder ms" "TTFA ms" "hash PCM"
 }
 
 # measure_one <bin> <hilos> <short|long> <rep> <variante> <carpeta>: una síntesis (voz default, inglés,

@@ -8,22 +8,22 @@
 use qwen_core::config::DEFAULT_LANGUAGE_ID;
 use qwen_core::SamplingParams;
 
-/// Tope de fotogramas por síntesis cuando el llamador no fija otro.
+/// Tope de frames por síntesis cuando el llamador no fija otro.
 pub const DEFAULT_MAX_FRAMES: usize = 8192;
-/// Tamaño por defecto del fragmento de decodificación, en fotogramas.
+/// Tamaño por defecto del chunk de decodificación, en frames.
 pub const DEFAULT_CHUNK_FRAMES: usize = 10;
 /// Pausa por defecto entre tramos hablados de una composición, en segundos.
 pub const DEFAULT_COMPOSE_PAUSE_S: f32 = 0.12;
 
-/// Nivel de registro por `stderr`.
+/// Nivel de log por `stderr`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LogLevel {
-    /// Sin registro.
+    /// Sin log.
     Silent,
-    /// Registro normal.
+    /// Log normal.
     #[default]
     Normal,
-    /// Registro normal y diagnósticos internos.
+    /// Log normal y diagnósticos internos.
     Debug,
 }
 
@@ -41,15 +41,15 @@ impl LogLevel {
     }
 }
 
-/// Parámetros de muestreo, audio y registro de una síntesis.
+/// Parámetros de muestreo, audio y log de una síntesis.
 #[derive(Debug, Clone)]
 pub struct SynthesisRequest {
     /// Idioma del prompt, ya resuelto con `effective_language`.
     pub language_id: i32,
     pub sampling: SamplingParams,
-    /// Tope de fotogramas generados.
+    /// Tope de frames generados.
     pub max_frames: usize,
-    /// Tamaño del fragmento de decodificación (`0` = `DEFAULT_CHUNK_FRAMES`; se acota a `2..=250`).
+    /// Tamaño del chunk de decodificación (`0` = `DEFAULT_CHUNK_FRAMES`; se acota a `2..=250`).
     pub chunk_frames: usize,
     pub cp_roughness: f32,
     pub volume: f32,

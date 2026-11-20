@@ -55,7 +55,7 @@ fn load_model(runtime: &ComputeRuntime) -> Option<Model06B> {
     )
 }
 
-/// Un perfil `.qvoice` en memoria, con `n_frames` fotogramas ICL deterministas.
+/// Un perfil `.qvoice` en memoria, con `n_frames` frames ICL deterministas.
 fn sample_qvoice(name: &str, lang_id: u32, ref_text: &str, n_frames: usize) -> QVoiceFile {
     QVoiceFile {
         speaker_embedding: (0..ENC_DIM)
@@ -156,7 +156,7 @@ fn test_voice_load_and_icl_cap_on_construction() {
     assert_eq!(full_icl.ref_text, ref_text);
     assert_eq!(full_icl.ref_codes, icl_qv.ref_codes, "tope 0 = sin recorte");
 
-    // El tope se aplica al construir: los primeros N fotogramas, sin tocar el archivo
+    // El tope se aplica al construir: los primeros N frames, sin tocar el archivo
     let capped = Voice::load(
         &icl_path,
         &VoiceLoadOptions {

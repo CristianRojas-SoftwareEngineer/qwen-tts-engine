@@ -16,37 +16,37 @@
 | `--caps` | Inicializa el runtime con `-j`, imprime capacidades SIMD/hilos/BLAS a `stdout` y termina. | `0` |
 | `--self-test` | Ejecuta la batería numérica de kernels hacia `stdout`. | `0` si pasa, `1` si falla |
 | `--matmat-bench` | Mide `matmat` vs `B × matvec` hacia `stdout` con el `-j` activo. | `0` |
-| `--list-voices <dir>` | Lista los `.qvoice` de `<dir>` (o un archivo `.qvoice` puntual): por voz, archivo, nombre, idioma (`-` si no tiene), ICL (fotogramas y segundos, o `no`) y tamaño. Un archivo que el lector rechaza (por ejemplo, una versión distinta de la 4) aparece con `unsupported: <mensaje>`. La voz `default` no se lista: no es un archivo. | `0` / `1` |
+| `--list-voices <dir>` | Lista los `.qvoice` de `<dir>` (o un archivo `.qvoice` puntual): por voz, archivo, nombre, idioma (`-` si no tiene), ICL (frames y segundos, o `no`) y tamaño. Un archivo que el lector rechaza (por ejemplo, una versión distinta de la 4) aparece con `unsupported: <mensaje>`. La voz `default` no se lista: no es un archivo. | `0` / `1` |
 | `--delete-voice <path>` | Valida la extensión `.qvoice` y la cabecera `QVCE` antes de eliminar el archivo. | `0` / `1` |
 | `decode-dump <codes.txt> <model_dir> <out.wav>` | Subcomando posicional (sin otras flags): carga `<model_dir>` y decodifica códigos (múltiplo de 16) a WAV 24 kHz s16le. | `0` / `1` |
 
 ### 1.2 Flags de modelo, voz, muestreo y cuantización
 
-| Categoría | Flag(s) | Default | Contrato y validación |
+| Categoría | Flag(s) | Por defecto | Contrato y validación |
 |---|---|---:|---|
 | **Modelo y texto** | `-d, --model-dir <path>` | *(obligatorio con modelo)* | Directorio del modelo Qwen3-TTS `0.6B` Base. Rechaza `1.7B`, `VoiceDesign` y cualquier checkpoint que no sea Base (`exit 1`, con un mensaje que indica que el motor solo carga el modelo Base). |
 | | `-t, --text <string>` | `None` | Obligatorio salvo `--serve`, `--compose`, `--save-voice` sin texto (con `--ref-audio`). |
 | | `-o, --output <path>` | `output.wav` | Ruta de salida WAV (24 kHz, PCM s16le mono). Lleva una rampa de entrada de 5 ms y otra de salida de 40 ms con y sin `--stream`. El PCM es idéntico en los dos modos (`NUMERIC_CONTRACT.md` §4). |
 | **Voz e idioma** | `-l, --language <name>` | el de la voz cargada o, si no tiene, `Spanish` (`2054`) | Acepta 10 idiomas *case-insensitive*: `english`, `german`, `spanish`, `chinese`, `japanese`, `french`, `korean`, `russian`, `italian`, `portuguese`. Una sola regla en todos los modos: el pedido (`-l`); si no hay, el idioma guardado en la voz (si es distinto de `0`; la voz `default` declara español); si tampoco, español. Desconocido → `exit 1`. |
-| **Muestreo** | `-T, --temperature <f>` | `0.325` | Rango `[0.0, 2.0]`; `0.0` = greedy. Si hay sustitución paralingüística inline sin `-T`, usa la `T` de la etiqueta (`1.1`, o `1.0` en `[scoff]`). |
+| **Muestreo** | `-T, --temperature <f>` | `0.325` | Rango `[0.0, 2.0]`; `0.0` = greedy. Si hay sustitución paralingüística inline sin `-T`, usa la `T` del tag (`1.1`, o `1.0` en `[scoff]`). |
 | | `-k, --top-k <n>` | `50` | Límite de candidatos *top-k* en `[0, 3072]`. |
-| | `-p, --top-p <f>` | `1.0` | Umbral acumulado *nucleus sampling* en `[0.0, 1.0]`. |
+| | `-p, --top-p <f>` | `1.0` | Umbral acumulado del muestreo *nucleus* en `[0.0, 1.0]`. |
 | | `-r, --rep-penalty <f>` | `1.05` | Penalización de repetición sobre tokens previos en `[0.5, 2.0]`. |
-| | `-m, --max-tokens <n>` | `8192` | Tope de fotogramas generados (`>= 1`). |
+| | `-m, --max-tokens <n>` | `8192` | Tope de frames generados (`>= 1`). |
 | | `--max-duration <secs>` | `None` | Si es `> 0`, sobrescribe `--max-tokens` con `max(1, floor(secs * 12.5))`. |
 | | `--seed <n>` | `4` (`< 0` reloj) | Entero `0..=u32::MAX` fija semilla; omitido usa `DEFAULT_SEED = 4` (salvo sustitución paralingüística inline); negativo usa reloj del sistema; `> u32::MAX` → `exit 1`. |
-| | `--greedy-warmup <n>` | `0` | Primeros `n` fotogramas con `T=0.0, top_k=1`. |
+| | `--greedy-warmup <n>` | `0` | Primeros `n` frames con `T=0.0, top_k=1`. |
 | **Cuantización** | `--int8` | off | Talker + Code Predictor en `INT8`. |
 | | `--int4` | off | Talker + Code Predictor en `Q4_0`. |
 | | `--quant-mixed` | off | **Perfil recomendado 0.6B**: Talker en `Q4_0`; Code Predictor con atención y `lm_head` en `INT8` y FFN en `Q4_0` (`[INT8+Q4_0-FFN]`). |
 
 ### 1.3 Streaming, audio y post-procesado
 
-| Flag(s) | Default | Contrato y validación |
+| Flag(s) | Por defecto | Contrato y validación |
 |---|---|---|
 | `--stream` | off | Escribe el WAV progresivamente conforme se decodifican chunks. Retiene los últimos 40 ms para aplicar la rampa de salida al cerrar. Incompatible con `--rate != 1.0` (`exit 1`). También con marcado y `--compose`: va por el mismo destino y da el mismo PCM que la entrega completa. |
 | `--stdout` | off | Implica `--stream` y `--silent`; emite PCM crudo s16le 24 kHz mono a `stdout`, también con marcado y `--compose`. |
-| `--stream-chunk <n>` | `10` | Fotogramas máximos por chunk (`clamp(2, 250)`). Rampa: `2` en el primer fragmento y `min(n, 4 + 2 * (k / 8))` para `k = 0, 1, 2, ...` en los siguientes. |
+| `--stream-chunk <n>` | `10` | Frames máximos por chunk (`clamp(2, 250)`). Rampa: `2` en el primer chunk y `min(n, 4 + 2 * (k / 8))` para `k = 0, 1, 2, ...` en los siguientes. |
 | `--volume <f>` | `1.0` | Ganancia lineal en `[0.0, 10.0]` aplicada sobre las muestras PCM con *clamp* a `[-1.0, 1.0]`. |
 | `--rate <f>` | `1.0` | Cambio de velocidad WSOLA en `[0.25, 4.0]` preservando pitch (incompatible con `--stream`). |
 | `--onset-fade <ms>` | `0` | Rampa de entrada sobre el ataque real detectado (solo entrega completa). |
@@ -56,14 +56,14 @@
 
 ### 1.4 Voces, clonación y marcado `0.6B`
 
-| Categoría | Flag(s) | Default | Contrato y validación |
+| Categoría | Flag(s) | Por defecto | Contrato y validación |
 |---|---|---|---|
 | **Clonación** | `--ref-audio <path>` | `None` | Valida cabecera `RIFF`/WAV 24 kHz mono antes de cargar el modelo; otros formatos fallan con comando `ffmpeg`. |
 | | `--ref-text <string>` | `None` | Transcripción de la referencia para activar modo ICL (o sobrescribir `ref_text` de `.qvoice`). Sin ella, la voz guarda solo el timbre (x-vector). |
 | | `--xvector-only` | off | Usa únicamente el *x-vector* (`1024 × f32`), omitiendo los códigos ICL. |
 | | `--save-voice <path>` | `None` | Guarda `.qvoice` v4 (la extensión debe ser `.qvoice`; otra da `los archivos de voz deben ser .qvoice (se obtuvo <ruta>)`). Con idioma `-l` lo guarda; sin `-l` guarda «sin idioma». Sin `--text` ni `--serve`, crea el perfil y sale (`0`). |
 | | `--load-voice <path>` | voz `default` incorporada | Carga `.qvoice` v4. Otra extensión o una versión distinta de la 4 → `exit 1`. Sin este flag ni `--ref-audio`, se usa la voz `default`. |
-| | `--icl-frames <n>` | `0` *(todos)* | Tope máximo de fotogramas de referencia en modo ICL. |
+| | `--icl-frames <n>` | `0` *(todos)* | Tope máximo de frames de referencia en modo ICL. |
 | | `--voice-name <name>` | `None` | Nombre guardado en el `.qvoice`; sin él, la voz clonada al vuelo se llama como el WAV (sin extensión). Al cargar, el nombre es el guardado en el archivo o, si está vacío, el nombre del archivo. |
 | | `--max-ref-duration <s>` | `30.0` | Duración máxima en segundos leída de `--ref-audio` (`0` = audio completo). |
 | **Marcado y estilo** | `--roughness <0..1>` | `0.0` | Mezcla pesos `Q2_0` en `down_proj` del Code Predictor (`[0.0, 1.0]`). |
@@ -73,7 +73,7 @@
 
 ### 1.5 Servidor HTTP y sistema
 
-| Flag(s) | Default | Contrato y validación |
+| Flag(s) | Por defecto | Contrato y validación |
 |---|---|---|
 | `--serve <port>` | `None` | Inicia el servidor HTTP en `<port>` (`> 0`). |
 | `--host <ipv4>` | `127.0.0.1` | Dirección `Ipv4Addr` validada antes de cargar el modelo. Inválida → `exit 1`. |
@@ -93,7 +93,7 @@
 - **CORS**: todas las respuestas incluyen `Access-Control-Allow-Origin: *`; `OPTIONS` responde `204 No Content`.
 - **Formato de error**: `{"error":"<causa>"}` con `Content-Type: application/json`.
 - **Una conexión a la vez**: el servidor atiende cada conexión en línea, con un único trabajador y sin cola.
-- **Calentamiento al arrancar**: el servidor sintetiza y descarta 12 fotogramas de «Hello.» antes de aceptar conexiones (~1 s), para que la primera petición no pague el arranque en frío. El commit en reposo queda en el nivel que antes alcanzaba tras la primera petición; el audio de las peticiones no cambia. Log: `[HTTP] Calentamiento: <ms> ms`.
+- **Calentamiento al arrancar**: el servidor sintetiza y descarta 12 frames de «Hello.» antes de aceptar conexiones (~1 s), para que la primera petición no pague el arranque en frío. La memoria comprometida (*commit*) en reposo queda en el nivel que antes alcanzaba tras la primera petición; el audio de las peticiones no cambia. Log: `[HTTP] Calentamiento: <ms> ms`.
 
 ### 2.2 Endpoints y esquema JSON
 
@@ -107,7 +107,7 @@
 
 **Campos JSON aceptados en `POST`**:
 
-| Campo | Tipo | Default | Notas |
+| Campo | Tipo | Por defecto | Notas |
 |---|---|---|---|
 | `text` o `input` | `string` | *(obligatorio)* | No vacío ni solo espacios/escapes `\n`, `\t`, `\r`; `<= 8192` bytes. |
 | `voice` | `string` | *(opcional)* | Si viene, debe coincidir (sin distinguir mayúsculas) con el nombre de la voz cargada; si no, `400` con `la voz '<x>' no está cargada (cargada: '<nombre>')`. |
@@ -124,7 +124,7 @@
 
 ### 2.3 Validación HTTP `400` y valores acotados
 
-Toda petición se valida en `ValidatedTtsRequest::parse` antes de planificar o encolar síntesis:
+Toda petición se valida en `ValidatedTtsRequest::parse` antes de sintetizar:
 
 - Cuerpo JSON inválido, no objeto, `Content-Length` inválido o tamaño mayor que `1 MiB` → `400`.
 - `text`/`input` ausente, vacío, solo whitespace (o `\n`/`\t`/`\r` escapados) o `> 8192` bytes → `400`.
@@ -137,16 +137,16 @@ Toda petición se valida en `ValidatedTtsRequest::parse` antes de planificar o e
 
 ### 2.4 Streaming *chunked*, cancelación y cierre
 
-1. **Rampa de chunks (`/v1/tts/stream`)**: primer fragmento de `2` fotogramas (`160 ms`); los siguientes (`k = 0, 1, 2, ...`) siguen `min(chunk_frames, 4 + 2 * (k / 8))`. El decoder usa el mismo calendario también en `/v1/tts` y en la CLI.
-   - **Rampa de salida de 40 ms**: el servidor retiene los últimos 40 ms de audio y los envía con el fragmento siguiente o al cerrar. Por eso el primer fragmento entrega 120 ms en lugar de 160 ms.
+1. **Rampa de chunks (`/v1/tts/stream`)**: primer chunk de `2` frames (`160 ms`); los siguientes (`k = 0, 1, 2, ...`) siguen `min(chunk_frames, 4 + 2 * (k / 8))`. El decoder usa el mismo calendario también en `/v1/tts` y en la CLI.
+   - **Rampa de salida de 40 ms**: el servidor retiene los últimos 40 ms de audio y los envía con el chunk siguiente o al cerrar. Por eso el primer chunk entrega 120 ms en lugar de 160 ms.
 2. **Señal de cierre vs fallo**: el terminador `0\r\n\r\n` solo se envía si la generación termina sin error y con `samples > 0`. Si falla o se corta la conexión, el servidor cierra el socket **sin** enviar `0\r\n\r\n` para que el cliente detecte transferencia truncada.
-3. **Cancelación por socket**: el motor sondea desconexión del cliente antes de cada fotograma. El cliente **no** debe ejecutar `shutdown(SHUT_WR)` tras enviar el request HTTP, o se interpretará como desconexión.
+3. **Cancelación por socket**: el motor sondea desconexión del cliente antes de cada frame. El cliente **no** debe ejecutar `shutdown(SHUT_WR)` tras enviar el request HTTP, o se interpretará como desconexión.
 
 ---
 
 ## 3. API Rust embebida (`qwen-engine`, `qwen-core`, `qwen-kernels`)
 
-La librería comparte `ComputeRuntime`, `Model06B` y `Voice` entre hilos (todos inmutables durante la síntesis) mientras cada síntesis usa un `SessionScratch` mutable exclusivo. Una única entrada pública sintetiza: `Synthesizer::synthesize(scratch, &req, &abort, &script, delivery)`.
+La biblioteca comparte `ComputeRuntime`, `Model06B` y `Voice` entre hilos (todos inmutables durante la síntesis) mientras cada síntesis usa un `SessionScratch` mutable exclusivo. Una única entrada pública sintetiza: `Synthesizer::synthesize(scratch, &req, &abort, &script, delivery)`.
 
 Los tipos de la petición viven en `qwen-core` (`Script`, `SamplingParams`, `plan_script`, `resolve_sampling`, `effective_language`) y los del motor en `qwen-engine` (`Voice`, `SynthesisRequest`, `Synthesizer`, `Delivery`, `AudioSink`, `EdgeRampSink`).
 
@@ -166,11 +166,11 @@ let load_opts = ModelLoadOptions {
 let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, load_opts)?;
 ```
 
-- `Model06B::load` valida `config.json` para `0.6B`, abre `safetensors` vía `MmapStore` y cuantiza matrices según `ModelLoadOptions` (o `QWEN_TALKER_PREC` / `QWEN_CP_PREC`). Los codificadores del locutor y de voz son obligatorios: si faltan, es un error de carga.
+- `Model06B::load` valida `config.json` para `0.6B`, abre `safetensors` vía `MmapStore` y cuantiza matrices según `ModelLoadOptions` (o `QWEN_TALKER_PREC` / `QWEN_CP_PREC`). Los encoders del locutor y de voz son obligatorios: si faltan, es un error de carga.
 
 ### 3.2 `Voice` y `SessionScratch`
 
-`Voice` es la única representación de una voz: `name`, `language_id: Option<i32>` (idioma declarado; `None` si no declara ninguno), `xvector: Vec<f32>` e `icl: Option<IclPrompt>`. `IclPrompt { ref_text, ref_codes }` ya está recortado al tope de fotogramas al construir la voz (`VoiceLoadOptions::icl_frames_cap` o, si está definida, `QWEN_ICL_FRAMES`).
+`Voice` es la única representación de una voz: `name`, `language_id: Option<i32>` (idioma declarado; `None` si no declara ninguno), `xvector: Vec<f32>` e `icl: Option<IclPrompt>`. `IclPrompt { ref_text, ref_codes }` ya está recortado al tope de frames al construir la voz (`VoiceLoadOptions::icl_frames_cap` o, si está definida, `QWEN_ICL_FRAMES`).
 
 - **Voz `default` incorporada**, que declara español (`2054`):
   ```rust
@@ -211,8 +211,8 @@ let pcm: Vec<u8> = sink.into_writer();
 ```
 
 - **`Script`**: `Plain(String)` (texto sin marcado) o `Spans(Vec<SpanSpec>)` (tramos hablados y pausas). `qwen_core::plan_script(text, MarkupMode::{Auto, Literal, Compose})` es el único sitio que decide la sustitución paralingüística y los tramos.
-- **`Delivery`**: `Buffer` devuelve todo el audio en `SynthesisOutput::samples`, con `time_stretch` (`rate`), `tail_trim` y `onset_fade`; `Stream(&mut sink)` entrega fragmentos al destino sin acabado y rechaza `rate != 1.0`. Los dos dan el mismo PCM (`NUMERIC_CONTRACT.md` §4, invariante 5).
-- **`SynthesisRequest`**: `language_id` (ya resuelto con `effective_language(pedido, voz)`: pedido, voz o español), `sampling: SamplingParams` (`temperature`, `top_k`, `top_p`, `rep_penalty`, `greedy_warmup`, `seed`), `max_frames`, `chunk_frames`, `cp_roughness`, `volume`, `rate`, `compose_pause_s`, `tail_trim`, `onset_fade_ms` y `log: LogLevel`. Los valores por defecto (0,325 / 50 / 1,0 / 1,05 / 0 / 4, 8192 fotogramas, fragmentos de 10) están en un solo sitio.
+- **`Delivery`**: `Buffer` devuelve todo el audio en `SynthesisOutput::samples`, con `time_stretch` (`rate`), `tail_trim` y `onset_fade`; `Stream(&mut sink)` entrega chunks al destino sin acabado y rechaza `rate != 1.0`. Los dos dan el mismo PCM (`NUMERIC_CONTRACT.md` §4, invariante 5).
+- **`SynthesisRequest`**: `language_id` (ya resuelto con `effective_language(pedido, voz)`: pedido, voz o español), `sampling: SamplingParams` (`temperature`, `top_k`, `top_p`, `rep_penalty`, `greedy_warmup`, `seed`), `max_frames`, `chunk_frames`, `cp_roughness`, `volume`, `rate`, `compose_pause_s`, `tail_trim`, `onset_fade_ms` y `log: LogLevel`. Los valores por defecto (0,325 / 50 / 1,0 / 1,05 / 0 / 4, 8192 frames, chunks de 10) están en un solo sitio.
 - **Destinos de audio**: el trait `AudioSink` (`write_samples(&mut self, &[f32])` y `finish(&mut self)`) es el único destino del camino. `MemorySink` acumula `f32`; `EdgeRampSink<W: PcmWrite>` aplica las rampas de borde (5 ms de entrada, 40 ms de salida con retención) y convierte a PCM `s16le`, y no aplica ganancia (la aplica `synthesize` antes de escribir). `PcmWrite` (`write_pcm` y `finish`) tiene escritores incluidos —`WavFileWriter` (WAV progresivo), `StdoutWriter` y `Vec<u8>`— o uno propio.
 
 ### 3.4 Cancelación cooperativa (`AbortHandle`) y marcado
@@ -227,7 +227,7 @@ let pcm: Vec<u8> = sink.into_writer();
   abort.cancel();
   // `synthesize` retorna `Err(EngineError::Aborted)`.
   ```
-- **Marcado y multi-span**: `plan_script(text, mode)` devuelve un `PlannedScript` con el `Script` y la etiqueta paralingüística (semilla y temperatura propias), que `resolve_sampling(base, seed, temperature, paralinguistic)` combina con lo que pidió el usuario (primero lo explícito, después la etiqueta, por último el valor por defecto). `Synthesizer::synthesize` compone los tramos con `compose_pause_s` entre ellos. Una composición sin nada que hablar (solo pausas) es un error.
+- **Marcado y multi-span**: `plan_script(text, mode)` devuelve un `PlannedScript` con el `Script` y el tag paralingüístico (semilla y temperatura propias), que `resolve_sampling(base, seed, temperature, paralinguistic)` combina con lo que pidió el usuario (primero lo explícito, después el tag, por último el valor por defecto). `Synthesizer::synthesize` compone los tramos con `compose_pause_s` entre ellos. Una composición sin nada que hablar (solo pausas) es un error.
 
 ---
 
@@ -235,34 +235,34 @@ let pcm: Vec<u8> = sink.into_writer();
 
 ### 4.1 Variables de entorno soportadas
 
-| Variable | Scope | Default | Efecto |
+| Variable | Scope | Por defecto | Efecto |
 |---|---|---|---|
-| `OMP_NUM_THREADS` | OpenBLAS / Windows | `-j` *(lo fija el binario)* | Opcional. Si se define, manda: OpenBLAS reserva un búfer de 128 MiB de commit por hilo indicado, y los hilos de BLAS no superan ese valor aunque `-j` sea mayor. |
+| `OMP_NUM_THREADS` | OpenBLAS / Windows | `-j` *(lo fija el binario)* | Opcional. Si se define, manda: OpenBLAS reserva un buffer de 128 MiB de memoria comprometida (*commit*) por hilo indicado, y los hilos de BLAS no superan ese valor aunque `-j` sea mayor. |
 | `OPENBLAS_NUM_THREADS` | OpenBLAS | *(no definir)* | Si está definida, `FfiBlas::set_threads` no reconfigura hilos entre *prefill* y generación. |
 | `OPENBLAS_LIB_DIR` | Build (`qwen-kernels`) | `C:/msys64/ucrt64/lib` *(Win)* | Ruta de búsqueda para `openblas` / `libopenblas.a`. En Linux, si contiene `libopenblas.a`, OpenBLAS se enlaza estático (`scripts/build-openblas.sh` lo compila), y `libgfortran.a`/`libquadmath.a` solo si están en el mismo directorio. Sin la variable, la `libopenblas` dinámica del sistema. |
 | `WINDRES` | Build (`qwen-app`) | auto | Compilador de recursos COFF para incrustar el manifiesto UTF-8 en Windows GNU. |
 | `QWEN_BLAS` | Runtime | `ffi` | Con `--features faer-blas`, `QWEN_BLAS=faer` selecciona `PureRustBlas`. |
 | `QWEN_KERNELS` | Runtime | `auto` | `auto`: los kernels más rápidos que soporte la CPU (AVX2 + FMA en x86-64; en aarch64, NEON en todos los kernels, con `SDOT` en Q4_0 e INT8 si la CPU tiene `dotprod`; `--caps` muestra la ruta en la línea `kernels:`). `scalar`: fuerza la ruta escalar, como referencia para comparar kernels en la misma máquina; `--caps` lo indica con `kernels: scalar (forzado por QWEN_KERNELS=scalar)`. Un valor no válido se avisa por stderr y se trata como `auto`. Cambiar de ruta cambia el redondeo y, por tanto, el audio. |
-| `QWEN_POOL_SPIN` | Runtime | `4096`, o `0` si los hilos del productor ocupan todos los núcleos físicos | Iteraciones de *spin-wait* en `ComputePool` (`0` = espera directa en `Condvar`). Sin la variable, la CLI y el servidor de una petición usan `0` cuando `-j` llega a los núcleos físicos (con 4 núcleos y `-j 4`) y `4096` si no; el servidor con varios trabajadores aplica la misma regla a sus hilos (`spin_budget_for`). Con la variable, manda su valor. |
+| `QWEN_POOL_SPIN` | Runtime | `4096`, o `0` si los hilos del productor ocupan todos los núcleos físicos | Iteraciones de *spin-wait* en `ComputePool` (`0` = espera directa en `Condvar`). Sin la variable, la CLI y el servidor usan la misma regla (`spin_budget_for`): `0` cuando `-j` llega a los núcleos físicos (con 4 núcleos y `-j 4`) y `4096` si no. Con la variable, manda su valor. |
 | `QWEN_SD_THREADS` | Runtime | `-j` | Número de hilos asignados a `sd_pool` (`SpeechDecoder`). |
 | `QWEN_BLAS_GEN_THREADS` | Runtime | `max(1, nt - 1)` | Hilos BLAS durante la fase de generación paralela con `SpeechDecoder`. |
 | `QWEN_TALKER_PREC` | Carga `Model06B` | según flags | Fuerza precisión del Talker: `bf16`, `int8` o `int4`. |
 | `QWEN_CP_PREC` | Carga `Model06B` | según flags | Fuerza precisión del Code Predictor: `bf16`, `int8`, `int4` o `mixed`. |
 | `QWEN_SPK_SCALE` | Prefill | `1.0` | Factor multiplicador sobre la norma L2 del *speaker embedding* clonado. |
-| `QWEN_ICL_FRAMES` | Construcción de la voz | `icl_frames_cap` | Si está definida, sobrescribe el límite de fotogramas de referencia ICL al construir la `Voice`. |
-| `QWEN_ICL_TRIM_FRAMES` | Pipeline ICL | `2` | Fotogramas recortados al inicio del audio generado en modo ICL (`2 × 1920` muestras). |
+| `QWEN_ICL_FRAMES` | Construcción de la voz | `icl_frames_cap` | Si está definida, sobrescribe el límite de frames de referencia ICL al construir la `Voice`. |
+| `QWEN_ICL_TRIM_FRAMES` | Pipeline ICL | `2` | Frames recortados al inicio del audio generado en modo ICL (`2 × 1920` muestras). |
 | `QWEN_NO_REF_TRIM` | Audio ref | off | Si está definida, desactiva `trim_trailing_silence` sobre `--ref-audio`. |
-| `QWEN_DUMP_CODES` | Pipeline | `None` | Ruta de archivo donde volcar los 16 codebooks por fotograma (`decode-dump`). |
+| `QWEN_DUMP_CODES` | Pipeline | `None` | Ruta de archivo donde volcar los 16 codebooks por frame (`decode-dump`). |
 | `QWEN_BATCH_B` | `--matmat-bench` | `8` | Tamaño de lote `B` en microbenchmarks (`1..=64`; valores fuera de rango usan `8`). |
 
 ### 4.2 Afinidad SMT en Windows y gestión de OpenBLAS
 
 - **Afinidad Win32 (`affinity.rs`)**: al arrancar en Windows con 1 grupo de procesadores, `qwen_tts` fija `SetProcessAffinityMask` a **1 hilo lógico por núcleo físico** para evitar contención SMT del planificador.
-- **OpenBLAS + OpenMP**: en Windows con `x86_64-pc-windows-gnu`, OpenBLAS está enlazado estático y se inicializa antes de `main`, reservando 128 MiB de commit por hilo. Si no hay `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS` ni `GOTO_NUM_THREADS`, el binario fija `OMP_NUM_THREADS` al `-j` efectivo antes de esa inicialización (`.CRT$XCT`); no hace falta definir nada. `set_threads` aplica los hilos en cada hilo que llama a `sgemm` y nunca pasa de los iniciales (OpenBLAS 0.3.34 se cuelga si se le piden más). Mantén **sin definir** `OPENBLAS_NUM_THREADS` para que el motor pueda ajustar los hilos entre *prefill* (`nt`) y generación (`gen_blas`).
+- **OpenBLAS + OpenMP**: en Windows con `x86_64-pc-windows-gnu`, OpenBLAS está enlazado estático y se inicializa antes de `main`, reservando 128 MiB de memoria comprometida (*commit*) por hilo. Si no hay `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS` ni `GOTO_NUM_THREADS`, el binario fija `OMP_NUM_THREADS` al `-j` efectivo antes de esa inicialización (`.CRT$XCT`); no hace falta definir nada. `set_threads` aplica los hilos en cada hilo que llama a `sgemm` y nunca pasa de los iniciales (OpenBLAS 0.3.34 se cuelga si se le piden más). Mantén **sin definir** `OPENBLAS_NUM_THREADS` para que el motor pueda ajustar los hilos entre *prefill* (`nt`) y generación (`gen_blas`).
 
 ### 4.3 Líneas de log contractuales
 
-Los tests y scripts de operación esperan las siguientes líneas exactas en `stderr`:
+Las pruebas y los scripts de operación esperan las siguientes líneas exactas en `stderr`:
 
 - **Carga de Code Predictor** (`model.rs`):
   `  Code Predictor: 5 capas cargadas, q_dim=2048 kv_dim=1024 [BF16|INT8|Q4_0|INT8+Q4_0-FFN]`

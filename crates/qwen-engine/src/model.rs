@@ -448,8 +448,8 @@ pub struct SdResBlockWeights {
     pub snake1_beta: Option<F32Ref>,
     pub conv1_bias: Option<F32Ref>,
     pub conv1_wk: AlignedBuf<f32>,
-    /// `conv1` en disposición im2col `[out][k · in]` (una sola `sgemm` con `K = 7 · in`).
-    /// Solo en los bloques que el *streaming* procesa por tramos (`b >= SD_TILE_FROM_BLOCK`).
+    /// `conv1` en layout im2col `[out][k · in]` (una sola `sgemm` con `K = 7 · in`).
+    /// Solo en los bloques que el *streaming* procesa por tiles (`b >= SD_TILE_FROM_BLOCK`).
     pub conv1_wcat: Option<AlignedBuf<f32>>,
     pub snake2_alpha: Option<F32Ref>,
     pub snake2_beta: Option<F32Ref>,
@@ -728,7 +728,7 @@ impl Default for CpBuffers {
     }
 }
 
-/// 8 ranuras monótonas reutilizables para el decodificador convolucional acústico.
+/// 8 slots monótonos reutilizables para el decoder convolucional acústico.
 pub struct DecoderWorkspace {
     pub a: AlignedBuf<f32>,
     pub b: AlignedBuf<f32>,
@@ -781,7 +781,7 @@ pub struct SdStreamState {
     pub cs_alloc: bool,
     pub cs_warm: bool,
     pub cs_tile: bool,
-    // Buffers scratch reutilizables por fragmento (cero asignaciones de heap durante streaming)
+    // Buffers scratch reutilizables por chunk (cero asignaciones de heap durante streaming)
     pub tmp_vq_out: Vec<f32>,
     pub tmp_vq_cf: Vec<f32>,
     pub tmp_pre_conv_out: Vec<f32>,
@@ -965,7 +965,7 @@ impl Default for EmbLruCache {
     }
 }
 
-/// Estado mutable exclusivo de una sesión o worker (KV caches, buffers de trabajo, muestreador y RNG).
+/// Estado mutable exclusivo de una sesión o trabajador (cachés KV, buffers de trabajo, muestreador y RNG).
 pub struct SessionScratch {
     pub talker_kv: TalkerKvCache,
     pub cp_kv: CpKvCache,
@@ -1006,7 +1006,7 @@ impl Default for SessionScratch {
 
 type AbortPollFn = Arc<dyn Fn() -> bool + Send + Sync>;
 
-/// Señal cooperativa de cancelación por bandera atómica y función opcional de sondeo.
+/// Señal cooperativa de cancelación por flag atómico y función opcional de sondeo.
 #[derive(Clone, Default)]
 pub struct AbortHandle {
     cancelled: Arc<AtomicBool>,
@@ -1048,7 +1048,7 @@ impl AbortHandle {
     }
 }
 
-/// Métricas de latencia y conteo de fotogramas producidas por una síntesis.
+/// Métricas de latencia y conteo de frames producidas por una síntesis.
 #[derive(Debug, Clone, Default)]
 pub struct SynthesisTiming {
     pub prefill_ms: f64,
@@ -1093,7 +1093,7 @@ fn quantize_matrix_q4(src: &[u16], rows: usize, cols: usize) -> QuantWeight {
     QuantWeight::Q4_0(quantize_bf16_to_q4_0(src, rows, cols))
 }
 
-/// Reordena `weight[out][in][k]` a la disposición im2col `[out][k · in + ic]`.
+/// Reordena `weight[out][in][k]` al layout im2col `[out][k · in + ic]`.
 fn conv_im2col_weight(
     weight: &[f32],
     out_ch: usize,

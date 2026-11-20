@@ -17,7 +17,7 @@ use crate::model::{
 };
 
 const SD_TILE_BYTES: usize = 256 * 1024;
-/// Primer bloque de upsample que el *streaming* procesa por tramos de `SD_TILE_BYTES`.
+/// Primer bloque de upsample que el *streaming* procesa por tiles de `SD_TILE_BYTES`.
 pub(crate) const SD_TILE_FROM_BLOCK: usize = 2;
 
 #[inline]
@@ -964,11 +964,11 @@ fn cs_conv1d(
     conv_add_bias(out_s, b, out_ch, len);
 }
 
-/// Convolución causal k=7 de un tramo en *streaming* con una sola `sgemm` (im2col).
+/// Convolución causal k=7 de un tile en *streaming* con una sola `sgemm` (im2col).
 ///
 /// Monta `cols[(k · ch + ic), t] = [tail | input][ic, k · dilation + t]` y multiplica por
 /// `wcat` (`[ch][7 · ch]`). Con 96 o 192 canales, `K = 7 · ch` rinde mucho más en OpenBLAS
-/// que 7 `sgemm` con `K = ch`. La cola arranca a cero, así que el primer tramo no necesita
+/// que 7 `sgemm` con `K = ch`. La cola arranca a cero, así que el primer tile no necesita
 /// un camino aparte.
 #[allow(clippy::too_many_arguments)]
 fn cs_conv1d_im2col(
@@ -1483,7 +1483,7 @@ pub fn speech_decoder_decode_streaming(
     let blas = &runtime.blas;
     let d = runtime.dispatch;
 
-    // Paso 1: descuantización VQ por fotograma
+    // Paso 1: descuantización VQ por frame
     if st.tmp_vq_out.len() < new_frames * DEC_CODEBOOK_DIM {
         st.tmp_vq_out.resize(new_frames * DEC_CODEBOOK_DIM, 0.0);
     }
@@ -1512,7 +1512,7 @@ pub fn speech_decoder_decode_streaming(
         d.f32_matvec_accum(vq_row, rvq_rest, &cb_sum, DEC_CODEBOOK_DIM, CODEBOOK_DIM);
     }
 
-    // Paso 2: pre-conv con relleno izquierdo de 2 fotogramas del fragmento previo
+    // Paso 2: pre-conv con relleno izquierdo de 2 frames del chunk previo
     let pad_frames = if st.vq_pad_valid { 2 } else { 0 };
     let conv_in_len = pad_frames + new_frames;
     if st.tmp_vq_cf.len() < DEC_CODEBOOK_DIM * conv_in_len {
@@ -1565,7 +1565,7 @@ pub fn speech_decoder_decode_streaming(
         1,
     );
 
-    // Paso 3: proyección de entrada sobre los nuevos fotogramas
+    // Paso 3: proyección de entrada sobre los nuevos frames
     if st.tmp_pre_conv_rm.len() < new_frames * DEC_LATENT_DIM {
         st.tmp_pre_conv_rm.resize(new_frames * DEC_LATENT_DIM, 0.0);
     }
@@ -1596,7 +1596,7 @@ pub fn speech_decoder_decode_streaming(
     );
     add_bias_rm(hidden, sd.input_proj_bias.as_deref(), new_frames, DEC_HIDDEN_SIZE);
 
-    // Paso 4: pre-transformer con KV cache compactable
+    // Paso 4: pre-transformer con caché KV compactable
     let qkv_dim = DEC_NUM_HEADS * DEC_HEAD_DIM;
     let window = DEC_SLIDING_WINDOW;
     let mut need = (st.kv_len + new_frames) - st.kv_base;
@@ -1727,10 +1727,10 @@ pub fn speech_decoder_decode_streaming(
         st.k_cache[layer_idx][cache_off..cache_off + new_frames * qkv_dim].copy_from_slice(new_k);
         st.v_cache[layer_idx][cache_off..cache_off + new_frames * qkv_dim].copy_from_slice(new_v);
 
-        // Atencion causal con ventana deslizante por el kernel compartido: en
-        // coordenadas de la cache compactable, la consulta `sq` esta en
-        // `kv_len + sq - kv_base` y las claves validas son `0..kv_len + new_frames - kv_base`.
-        // La compactacion conserva `window - 1` posiciones, asi que la ventana nunca
+        // Atención causal con ventana deslizante por el kernel compartido: en
+        // coordenadas de la caché compactable, la consulta `sq` está en
+        // `kv_len + sq - kv_base` y las claves válidas son `0..kv_len + new_frames - kv_base`.
+        // La compactación conserva `window - 1` posiciones, así que la ventana nunca
         // cae por debajo de `kv_base`.
         let seq_k = st.kv_len + new_frames - st.kv_base;
         d.causal_attention_windowed(

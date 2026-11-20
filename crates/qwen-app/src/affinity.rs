@@ -5,7 +5,7 @@
 
 //! Afinidad de hilos SMT en Win32: restringe el proceso a un hilo lógico por
 //! núcleo físico en sistemas con un solo grupo de procesadores para evitar
-//! contención SMT del planificador de Windows (`INTERFACE_CONTRACT.md` §4.2).
+//! contención SMT del planificador de Windows.
 
 #[cfg(target_os = "windows")]
 mod win32 {

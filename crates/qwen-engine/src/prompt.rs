@@ -107,7 +107,7 @@ pub(crate) fn build_prompt(
         None => (None, None),
     };
 
-    // `ref_codes` ya viene recortado al tope de fotogramas al construir la voz.
+    // `ref_codes` ya viene recortado al tope de frames al construir la voz.
     let ref_text_tokens = icl_text
         .map(|t| model.tokenizer.encode(t))
         .unwrap_or_default();

@@ -629,7 +629,7 @@ mod tests {
             let mut rng = Lcg(0xABCD_0000 + pos as u32);
             let (c0, c1) = (rng.code(), rng.code());
 
-            // Camino A: dos pasos de 1 posicion.
+            // Camino A: dos pasos de 1 posición.
             let mut sa = SessionScratch::new();
             build_prefix(&runtime, &model, &mut sa, 77, pos);
             cp_code_embed(d, &model, 0, c0, &mut sa.cp_bufs.dec_x);
@@ -663,7 +663,7 @@ mod tests {
         let (c0, c1, c1b) = (rng.code(), rng.code(), rng.code());
         assert_ne!(c1, c1b);
 
-        // Camino B: pasada de 2 posiciones, rechazo y paso de 1 posicion con otra entrada.
+        // Camino B: pasada de 2 posiciones, rechazo y paso de 1 posición con otra entrada.
         let mut sb = SessionScratch::new();
         build_prefix(&runtime, &model, &mut sb, 91, pos);
         cp_code_embed(d, &model, 0, c0, &mut sb.cp_bufs.dec_x);
@@ -673,7 +673,7 @@ mod tests {
         cp_code_embed(d, &model, 1, c1b, &mut sb.cp_bufs.dec_x);
         cp_transformer_step(&runtime, &model, &mut sb, pos + 1, 0.0);
 
-        // Referencia: dos pasos de 1 posicion con la entrada real.
+        // Referencia: dos pasos de 1 posición con la entrada real.
         let mut sr = SessionScratch::new();
         build_prefix(&runtime, &model, &mut sr, 91, pos);
         cp_code_embed(d, &model, 0, c0, &mut sr.cp_bufs.dec_x);
@@ -689,7 +689,7 @@ mod tests {
         assert_kv_equal(&sr, &sb, pos + 2);
     }
 
-    /// Referencia secuencial: devuelve los 15 codigos y cuantas adivinanzas habrian acertado.
+    /// Referencia secuencial: devuelve los 15 códigos y cuántas adivinanzas habrían acertado.
     fn sequential_reference(
         runtime: &ComputeRuntime,
         model: &Model06B,

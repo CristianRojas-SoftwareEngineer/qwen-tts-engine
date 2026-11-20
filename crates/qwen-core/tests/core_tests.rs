@@ -56,7 +56,7 @@ fn test_config_only_base_loads_and_rejects_others() {
     // Un checkpoint sin `tts_model_type` tampoco es Base
     let no_type = synthetic_config("base", true).replace("\"tts_model_type\":\"base\",", "");
     assert_eq!(load_synthetic("no_type", &no_type).unwrap_err().to_string(), msg);
-    // `base` sin codificador de locutor tampoco
+    // `base` sin encoder de locutor tampoco
     let err = load_synthetic("base_no_spk", &synthetic_config("base", false)).unwrap_err();
     assert_eq!(err.to_string(), msg);
 
@@ -361,7 +361,7 @@ fn test_markup_sampling_and_lookups() {
         }
     );
 
-    // Una etiqueta que ya no es de marcado (`[sad]`) queda como texto, igual que `[xyz]`
+    // Un tag que ya no es de marcado (`[sad]`) queda como texto, igual que `[xyz]`
     for tag in ["[sad]", "[neutral]", "[xyz]"] {
         let text = format!("Devo andare {tag} Ciao.");
         assert!(!MarkupPlanner::has_markup(&text), "{tag} no debe contar como marcado");

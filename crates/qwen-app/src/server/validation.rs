@@ -153,7 +153,7 @@ impl ValidatedTtsRequest {
             None => None,
         };
 
-        // top_k en [0, codec_vocab_size (3072)], default = 50
+        // top_k en [0, codec_vocab_size (3072)], por defecto 50
         let top_k = match extract_opt_i64(obj, "top_k")? {
             Some(v) => {
                 if v < 0 || v > CODEC_VOCAB_SIZE as i64 {
@@ -164,7 +164,7 @@ impl ValidatedTtsRequest {
             None => 50,
         };
 
-        // top_p en [0.0, 1.0], default = 1.0
+        // top_p en [0.0, 1.0], por defecto 1.0
         let top_p = match extract_opt_f64(obj, "top_p")? {
             Some(v) => {
                 if !(0.0..=1.0).contains(&v) {
@@ -175,7 +175,7 @@ impl ValidatedTtsRequest {
             None => 1.0,
         };
 
-        // rep_penalty en [0.5, 2.0], default = 1.05
+        // rep_penalty en [0.5, 2.0], por defecto 1.05
         let rep_penalty = match extract_opt_f64(obj, "rep_penalty")? {
             Some(v) => {
                 if !(0.5..=2.0).contains(&v) {
@@ -217,7 +217,7 @@ impl ValidatedTtsRequest {
             return Err("'rate' no está soportado en /v1/tts/stream".to_string());
         }
 
-        // chunk_frames (acotado a 2..=250, default 10)
+        // chunk_frames (acotado a 2..=250, por defecto 10)
         let chunk_frames = if is_stream {
             let cf = extract_opt_i64(obj, "chunk_frames")?.unwrap_or(DEFAULT_CHUNK_FRAMES as i64);
             cf.clamp(2, 250) as usize

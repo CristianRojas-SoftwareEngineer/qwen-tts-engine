@@ -9,7 +9,7 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
 /// Buffer contiguo alineado a línea de caché (alineación por defecto de 64 bytes)
-/// para SIMD, BLAS, KV cache y workspaces del decodificador.
+/// para SIMD, BLAS, caché KV y workspaces del decoder.
 pub struct AlignedBuf<T, const ALIGN: usize = 64> {
     ptr: NonNull<T>,
     len: usize,
@@ -54,7 +54,7 @@ impl<T: Copy + Default, const ALIGN: usize> AlignedBuf<T, ALIGN> {
     }
 
     /// Garantiza que la capacidad sea al menos `new_len` y ajusta la longitud a `new_len`,
-    /// inicializando a cero los nuevos elementos (ranura monótona de workspace).
+    /// inicializando a cero los nuevos elementos (slot monótono de workspace).
     pub fn resize_zeroed(&mut self, new_len: usize) {
         const {
             assert!(ALIGN >= std::mem::align_of::<T>());
