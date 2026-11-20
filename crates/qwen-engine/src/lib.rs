@@ -24,25 +24,17 @@ pub mod voice;
 pub mod voice_clone;
 
 pub use audio::{
-    apply_gain, encode_wav_bytes, f32_to_s16le_clamped, onset_fade, read_wav_24khz, read_wav_pcm,
-    tail_glitch_score, tail_trim, time_stretch, trim_trailing_silence,
-    validate_wav_path_or_header, write_wav, AudioSink, EdgeRampSink, MemorySink, PcmWrite, StdoutWriter, WavFileWriter,
+    encode_wav_bytes, read_wav_24khz, read_wav_pcm, tail_glitch_score, trim_trailing_silence,
+    validate_wav_path_or_header, write_wav, AudioSink, EdgeRampSink, MemorySink, PcmWrite,
+    StdoutWriter, WavFileWriter,
 };
 pub use error::EngineError;
-pub use model::{
-    AbortHandle, Bf16Weight, CodePredictorWeights, F32Weight, Model06B, ModelLoadOptions,
-    SessionScratch, SpeechDecoderWeights, SynthesisTiming,
-    TalkerWeights,
-};
+pub use model::{AbortHandle, Model06B, ModelLoadOptions, SessionScratch, SynthesisTiming};
 pub use pipeline::finish_full_delivery;
 pub use request::{
     LogLevel, SynthesisRequest, DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES,
 };
 pub use speech_decoder::{speech_decoder_decode, speech_decoder_decode_streaming};
-pub use speech_encoder::{speech_encoder_encode, SpeechEncoderWeights};
-pub use synth::{synthesize, Delivery, SynthesisOutput};
-pub use voice::{
-    clone_voice, ensure_qvoice_path, CloneOptions, IclPrompt, Voice, VoiceLoadOptions,
-    DEFAULT_VOICE_NAME,
-};
-pub use voice_clone::{mel_spectrogram, speaker_encoder_forward, SpeakerEncoderWeights};
+pub use synth::{Delivery, SynthesisOutput, Synthesizer};
+pub use voice::{clone_voice, ensure_qvoice_path, CloneOptions, IclPrompt, Voice, VoiceLoadOptions};
+pub use voice_clone::mel_spectrogram;

@@ -9,9 +9,67 @@ use qwen_core::config::CODEC_VOCAB_SIZE;
 use qwen_core::{SamplingParams, SeedChoice};
 use qwen_engine::{DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES};
 
+/// Qué hace el proceso, resuelto una sola vez al parsear (ver [`CliMode::resolve`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum CliMode {
+    /// `--caps`.
+    Caps,
+    /// `--self-test`.
+    SelfTest,
+    /// `--matmat-bench`.
+    MatmatBench,
+    /// `--list-voices <carpeta|archivo>`.
+    ListVoices(String),
+    /// `--delete-voice <archivo>`.
+    DeleteVoice(String),
+    /// `--save-voice` sin `--text` ni `--serve`: solo crea el perfil de voz.
+    CreateVoice,
+    /// `--serve <puerto>`.
+    Serve(u16),
+    /// `--text` o `--compose`: una síntesis.
+    Synthesize,
+    /// Sin ningún trabajo que hacer (se reporta como error tras exigir `--model-dir`).
+    #[default]
+    NoJob,
+}
+
+impl CliMode {
+    /// Precedencia: diagnóstico (`--caps`, `--self-test`, `--matmat-bench`), `--list-voices`,
+    /// `--delete-voice`, crear voz, servidor y síntesis.
+    pub fn resolve(cfg: &CliArgs) -> Self {
+        if cfg.show_caps {
+            return Self::Caps;
+        }
+        if cfg.self_test {
+            return Self::SelfTest;
+        }
+        if cfg.matmat_bench {
+            return Self::MatmatBench;
+        }
+        if let Some(dir) = &cfg.list_voices_dir {
+            return Self::ListVoices(dir.clone());
+        }
+        if let Some(path) = &cfg.delete_voice_path {
+            return Self::DeleteVoice(path.clone());
+        }
+        if cfg.save_voice.is_some() && cfg.text.is_none() && cfg.serve_port.is_none() {
+            return Self::CreateVoice;
+        }
+        if let Some(port) = cfg.serve_port {
+            return Self::Serve(port);
+        }
+        if cfg.text.is_some() || cfg.compose_spec.is_some() {
+            return Self::Synthesize;
+        }
+        Self::NoJob
+    }
+}
+
 /// Argumentos CLI parseados para el binario `qwen_tts`.
 #[derive(Debug, Clone)]
 pub struct CliArgs {
+    /// Modo resuelto por [`CliMode::resolve`] al terminar el parseo.
+    pub mode: CliMode,
     pub model_dir: Option<String>,
     pub text: Option<String>,
     pub output: String,
@@ -76,6 +134,7 @@ impl Default for CliArgs {
     fn default() -> Self {
         let sampling = SamplingParams::default();
         Self {
+            mode: CliMode::default(),
             model_dir: None,
             text: None,
             output: "output.wav".to_string(),
@@ -445,6 +504,7 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
         i += 1;
     }
 
+    out.mode = CliMode::resolve(&out);
     Ok(ParseOutcome::Run(Box::new(out)))
 }
 
@@ -520,6 +580,45 @@ mod tests {
             let args: Vec<String> = bad.into_iter().map(str::to_string).collect();
             assert!(parse_cli(&args).is_err(), "expected error for {args:?}");
         }
+    }
+
+    fn mode_of(args: &[&str]) -> CliMode {
+        let v: Vec<String> = std::iter::once("qwen_tts")
+            .chain(args.iter().copied())
+            .map(str::to_string)
+            .collect();
+        let ParseOutcome::Run(cfg) = parse_cli(&v).unwrap() else {
+            panic!("expected Run");
+        };
+        cfg.mode
+    }
+
+    #[test]
+    fn test_cli_mode_precedence() {
+        assert_eq!(mode_of(&[]), CliMode::NoJob);
+        assert_eq!(mode_of(&["-t", "hola"]), CliMode::Synthesize);
+        assert_eq!(mode_of(&["--compose", "hola"]), CliMode::Synthesize);
+        assert_eq!(mode_of(&["--serve", "8080", "-t", "x"]), CliMode::Serve(8080));
+        assert_eq!(mode_of(&["--save-voice", "v.qvoice"]), CliMode::CreateVoice);
+        assert_eq!(
+            mode_of(&["--save-voice", "v.qvoice", "-t", "x"]),
+            CliMode::Synthesize
+        );
+        assert_eq!(
+            mode_of(&["--save-voice", "v.qvoice", "--serve", "8080"]),
+            CliMode::Serve(8080)
+        );
+        assert_eq!(
+            mode_of(&["--delete-voice", "a.qvoice", "-t", "x"]),
+            CliMode::DeleteVoice("a.qvoice".to_string())
+        );
+        assert_eq!(
+            mode_of(&["--list-voices", "d", "--delete-voice", "a.qvoice"]),
+            CliMode::ListVoices("d".to_string())
+        );
+        assert_eq!(mode_of(&["--matmat-bench", "--list-voices", "d"]), CliMode::MatmatBench);
+        assert_eq!(mode_of(&["--self-test", "--matmat-bench"]), CliMode::SelfTest);
+        assert_eq!(mode_of(&["--caps", "--self-test", "-t", "x"]), CliMode::Caps);
     }
 
     #[test]

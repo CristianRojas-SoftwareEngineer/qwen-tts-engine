@@ -14,9 +14,7 @@ pub mod qvoice;
 pub mod sampling;
 pub mod tokenizer;
 
-pub use config::{
-    effective_language, language_name, lookup_language, ModelConfig06B, DEFAULT_LANGUAGE_ID,
-};
+pub use config::ModelConfig06B;
 pub use error::CoreError;
 pub use markup::{
     is_para_event_tag, plan_script, resolve_sampling, MarkupMode, MarkupPlanner, PlannedScript,
@@ -24,5 +22,5 @@ pub use markup::{
 };
 pub use mmap_store::{Bf16Ref, F32Ref, MmapStore};
 pub use qvoice::QVoiceFile;
-pub use sampling::{time_based_seed, LcgRng, Sampler, SamplingParams, SeedChoice};
+pub use sampling::{LcgRng, Sampler, SamplingParams, SeedChoice};
 pub use tokenizer::BpeTokenizer;

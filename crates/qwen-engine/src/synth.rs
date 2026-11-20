@@ -3,7 +3,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Única entrada pública de síntesis: [`synthesize`].
+//! Única entrada pública de síntesis: [`Synthesizer::synthesize`].
 //!
 //! Un guion (`Script`) se entrega completo (`Delivery::Buffer`) o progresivamente a un destino
 //! (`Delivery::Stream`).
@@ -36,69 +36,79 @@ pub struct SynthesisOutput {
     pub timing: SynthesisTiming,
 }
 
-/// Sintetiza `script` con `voice` y lo entrega según `delivery`.
+/// Contexto fijo de una sesión de síntesis: el runtime, el modelo y la voz.
 ///
-/// - `Script::Plain` con `Buffer`: ganancia, `time_stretch` y, al final, `tail_trim` y
-///   `onset_fade`.
-/// - `Script::Plain` con `Stream`: fragmentos con la ganancia aplicada justo antes del destino.
-/// - `Script::Spans`: una sola composición para las dos entregas (ganancia `x·(v·o)` por tramo,
-///   pausas y fundido cruzado de 45 ms); con `Buffer` además el acabado final.
-///
-/// `rate` distinto de 1 con `Stream` es un error.
-#[allow(clippy::too_many_arguments)]
-pub fn synthesize(
-    runtime: &ComputeRuntime,
-    model: &Model06B,
-    voice: &Voice,
-    scratch: &mut SessionScratch,
-    req: &SynthesisRequest,
-    abort: &AbortHandle,
-    script: &Script,
-    delivery: Delivery<'_>,
-) -> Result<SynthesisOutput, EngineError> {
-    if matches!(delivery, Delivery::Stream(_)) && (req.rate - 1.0).abs() > 1e-4 {
-        return Err(EngineError::InvalidArg(
-            "rate != 1.0 cannot be combined with streaming delivery".to_string(),
-        ));
-    }
-    let job = Run {
-        runtime,
-        model,
-        voice,
-        req,
-        abort,
-    };
-    match (script, delivery) {
-        (Script::Plain(text), Delivery::Buffer) => {
-            let (samples, timing) = plain_buffer(&job, scratch, text)?;
-            Ok(SynthesisOutput {
-                samples: Some(samples),
-                timing,
-            })
+/// Es la única entrada pública de síntesis, mediante [`Synthesizer::synthesize`].
+#[derive(Clone, Copy)]
+pub struct Synthesizer<'a> {
+    pub runtime: &'a ComputeRuntime,
+    pub model: &'a Model06B,
+    pub voice: &'a Voice,
+}
+
+impl Synthesizer<'_> {
+    /// Sintetiza `script` con la voz del contexto y lo entrega según `delivery`.
+    ///
+    /// - `Script::Plain` con `Buffer`: ganancia, `time_stretch` y, al final, `tail_trim` y
+    ///   `onset_fade`.
+    /// - `Script::Plain` con `Stream`: fragmentos con la ganancia aplicada justo antes del
+    ///   destino.
+    /// - `Script::Spans`: una sola composición para las dos entregas (ganancia `x·(v·o)` por
+    ///   tramo, pausas y fundido cruzado de 45 ms); con `Buffer` además el acabado final.
+    ///
+    /// `rate` distinto de 1 con `Stream` es un error.
+    pub fn synthesize(
+        &self,
+        scratch: &mut SessionScratch,
+        req: &SynthesisRequest,
+        abort: &AbortHandle,
+        script: &Script,
+        delivery: Delivery<'_>,
+    ) -> Result<SynthesisOutput, EngineError> {
+        if matches!(delivery, Delivery::Stream(_)) && (req.rate - 1.0).abs() > 1e-4 {
+            return Err(EngineError::InvalidArg(
+                "rate != 1.0 cannot be combined with streaming delivery".to_string(),
+            ));
         }
-        (Script::Plain(text), Delivery::Stream(sink)) => {
-            let timing = generate_to_sink(&job, scratch, text, sink)?;
-            Ok(SynthesisOutput {
-                samples: None,
-                timing,
-            })
-        }
-        (Script::Spans(spans), Delivery::Buffer) => {
-            let mut sink = MemorySink::new(0);
-            compose_spans(&job, scratch, spans, &mut sink)?;
-            let mut samples = sink.samples;
-            finish_full_delivery(&mut samples, req);
-            Ok(SynthesisOutput {
-                samples: Some(samples),
-                timing: SynthesisTiming::default(),
-            })
-        }
-        (Script::Spans(spans), Delivery::Stream(sink)) => {
-            compose_spans(&job, scratch, spans, sink)?;
-            Ok(SynthesisOutput {
-                samples: None,
-                timing: SynthesisTiming::default(),
-            })
+        let job = Run {
+            runtime: self.runtime,
+            model: self.model,
+            voice: self.voice,
+            req,
+            abort,
+        };
+        match (script, delivery) {
+            (Script::Plain(text), Delivery::Buffer) => {
+                let (samples, timing) = plain_buffer(&job, scratch, text)?;
+                Ok(SynthesisOutput {
+                    samples: Some(samples),
+                    timing,
+                })
+            }
+            (Script::Plain(text), Delivery::Stream(sink)) => {
+                let timing = generate_to_sink(&job, scratch, text, sink)?;
+                Ok(SynthesisOutput {
+                    samples: None,
+                    timing,
+                })
+            }
+            (Script::Spans(spans), Delivery::Buffer) => {
+                let mut sink = MemorySink::new(0);
+                compose_spans(&job, scratch, spans, &mut sink)?;
+                let mut samples = sink.samples;
+                finish_full_delivery(&mut samples, req);
+                Ok(SynthesisOutput {
+                    samples: Some(samples),
+                    timing: SynthesisTiming::default(),
+                })
+            }
+            (Script::Spans(spans), Delivery::Stream(sink)) => {
+                compose_spans(&job, scratch, spans, sink)?;
+                Ok(SynthesisOutput {
+                    samples: None,
+                    timing: SynthesisTiming::default(),
+                })
+            }
         }
     }
 }

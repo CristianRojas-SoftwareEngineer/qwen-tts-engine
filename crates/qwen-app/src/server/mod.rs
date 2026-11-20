@@ -11,7 +11,7 @@ pub mod validation;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
 
-use qwen_engine::{Model06B, SessionScratch, Voice};
+use qwen_engine::{Model06B, SessionScratch, Synthesizer, Voice};
 use qwen_kernels::ComputeRuntime;
 
 /// Contexto fijo del servidor: runtime, modelo y la voz cargada.
@@ -19,6 +19,17 @@ pub struct ServerContext {
     pub runtime: Arc<ComputeRuntime>,
     pub model: Arc<Model06B>,
     pub voice: Arc<Voice>,
+}
+
+impl ServerContext {
+    /// El contexto fijo de síntesis de este servidor.
+    pub fn synthesizer(&self) -> Synthesizer<'_> {
+        Synthesizer {
+            runtime: &self.runtime,
+            model: &self.model,
+            voice: &self.voice,
+        }
+    }
 }
 
 /// Escucha en `host:port`, calienta una vez y atiende las conexiones en línea (sin hilos ni cola).
@@ -40,7 +51,7 @@ Endpoints:");
 ");
 
     let mut scratch = SessionScratch::new();
-    http::warm_up(&ctx.runtime, &ctx.model, &ctx.voice, &mut scratch);
+    http::warm_up(&ctx.synthesizer(), &mut scratch);
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {

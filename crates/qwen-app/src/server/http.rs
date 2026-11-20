@@ -11,11 +11,10 @@ use std::time::{Duration, Instant};
 use qwen_core::config::{effective_language, language_name, SAMPLE_RATE};
 use qwen_core::{PlannedScript, SamplingParams, Script};
 use qwen_engine::{
-    encode_wav_bytes, synthesize, AbortHandle, Delivery, EdgeRampSink, EngineError, LogLevel,
-    MemorySink, Model06B, PcmWrite, SessionScratch, SynthesisOutput, SynthesisRequest,
-    SynthesisTiming, Voice,
+    encode_wav_bytes, AbortHandle, Delivery, EdgeRampSink, EngineError, LogLevel, MemorySink,
+    PcmWrite, SessionScratch, SynthesisOutput, SynthesisRequest, SynthesisTiming, Synthesizer,
+    Voice,
 };
-use qwen_kernels::ComputeRuntime;
 
 use super::validation::ValidatedTtsRequest;
 use super::ServerContext;
@@ -353,14 +352,9 @@ const WARM_UP_FRAMES: usize = 12;
 /// Deja `scratch` (Talker, Code Predictor y decoder) dimensionado y en caliente, para que la
 /// primera petición no pague el arranque en frío (~60–80 ms de TTFA). No cambia el audio de
 /// las peticiones: cada una reinicia su estado y su semilla.
-pub fn warm_up(
-    runtime: &ComputeRuntime,
-    model: &Model06B,
-    voice: &Voice,
-    scratch: &mut SessionScratch,
-) {
+pub fn warm_up(synth: &Synthesizer<'_>, scratch: &mut SessionScratch) {
     let req = SynthesisRequest {
-        language_id: effective_language(None, voice.language_id),
+        language_id: effective_language(None, synth.voice.language_id),
         sampling: SamplingParams {
             seed: 1,
             ..SamplingParams::default()
@@ -372,10 +366,7 @@ pub fn warm_up(
     let abort = AbortHandle::new();
     let mut sink = MemorySink::new(0);
     let t0 = Instant::now();
-    match synthesize(
-        runtime,
-        model,
-        voice,
+    match synth.synthesize(
         scratch,
         &req,
         &abort,
@@ -433,16 +424,8 @@ fn run_synthesis(
             spans.len()
         );
     }
-    synthesize(
-        &ctx.runtime,
-        &ctx.model,
-        &ctx.voice,
-        scratch,
-        req,
-        abort,
-        script,
-        delivery,
-    )
+    ctx.synthesizer()
+        .synthesize(scratch, req, abort, script, delivery)
 }
 
 /// Desglose de tiempos: solo para texto plano (la composición no lo produce).

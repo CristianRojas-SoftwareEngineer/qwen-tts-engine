@@ -13,9 +13,9 @@ use qwen_core::{
 };
 use qwen_engine::{
     clone_voice, encode_wav_bytes, mel_spectrogram, AbortHandle,
-    read_wav_24khz, synthesize, trim_trailing_silence, validate_wav_path_or_header, write_wav,
-    CloneOptions, Delivery, LogLevel, MemorySink, Model06B, ModelLoadOptions, SessionScratch,
-    SynthesisRequest, Voice, VoiceLoadOptions,
+    read_wav_24khz, trim_trailing_silence, validate_wav_path_or_header, write_wav, CloneOptions,
+    Delivery, LogLevel, MemorySink, Model06B, ModelLoadOptions, SessionScratch,
+    SynthesisRequest, Synthesizer, Voice, VoiceLoadOptions,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -240,10 +240,12 @@ fn test_clone_from_default_voice_e2e() {
         ..Default::default()
     };
     let abort = AbortHandle::new();
-    let out_ref = synthesize(
-        &runtime,
-        &model,
-        &default_voice,
+    let out_ref = Synthesizer {
+        runtime: &runtime,
+        model: &model,
+        voice: &default_voice,
+    }
+    .synthesize(
         &mut scratch,
         &req(2050),
         &abort,
@@ -370,10 +372,12 @@ fn test_clone_from_default_voice_e2e() {
     assert_eq!(capped_icl.ref_codes[..], icl_file.ref_codes[..3 * 16]);
 
     for voice in [&icl_voice, &xvec_voice] {
-        let out = synthesize(
-            &runtime,
-            &model,
+        let out = Synthesizer {
+            runtime: &runtime,
+            model: &model,
             voice,
+        }
+        .synthesize(
             &mut scratch,
             &req(2050),
             &abort,
@@ -421,39 +425,34 @@ fn test_clone_from_default_voice_e2e() {
         .iter()
         .filter(|sp| matches!(sp, SpanSpec::Utterance { .. }))
         .count();
-    let composed = synthesize(
-        &runtime,
-        &model,
-        &default_voice,
-        &mut scratch,
-        &compose_req,
-        &abort,
-        &plan.script,
-        Delivery::Buffer,
-    )
-    .unwrap()
-    .samples
-    .unwrap();
+    let default_synth = Synthesizer {
+        runtime: &runtime,
+        model: &model,
+        voice: &default_voice,
+    };
+    let composed = default_synth
+        .synthesize(&mut scratch, &compose_req, &abort, &plan.script, Delivery::Buffer)
+        .unwrap()
+        .samples
+        .unwrap();
     assert!(n_spoken >= 2 && composed.len() > SAMPLE_RATE);
     let _ = encode_wav_bytes(&composed, SAMPLE_RATE as u32);
 
     // La entrega en streaming de los tramos no aplica doble ganancia base
     let mut stream_sink = MemorySink::new(composed.len());
-    let streamed = synthesize(
-        &runtime,
-        &model,
-        &default_voice,
-        &mut scratch,
-        &SynthesisRequest {
-            volume: 2.0,
-            cp_roughness: 0.0,
-            ..compose_req
-        },
-        &abort,
-        &plan.script,
-        Delivery::Stream(&mut stream_sink),
-    )
-    .unwrap();
+    let streamed = default_synth
+        .synthesize(
+            &mut scratch,
+            &SynthesisRequest {
+                volume: 2.0,
+                cp_roughness: 0.0,
+                ..compose_req
+            },
+            &abort,
+            &plan.script,
+            Delivery::Stream(&mut stream_sink),
+        )
+        .unwrap();
     assert!(streamed.samples.is_none());
     assert!(!stream_sink.samples.is_empty());
 }
