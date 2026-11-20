@@ -25,7 +25,7 @@
 | Categoría | Flag(s) | Default | Contrato y validación |
 |---|---|---:|---|
 | **Modelo y texto** | `-d, --model-dir <path>` | *(obligatorio con modelo)* | Directorio del modelo Qwen3-TTS `0.6B` Base. Rechaza `1.7B`, `VoiceDesign` y cualquier checkpoint que no sea Base (`exit 1`, con un mensaje que indica que el motor solo carga el modelo Base). |
-| | `-t, --text <string>` | `None` | Obligatorio salvo `--serve`, `--compose`, `--save-voice` sin texto (con `--ref-audio`), `--batch-test` o `--batch-bench`. |
+| | `-t, --text <string>` | `None` | Obligatorio salvo `--serve`, `--compose`, `--save-voice` sin texto (con `--ref-audio`). |
 | | `-o, --output <path>` | `output.wav` | Ruta de salida WAV (24 kHz, PCM s16le mono). Lleva una rampa de entrada de 5 ms y otra de salida de 40 ms con y sin `--stream`. El PCM es idéntico en los dos modos (`NUMERIC_CONTRACT.md` §4). |
 | **Voz e idioma** | `-l, --language <name>` | idioma de la voz cargada o, si no tiene, `English` (`2050`) | Acepta 10 idiomas *case-insensitive*: `english`, `german`, `spanish`, `chinese`, `japanese`, `french`, `korean`, `russian`, `italian`, `portuguese`. Con `--load-voice`, si se omite usa el idioma guardado en el `.qvoice` si es distinto de `0`. Desconocido → `exit 1`. |
 | **Muestreo** | `-T, --temperature <f>` | `0.325` | Rango `[0.0, 2.0]`; `0.0` = greedy. Si hay sustitución paralingüística inline sin `-T`, usa la `T` de la etiqueta (`1.1`, o `1.0` en `[scoff]`). |
@@ -49,8 +49,8 @@
 | `--stream-chunk <n>` | `10` | Fotogramas máximos por chunk (`clamp(2, 250)`). Rampa: `2` en el primer fragmento y `min(n, 4 + 2 * (k / 8))` para `k = 0, 1, 2, ...` en los siguientes. |
 | `--volume <f>` | `1.0` | Ganancia lineal en `[0.0, 10.0]` aplicada sobre las muestras PCM con *clamp* a `[-1.0, 1.0]`. |
 | `--rate <f>` | `1.0` | Cambio de velocidad WSOLA en `[0.25, 4.0]` preservando pitch (incompatible con `--stream`). |
-| `--onset-fade <ms>` | `0` | Rampa de entrada sobre el ataque real detectado (solo modo buffer no-batch / `--compose`). |
-| `--tail-trim` | off | Recorta cola metálica degenerada detectada al final (solo modo buffer no-batch / `--compose`). |
+| `--onset-fade <ms>` | `0` | Rampa de entrada sobre el ataque real detectado (solo modo buffer / `--compose`). |
+| `--tail-trim` | off | Recorta cola metálica degenerada detectada al final (solo modo buffer / `--compose`). |
 | `--seed-audition <N>` | `0` | Evalúa hasta `N` (`1..64`) semillas consecutivas y elige la mejor (solo modo no-streaming). |
 | `--audition-keep` | off | Conserva cada toma de `--seed-audition` como `<stem>.seed<S>.wav`. |
 
@@ -68,26 +68,19 @@
 | | `--max-ref-duration <s>` | `30.0` | Duración máxima en segundos leída de `--ref-audio` (`0` = audio completo). |
 | **Marcado y estilo** | `--roughness <0..1>` | `0.0` | Mezcla pesos `Q2_0` en `down_proj` del Code Predictor (`[0.0, 1.0]`). |
 | | `--compose <spec>` | `None` | Síntesis multi-span no streaming con pausas `[pause:<s>]`, `[break:<s>]`, `[0.5]` o `\|`, y tags paralingüísticos inline (`[laugh]`, `[sigh]`, `[yawn]`, `[wow]`, `[giggle]`, `[scoff]`). |
-| | `--compose-pause <s>` | `0.12` | Pausa por defecto entre spans hablados en `--compose` / `--batch`. |
+| | `--compose-pause <s>` | `0.12` | Pausa por defecto entre spans hablados en `--compose`. |
 | | `--no-compose` | off | Desactiva la sustitución de `[tags]` y el auto-compose en `--text`. |
 
-### 1.5 Servidor HTTP, lotes y sistema
+### 1.5 Servidor HTTP y sistema
 
 | Flag(s) | Default | Contrato y validación |
 |---|---|---|
 | `--serve <port>` | `None` | Inicia el servidor HTTP en `<port>` (`> 0`). |
 | `--host <ipv4>` | `127.0.0.1` | Dirección `Ipv4Addr` validada antes de cargar el modelo. Inválida → `exit 1`. |
-| `--workers <n>` | `1` | Número de *workers* concurrentes (`WorkerPoolScheduler`) cuando `--batch-size < 2`. |
-| `--batch-size <n>` | `1` | Con `n >= 2` activa `ContinuousBatchScheduler` en servidor HTTP (acotado a `64` ranuras). |
 | `--watch-stdin` | off | Vigila `stdin` en un hilo dedicado; al recibir EOF termina el proceso (`exit 0`). |
 | `-j, --threads <n>` | `0` *(auto)* | Hilos de cómputo (`0` = `min(ncpus, 4)`). |
 | `-S, --silent` | off | Suprime logs en `stderr`; no afecta el audio en `--stdout`. |
 | `-D, --debug` | off | Imprime trazas internas de prefill y generación en `stderr`. |
-| `--batch` | off | Divide `--text` por frases hacia lotes de `generate_batch_longform`. |
-| `--batch-words <n>` | `16` *(min 4)* | Palabras objetivo por chunk en `--batch` (`min_words = max(n / 3, 6)`). |
-| `--batch-dry` | off | Implica `--batch`; muestra la partición de chunks en `stderr` y sale (`0`). |
-| `--batch-test`, `--batch-bench` | off | Autoprueba de equivalencia o microbenchmark entre ruta *batched* y *single-stream*. |
-| `--batch-multi-test <N>` | `None` | Sintetiza `N` copias en lote a `bm_0.wav .. bm_<N-1>.wav`. |
 
 ---
 
@@ -99,7 +92,7 @@
 - **Límite de cuerpo**: máximo `1 MiB` (`1_048_576` bytes) por petición HTTP.
 - **CORS**: todas las respuestas incluyen `Access-Control-Allow-Origin: *`; `OPTIONS` responde `204 No Content`.
 - **Formato de error**: `{"error":"<causa>"}` con `Content-Type: application/json`.
-- **Calentamiento al arrancar** (modo `--workers`, también con 1 worker): cada worker sintetiza y descarta 12 fotogramas de «Hello.» antes de aceptar conexiones (~1 s), para que la primera petición no pague el arranque en frío. El commit en reposo queda en el nivel que antes alcanzaba tras la primera petición; el audio de las peticiones no cambia. Log: `[HTTP] Calentamiento: <ms> ms`.
+- **Calentamiento al arrancar**: el servidor sintetiza y descarta 12 fotogramas de «Hello.» antes de aceptar conexiones (~1 s), para que la primera petición no pague el arranque en frío. El commit en reposo queda en el nivel que antes alcanzaba tras la primera petición; el audio de las peticiones no cambia. Log: `[HTTP] Calentamiento: <ms> ms`.
 
 ### 2.2 Endpoints y esquema JSON
 
@@ -107,9 +100,9 @@
 |---|---|---|---|
 | `GET /v1/health` | — | `200` `{"status":"ok"}` | Comprobación de disponibilidad. |
 | `GET /v1/voices` | — | `200` `{"voices":[{"name":"<nombre>","language":"<nombre o null>","icl":<bool>}]}` | Devuelve la voz cargada. |
-| `POST /v1/tts` | JSON TTS | `200` `audio/wav` (24 kHz s16le mono) | WAV completo con rampas de 5 ms (entrada) y 40 ms (salida); mismo PCM que `/v1/tts/stream` y que la CLI. Usa `DEFAULT_CHUNK_FRAMES = 10`; `max_tokens = 8192` en `WorkerPoolScheduler`/fallback, o `600` (y prompt `<= 512`) en `ContinuousBatchScheduler`. |
+| `POST /v1/tts` | JSON TTS | `200` `audio/wav` (24 kHz s16le mono) | WAV completo con rampas de 5 ms (entrada) y 40 ms (salida); mismo PCM que `/v1/tts/stream` y que la CLI. Usa `DEFAULT_CHUNK_FRAMES = 10`; `max_tokens = 8192`. |
 | `POST /v1/audio/speech` | JSON OpenAI (`input`, `voice`, ...) | `200` `audio/wav` | Alias completo de `POST /v1/tts` (`input` → `text`). |
-| `POST /v1/tts/stream` | JSON TTS | `200` `audio/pcm` (`Transfer-Encoding: chunked`) | Cabeceras: `X-Sample-Rate: 24000`, `X-Sample-Format: s16le`, `X-Channels: 1`. Rechaza `rate != 1.0` (`400`); `max_tokens = 8192` / `600` en *continuous batching*. |
+| `POST /v1/tts/stream` | JSON TTS | `200` `audio/pcm` (`Transfer-Encoding: chunked`) | Cabeceras: `X-Sample-Rate: 24000`, `X-Sample-Format: s16le`, `X-Channels: 1`. Rechaza `rate != 1.0` (`400`); `max_tokens = 8192`. |
 
 **Campos JSON aceptados en `POST`**:
 
@@ -175,7 +168,6 @@ let model = Arc::new(Model06B::load(
 )?);
 ```
 
-- `ComputeRuntime::with_threads_and_spin(threads, spin_budget, sd_threads)` permite controlar explícitamente el presupuesto de *spin-wait* y los hilos de `sd_pool`.
 - `Model06B::load` valida `config.json` para `0.6B`, abre `safetensors` vía `MmapStore` y cuantiza matrices según `ModelLoadOptions` (o `QWEN_TALKER_PREC` / `QWEN_CP_PREC`).
 
 ### 3.2 Preparación de `VoiceBindings` y `SessionScratch`
@@ -266,7 +258,7 @@ Sinks incluidos en `qwen_engine`: `MemorySink`, `WavStreamSink`, `StdoutRawSink`
 | `QWEN_ICL_TRIM_FRAMES` | Pipeline ICL | `2` | Fotogramas recortados al inicio del audio generado en modo ICL (`2 × 1920` muestras). |
 | `QWEN_NO_REF_TRIM` | Audio ref | off | Si está definida, desactiva `trim_trailing_silence` sobre `--ref-audio`. |
 | `QWEN_DUMP_CODES` | Pipeline | `None` | Ruta de archivo donde volcar los 16 codebooks por fotograma (`decode-dump`). |
-| `QWEN_BATCH_B` | `--batch-test` / `--batch-bench` / `--matmat-bench` | `8` | Tamaño de lote `B` en microbenchmarks (`1..=64`; valores fuera de rango usan `8`). |
+| `QWEN_BATCH_B` | `--matmat-bench` | `8` | Tamaño de lote `B` en microbenchmarks (`1..=64`; valores fuera de rango usan `8`). |
 
 ### 4.2 Afinidad SMT en Windows y gestión de OpenBLAS
 
@@ -289,7 +281,7 @@ Los tests y scripts de operación esperan las siguientes líneas exactas en `std
   ```text
   [HTTP] Sent <bytes> bytes WAV (<dur>s audio) in <sec>s (RTF <rtf>)
   [HTTP] Streamed <samples> samples (<dur>s audio) in <sec>s (RTF <rtf>)
-  [HTTP] Desglose: prefill <ms> ms, Talker <ms> ms (<ms/f> ms/f), CP <ms> ms (<ms/f> ms/f), decodificador <ms> ms, drenaje <ms> ms, <N> fotogramas en <M> fragmentos, cola máxima <K> fotogramas  (solo modo --workers / fallback)
+  [HTTP] Desglose: prefill <ms> ms, Talker <ms> ms (<ms/f> ms/f), CP <ms> ms (<ms/f> ms/f), decodificador <ms> ms, drenaje <ms> ms, <N> fotogramas en <M> fragmentos, cola máxima <K> fotogramas
   ```
 - **Cancelación HTTP** (`http.rs` / `scheduler.rs`):
   `[HTTP] TTS cancelado: el cliente se desconectó tras <sec> s`

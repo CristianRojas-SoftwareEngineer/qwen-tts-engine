@@ -55,19 +55,10 @@ pub struct CliArgs {
 
     pub serve_port: Option<u16>,
     pub serve_host: Ipv4Addr,
-    pub workers: usize,
-    pub batch_size: usize,
     pub watch_stdin: bool,
 
     pub silent: bool,
     pub debug: bool,
-
-    pub batch_mode: bool,
-    pub batch_words: usize,
-    pub batch_dry: bool,
-    pub batch_test: bool,
-    pub batch_bench: bool,
-    pub batch_multi_test: Option<usize>,
 
     pub onset_fade_ms: u32,
     pub tail_trim: bool,
@@ -121,17 +112,9 @@ impl Default for CliArgs {
             no_compose: false,
             serve_port: None,
             serve_host: Ipv4Addr::new(127, 0, 0, 1),
-            workers: 1,
-            batch_size: 1,
             watch_stdin: false,
             silent: false,
             debug: false,
-            batch_mode: false,
-            batch_words: 16,
-            batch_dry: false,
-            batch_test: false,
-            batch_bench: false,
-            batch_multi_test: None,
             onset_fade_ms: 0,
             tail_trim: false,
             seed_audition: 0,
@@ -192,15 +175,7 @@ pub fn print_usage(prog: &str) {
     eprintln!("  --no-compose               Pass [tags] literally to the model");
     eprintln!("  --serve <port>             Start HTTP server on port");
     eprintln!("  --host <ipv4>              Bind IPv4 address (default: 127.0.0.1)");
-    eprintln!("  --workers <n>              Concurrent synthesis workers (default: 1)");
-    eprintln!("  --batch-size <n>           Continuous batching width (n>=2)");
     eprintln!("  --watch-stdin              Exit immediately when stdin reaches EOF");
-    eprintln!("  --batch                    Long-form sentence-packed batch synthesis");
-    eprintln!("  --batch-words <n>          Target words per batch chunk (min 4, default: 16)");
-    eprintln!("  --batch-dry                Print batch chunking and exit");
-    eprintln!("  --batch-test               Verify batched Talker step vs single-stream");
-    eprintln!("  --batch-bench              Measure batched throughput vs single-stream");
-    eprintln!("  --batch-multi-test <N>     Synthesize N batch copies to bm_<i>.wav");
     eprintln!("  --onset-fade <ms>          Onset fade-in duration (ms)");
     eprintln!("  --tail-trim                Trim degenerate metallic tail");
     eprintln!("  --seed-audition <N>        Sequential best-of-N seed audition (up to 64)");
@@ -431,44 +406,9 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                 })?;
                 out.serve_host = ip;
             }
-            "--workers" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.workers = s
-                    .parse::<usize>()
-                    .map_err(|_| format!("Error: invalid workers '{s}'"))?
-                    .max(1);
-            }
-            "--batch-size" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.batch_size = s
-                    .parse::<usize>()
-                    .map_err(|_| format!("Error: invalid batch-size '{s}'"))?
-                    .max(1);
-            }
             "--watch-stdin" => out.watch_stdin = true,
             "-S" | "--silent" => out.silent = true,
             "-D" | "--debug" => out.debug = true,
-            "--batch" => out.batch_mode = true,
-            "--batch-words" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                let w = s
-                    .parse::<usize>()
-                    .map_err(|_| format!("Error: invalid batch-words '{s}'"))?;
-                out.batch_words = w.max(4);
-            }
-            "--batch-dry" => {
-                out.batch_mode = true;
-                out.batch_dry = true;
-            }
-            "--batch-test" => out.batch_test = true,
-            "--batch-bench" => out.batch_bench = true,
-            "--batch-multi-test" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                let n = s
-                    .parse::<usize>()
-                    .map_err(|_| format!("Error: invalid batch-multi-test '{s}'"))?;
-                out.batch_multi_test = Some(n.max(1));
-            }
             "--onset-fade" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
                 out.onset_fade_ms = s
@@ -550,6 +490,14 @@ mod tests {
             vec!["qwen_tts", "--emotion-strength", "0.5"],
             vec!["qwen_tts", "--emo-ref", "x.wav"],
             vec!["qwen_tts", "--emo-ref-text", "x"],
+            vec!["qwen_tts", "--batch-size", "2"],
+            vec!["qwen_tts", "--workers", "2"],
+            vec!["qwen_tts", "--batch"],
+            vec!["qwen_tts", "--batch-words", "16"],
+            vec!["qwen_tts", "--batch-dry"],
+            vec!["qwen_tts", "--batch-multi-test", "2"],
+            vec!["qwen_tts", "--batch-test"],
+            vec!["qwen_tts", "--batch-bench"],
         ] {
             let args: Vec<String> = removed.into_iter().map(str::to_string).collect();
             assert!(parse_cli(&args).is_err(), "expected error for {args:?}");
@@ -576,15 +524,12 @@ mod tests {
         let a = vec![
             "qwen_tts".to_string(),
             "--stdout".to_string(),
-            "--batch-words".to_string(),
-            "2".to_string(),
         ];
         let ParseOutcome::Run(cfg) = parse_cli(&a).unwrap() else {
             panic!("expected Run");
         };
         assert!(cfg.stdout_pcm);
         assert!(cfg.stream);
-        assert_eq!(cfg.batch_words, 4);
         assert_eq!(cfg.temperature, DEFAULT_TEMPERATURE);
         assert_eq!(cfg.seed, Some(DEFAULT_SEED));
         assert!(!cfg.seed_set);

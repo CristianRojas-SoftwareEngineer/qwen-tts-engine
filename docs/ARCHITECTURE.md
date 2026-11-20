@@ -23,7 +23,7 @@
 |---|---|---|
 | **`qwen-kernels`** | `aligned`, `caps`, `pool`, `ftz`, `blas`, `quant`, `simd/{scalar,avx2,neon}` *(internos del crate)*, `dispatch`, `selftest`, `bench`. | **Permitido y aislado** (intrínsecos `AVX2+FMA` y NEON, `asm!` para `SDOT`, `std::alloc`, `MXCSR`/`FPCR`, FFI BLAS / `faer`); la API segura `KernelDispatch` valida límites antes de despachar. |
 | **`qwen-core`** | `config`, `error`, `mmap_store`, `tokenizer`, `sampling`, `qvoice`, `markup`. | **Solo `Mmap::map` y cast de slices alineadas** en `mmap_store.rs`; resto 100 % seguro. |
-| **`qwen-engine`** | `model`, `talker`, `code_predictor`, `speech_decoder`, `speech_encoder`, `voice_clone`, `compose`, `batch`, `audio`, `pipeline`, `error`. | **`#![forbid(unsafe_code)]`** |
+| **`qwen-engine`** | `model`, `talker`, `code_predictor`, `speech_decoder`, `speech_encoder`, `voice_clone`, `compose`, `audio`, `pipeline`, `error`. | **`#![forbid(unsafe_code)]`** |
 | **`qwen-app`** | `main`, `cli`, `affinity`, `build.rs` + manifiesto UTF-8, `server/{mod,http,validation,scheduler}`. | **Solo llamada puntual** a Win32 (`SetProcessAffinityMask` / `GetLogicalProcessorInformationEx`). |
 
 ---
@@ -90,9 +90,7 @@ RequestExecution  [Efímero por petición — se destruye al finalizar]
 ## 5. Servidor HTTP y *schedulers* (`qwen-app`)
 
 1. **Validación única**: `ValidatedTtsRequest::parse(body, ...)` valida todas las peticiones antes de encolar (HTTP `400` ante cualquier parámetro fuera de contrato) y `AbortGuard` acopla el ciclo de vida del socket a `AbortHandle::cancel()` vía `Drop`.
-2. **Trait `SynthesisScheduler`** con dos estrategias tras el mismo contrato:
-   - **`ContinuousBatchScheduler` (`--batch-size N`, recomendado en servidor)**: un hilo planificador (`run_continuous_batch`) comparte un único `ComputePool` y `BatchWorkspace` *ragged* (KV por slot bajo demanda: `kv_cap` crece desde `KV_INITIAL_POSITIONS` hasta `kv_max`) para procesar hasta `N` peticiones simultáneas (WAV y streaming), derivando peticiones con markup multi-span o `rate != 1.0` a un hilo *fallback* dedicado.
-   - **`WorkerPoolScheduler` (`--workers N`)**: `N` hilos *worker* con `SessionScratch` y `ComputeRuntime` propios; divide el presupuesto de hilos por *worker* y desactiva el *spin-wait* (`spin_budget = 0`) cuando hay sobresuscripción frente a núcleos físicos.
+2. **Un único trabajador**: `serve` usa el `ComputeRuntime` global, calienta una sesión y atiende cada conexión en línea (`accept` + `handle_connection`), sin hilos ni cola. El presupuesto de *spin-wait* lo fija `ComputeRuntime::for_cores` según los núcleos físicos.
 
 ---
 

@@ -1541,29 +1541,6 @@ impl ComputeRuntime {
         }
     }
 
-    pub fn with_threads_and_spin(
-        threads: usize,
-        spin_budget: usize,
-        sd_threads: Option<usize>,
-    ) -> Self {
-        ftz_on();
-        let caps = CpuCaps::detect();
-        let dispatch = KernelDispatch::for_caps(&caps);
-        let nt = threads.max(1);
-        let sd_nt = sd_threads.unwrap_or(nt).max(1);
-        let pool = Arc::new(ComputePool::with_spin_budget(nt, spin_budget));
-        let sd_pool = Arc::new(ComputePool::with_spin_budget(sd_nt, spin_budget));
-        let blas = select_blas_backend();
-        blas.set_threads(nt);
-        Self {
-            caps,
-            dispatch,
-            pool,
-            sd_pool,
-            blas,
-        }
-    }
-
     pub fn caps_report(&self) -> String {
         self.caps
             .format_report(

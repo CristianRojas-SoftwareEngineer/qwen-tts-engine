@@ -29,8 +29,8 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 - **Síntesis local en CPU**: ejecuta **Qwen3-TTS `0.6B`** con cuantización recomendada `--quant-mixed` (`Q4_0` + `INT8`), despacho en runtime de kernels `AVX2 + FMA` en x86-64 y NEON en ARM64 (con `SDOT` si la CPU tiene `dotprod`; ver [requisitos mínimos](#requisitos-mínimos-recomendados-síntesis-en-tiempo-real)) y *streaming* progresivo.
 - **Una sola forma de voz: la clonada**: el motor trae incorporada la voz `default` y cualquier otra la creas clonándola desde un audio de referencia (x-vector `ECAPA-TDNN` y, con `--ref-text`, contexto ICL con códigos RVQ). Las voces se guardan como perfiles `.qvoice` v4 de unos pocos KB. Además: `--roughness` (`Q2_0`) y marcado inline (`[laugh]`, `[sigh]`, pausas).
 - **Tres interfaces de integración**:
-  - **CLI (`qwen_tts`)**: síntesis directa a WAV, *streaming* a WAV o `stdout` PCM crudo, lotes `--batch` y creación de voces.
-  - **Servidor HTTP (`--serve`)**: rutas `/v1/audio/speech` (compatible con OpenAI), `/v1/tts` y `/v1/tts/stream`, con *continuous batching* (`--batch-size N`).
+  - **CLI (`qwen_tts`)**: síntesis directa a WAV, *streaming* a WAV o `stdout` PCM crudo y creación de voces.
+  - **Servidor HTTP (`--serve`)**: rutas `/v1/audio/speech` (compatible con OpenAI), `/v1/tts` y `/v1/tts/stream`, una síntesis a la vez.
   - **Librería Rust (`qwen-engine`)**: API segura (`#![forbid(unsafe_code)]`) para incrustar el motor compartiendo `Arc<Model06B>` entre hilos.
 
 > **Modelo soportado (`Qwen3-TTS 0.6B Base`)**: este motor ejecuta exclusivamente el checkpoint **Qwen3-TTS `0.6B` Base**; cualquier otro se rechaza al cargar. Al cargar un modelo, `config.json` valida automáticamente esta geometría (`HIDDEN_SIZE=1024`, `28` capas Talker, `5` capas Code Predictor).
@@ -127,10 +127,10 @@ Con solo el audio, el perfil guarda el timbre (x-vector); con `--ref-text` (la t
 
 ### 3. Servidor HTTP compatible con OpenAI (`--serve`)
 
-Inicia el servidor en `127.0.0.1:8080` con *continuous batching* (`--batch-size 4`) y 4 hilos:
+Inicia el servidor en `127.0.0.1:8080` con 4 hilos:
 
 ```bash
-./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 --quant-mixed --serve 8080 --batch-size 4
+./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 --quant-mixed --serve 8080
 ```
 
 El servidor sin `--load-voice` usa la voz `default`; con `--load-voice mi_voz.qvoice` usa esa voz. El campo `voice` de las peticiones es opcional y, si viene, debe coincidir con el nombre de la voz cargada (si no, responde `400`); `GET /v1/voices` devuelve la voz cargada.

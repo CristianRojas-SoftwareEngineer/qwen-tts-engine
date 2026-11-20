@@ -17,10 +17,9 @@ use std::thread;
 use qwen_core::config::{language_name, lookup_language, FRAME_RATE, SAMPLE_RATE};
 use qwen_core::{MarkupPlanner, QVoiceFile};
 use qwen_engine::{
-    batch_bench, batch_self_test, build_voice_from_ref_audio, generate_batch_longform,
-    generate_batch_multi, load_voice_from_file, onset_fade, prepare_markup_06b,
-    render_spans_buffer, split_text_for_batch, synthesize_to_samples, synthesize_to_sink,
-    tail_glitch_score, tail_trim, time_stretch, validate_wav_path_or_header, write_wav, BatchReq,
+    build_voice_from_ref_audio, load_voice_from_file, onset_fade, prepare_markup_06b,
+    render_spans_buffer, synthesize_to_samples, synthesize_to_sink,
+    tail_glitch_score, tail_trim, validate_wav_path_or_header, write_wav,
     Model06B, ModelLoadOptions, RequestConfig, RequestExecution, SaveVoiceOptions,
     SessionScratch, StdoutRawSink, VoiceBindings, VoiceLoadOptions, WavStreamSink,
 };
@@ -380,8 +379,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         && cfg.compose_spec.is_none()
         && cfg.serve_port.is_none()
         && !create_voice_only
-        && !cfg.batch_test
-        && !cfg.batch_bench
     {
         return Err("Error: --text, --compose or --serve is required".to_string());
     }
@@ -443,16 +440,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
     let model = Arc::new(model);
     let voice = Arc::new(voice);
 
-    // Comandos de diagnóstico por lotes
-    if cfg.batch_test {
-        let ok = batch_self_test(&runtime, &model).map_err(|e| e.to_string())?;
-        return Ok(if ok { 0 } else { 1 });
-    }
-    if cfg.batch_bench {
-        batch_bench(&runtime, &model).map_err(|e| e.to_string())?;
-        return Ok(0);
-    }
-
     let language_id = cli_language_id.or(voice_lang).or(Some(2050));
 
     let max_tokens = if let Some(dur) = cfg.max_duration {
@@ -465,42 +452,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         cfg.max_tokens
     };
 
-    if let Some(n_multi) = cfg.batch_multi_test {
-        let text = cfg
-            .text
-            .as_deref()
-            .ok_or_else(|| "Error: --text is required for --batch-multi-test".to_string())?;
-        let base_seed = cfg.seed.unwrap_or_else(time_based_seed);
-        let reqs: Vec<BatchReq> = (0..n_multi)
-            .map(|b| BatchReq {
-                text: text.to_string(),
-                language_id,
-                temperature: cfg.temperature,
-                top_k: cfg.top_k,
-                top_p: cfg.top_p,
-                rep_penalty: cfg.rep_penalty,
-                greedy_warmup: cfg.greedy_warmup,
-                seed: base_seed.wrapping_add(b as u32),
-                want_stream: false,
-                chunk_frames: cfg.stream_chunk,
-                volume: cfg.volume,
-            })
-            .collect();
-        let outs =
-            generate_batch_multi(&runtime, &model, &voice, &reqs).map_err(|e| e.to_string())?;
-        for (b, aud) in outs.iter().enumerate() {
-            let fn_out = format!("bm_{b}.wav");
-            if !aud.is_empty() {
-                write_wav(Path::new(&fn_out), aud, SAMPLE_RATE as u32)
-                    .map_err(|e| e.to_string())?;
-                eprintln!("  slot {b} (seed {}): {} samples -> {fn_out}", reqs[b].seed, aud.len());
-            } else {
-                eprintln!("  slot {b} (seed {}): EMPTY", reqs[b].seed);
-            }
-        }
-        return Ok(0);
-    }
-
     // Modo servidor HTTP
     if let Some(port) = cfg.serve_port {
         serve(ServeConfig {
@@ -510,113 +461,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
             voice_language_id: voice_lang,
             host: cfg.serve_host,
             port,
-            workers: cfg.workers,
-            batch_size: cfg.batch_size,
-            physical_cores,
         })?;
-        return Ok(0);
-    }
-
-    // Modo long-form por lotes (--batch / --batch-dry)
-    if cfg.batch_mode {
-        let text = cfg
-            .text
-            .as_deref()
-            .ok_or_else(|| "Error: --text is required for --batch".to_string())?;
-        let min_words = (cfg.batch_words / 3).max(6);
-        let chunks = split_text_for_batch(text, cfg.batch_words, min_words);
-        if chunks.is_empty() {
-            return Err("--batch: text split produced 0 chunks".to_string());
-        }
-        if !cfg.silent || cfg.batch_dry {
-            eprintln!(
-                "--batch: {} chunk(s) (target ~{} words, min {}):",
-                chunks.len(),
-                cfg.batch_words,
-                min_words
-            );
-            for (idx, ch) in chunks.iter().enumerate() {
-                eprintln!("  [chunk {idx}, {} words] {ch}", ch.split_whitespace().count());
-            }
-        }
-        if cfg.batch_dry {
-            return Ok(0);
-        }
-
-        let seed = cfg.seed.unwrap_or_else(time_based_seed);
-        if !cfg.silent {
-            eprintln!(
-                "seed: {seed}{}",
-                if cfg.seed.is_some() { "" } else { " (auto/time-based)" }
-            );
-        }
-        let req_cfg = RequestConfig {
-            language_id,
-            temperature: cfg.temperature,
-            top_k: cfg.top_k,
-            top_p: cfg.top_p,
-            rep_penalty: cfg.rep_penalty,
-            max_tokens,
-            greedy_warmup: cfg.greedy_warmup,
-            seed,
-            stream: false,
-            stream_chunk_frames: cfg.stream_chunk,
-            volume: cfg.volume,
-            rate: cfg.rate,
-            silent: cfg.silent,
-            debug: cfg.debug,
-            cp_roughness: cfg.roughness,
-        };
-
-        let audio = if chunks.len() >= 2 {
-            let mut buf = generate_batch_longform(
-                &runtime,
-                &model,
-                &voice,
-                &chunks,
-                cfg.compose_pause,
-                &req_cfg,
-            )
-            .map_err(|e| e.to_string())?;
-            if (cfg.rate - 1.0).abs() > 1e-4 {
-                buf = time_stretch(&buf, cfg.rate);
-            }
-            buf
-        } else {
-            let mut scratch = SessionScratch::new();
-            let spans: Vec<_> = chunks
-                .iter()
-                .map(|c| qwen_core::SpanSpec::Utterance {
-                    text: c.clone(),
-                    is_filler: false,
-                    rate: 0.0,
-                    volume: 0.0,
-                })
-                .collect();
-            let exec = RequestExecution::new(req_cfg);
-            let (aud, _) = render_spans_buffer(
-                &runtime,
-                &model,
-                &voice,
-                &mut scratch,
-                &exec,
-                &spans,
-                cfg.compose_pause,
-            )
-            .map_err(|e| e.to_string())?;
-            aud
-        };
-
-        write_wav(Path::new(&cfg.output), &audio, SAMPLE_RATE as u32)
-            .map_err(|e| e.to_string())?;
-        if !cfg.silent {
-            eprintln!(
-                "Wrote {} ({} samples, {:.2}s)",
-                cfg.output,
-                audio.len(),
-                audio.len() as f64 / SAMPLE_RATE as f64
-            );
-        }
         return Ok(0);
     }
 
