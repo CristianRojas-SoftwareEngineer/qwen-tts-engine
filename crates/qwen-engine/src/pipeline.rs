@@ -23,10 +23,11 @@ use crate::code_predictor::cp_predict;
 use crate::error::EngineError;
 use crate::model::{
     embed_one_text_token_compute, lookup_codec_embed, Model06B, RequestConfig, RequestExecution,
-    SessionScratch, SynthesisTiming, VoiceBindings, VoiceIdentity, ROPE_MAX_POS,
+    SessionScratch, SynthesisTiming, ROPE_MAX_POS,
 };
 use crate::speech_decoder::speech_decoder_decode_streaming;
 use crate::talker::{talker_prefill, talker_step};
+use crate::voice::Voice;
 
 const DEFAULT_CHUNK_FRAMES: usize = 10;
 const STREAM_RAMP_START_FRAMES: usize = 4;
@@ -234,10 +235,16 @@ fn embed_text_cached(
     });
 }
 
+/// Elemento de la sección 2 del prompt: un token de códec o el x-vector del locutor.
+enum Sec2Token {
+    Codec(i32),
+    Speaker,
+}
+
 pub fn build_prefill_embeds(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    voice: &VoiceBindings,
+    voice: &Voice,
     scratch: &mut SessionScratch,
     req: &RequestConfig,
     text: &str,
@@ -249,67 +256,41 @@ pub fn build_prefill_embeds(
         ));
     }
 
-    let (icl_text, ref_codes_slice): (Option<&str>, Option<&[i32]>) =
-        if let VoiceIdentity::Icl {
-            ref_text,
-            ref_codes,
-            ..
-        } = &voice.identity
-        {
-            if !ref_text.is_empty() && !ref_codes.is_empty() {
-                (Some(ref_text.as_str()), Some(ref_codes.as_slice()))
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
-        };
+    let (icl_text, ref_codes_slice): (Option<&str>, Option<&[i32]>) = match &voice.icl {
+        Some(icl) => (Some(icl.ref_text.as_str()), Some(icl.ref_codes.as_slice())),
+        None => (None, None),
+    };
 
+    // `ref_codes` ya viene recortado al tope de fotogramas al construir la voz.
     let ref_text_tokens = icl_text.map(|t| model.tokenizer.encode(t)).unwrap_or_default();
-    let mut ref_n_frames = ref_codes_slice
+    let ref_n_frames = ref_codes_slice
         .map(|c| c.len() / NUM_CODEBOOKS)
         .unwrap_or(0);
-    let mut icl_mode = !ref_text_tokens.is_empty() && ref_n_frames > 0;
-    if icl_mode {
-        let mut cap = voice.icl_frames_cap;
-        if let Ok(v) = std::env::var("QWEN_ICL_FRAMES") {
-            if let Ok(n) = v.trim().parse::<usize>() {
-                cap = n;
-            }
-        }
-        if cap > 0 && cap < ref_n_frames {
-            ref_n_frames = cap;
-        }
-        if ref_n_frames == 0 {
-            icl_mode = false;
-        }
-    }
+    let icl_mode = !ref_text_tokens.is_empty() && ref_n_frames > 0;
 
     let role_prefix = [TOKEN_IM_START, TOKEN_ASSISTANT, TOKEN_NEWLINE];
     let text_content_len = text_tokens.len();
 
-    let mut codec_tokens = Vec::with_capacity(8);
+    // Secuencia de códec de la sección 2: prefijo de idioma, locutor (en `spk_pos`) y `CODEC_PAD`.
+    let mut codec_prefix = Vec::with_capacity(4);
     if let Some(lang_id) = req.language_id {
-        codec_tokens.push(CODEC_THINK);
-        codec_tokens.push(CODEC_THINK_BOS);
-        codec_tokens.push(lang_id);
-        codec_tokens.push(CODEC_THINK_EOS);
+        codec_prefix.push(CODEC_THINK);
+        codec_prefix.push(CODEC_THINK_BOS);
+        codec_prefix.push(lang_id);
+        codec_prefix.push(CODEC_THINK_EOS);
     } else {
-        codec_tokens.push(CODEC_NO_THINK);
-        codec_tokens.push(CODEC_THINK_BOS);
-        codec_tokens.push(CODEC_THINK_EOS);
+        codec_prefix.push(CODEC_NO_THINK);
+        codec_prefix.push(CODEC_THINK_BOS);
+        codec_prefix.push(CODEC_THINK_EOS);
     }
-    let spk_emb: &[f32] = match &voice.identity {
-        VoiceIdentity::XVector(emb) => emb.as_slice(),
-        VoiceIdentity::Icl {
-            speaker_embedding, ..
-        } => speaker_embedding.as_slice(),
-    };
-    codec_tokens.push(-1);
-    codec_tokens.push(CODEC_PAD);
-    codec_tokens.push(CODEC_BOS);
-
-    let sec2_len = codec_tokens.len() - 1;
+    let spk_emb: &[f32] = voice.xvector.as_slice();
+    // Posición explícita del locutor, tras el prefijo; después va `CODEC_PAD`.
+    let sec2: Vec<Sec2Token> = codec_prefix
+        .iter()
+        .map(|&t| Sec2Token::Codec(t))
+        .chain([Sec2Token::Speaker, Sec2Token::Codec(CODEC_PAD)])
+        .collect();
+    let sec2_len = sec2.len();
     let (sec3_len, sec4_len) = if icl_mode {
         (ref_text_tokens.len() + text_content_len + 1, ref_n_frames + 1)
     } else {
@@ -351,14 +332,19 @@ pub fn build_prefill_embeds(
     }
 
     // Sección 2: tts_pad*(sec2_len-1) + tts_bos emparejado con codec[0..sec2_len]
-    for (i, &ctok) in codec_tokens[..sec2_len].iter().enumerate() {
+    for (i, tok) in sec2.iter().enumerate() {
         let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
         if i + 1 < sec2_len {
             dst.copy_from_slice(tts_pad_embed);
         } else {
             dst.copy_from_slice(tts_bos_embed);
         }
-        if ctok == -1 {
+        if let Sec2Token::Codec(ctok) = *tok {
+            lookup_codec_embed(d, model, ctok, &mut tmp_embed);
+            for j in 0..HIDDEN_SIZE {
+                dst[j] += tmp_embed[j];
+            }
+        } else {
             let emb_norm = spk_emb.iter().map(|&v| v * v).sum::<f32>().sqrt();
             let mut scale = if model.spk_ref_norm > 0.1 && emb_norm > 0.1 {
                 model.spk_ref_norm / emb_norm
@@ -374,11 +360,6 @@ pub fn build_prefill_embeds(
             }
             for j in 0..HIDDEN_SIZE {
                 dst[j] += spk_emb[j] * scale;
-            }
-        } else {
-            lookup_codec_embed(d, model, ctok, &mut tmp_embed);
-            for j in 0..HIDDEN_SIZE {
-                dst[j] += tmp_embed[j];
             }
         }
         pos += 1;
@@ -459,7 +440,7 @@ pub fn build_prefill_embeds(
 pub fn synthesize_to_sink(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    voice: &VoiceBindings,
+    voice: &Voice,
     scratch: &mut SessionScratch,
     exec: &RequestExecution,
     text: &str,
@@ -893,7 +874,7 @@ fn log_synthesis_summary(t: &SynthesisTiming, chunk_frames: usize) {
 pub fn synthesize_to_samples(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    voice: &VoiceBindings,
+    voice: &Voice,
     scratch: &mut SessionScratch,
     exec: &RequestExecution,
     text: &str,

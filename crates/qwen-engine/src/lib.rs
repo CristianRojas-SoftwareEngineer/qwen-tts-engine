@@ -17,6 +17,7 @@ pub mod pipeline;
 pub mod speech_decoder;
 pub mod speech_encoder;
 pub mod talker;
+pub mod voice;
 pub mod voice_clone;
 
 pub use audio::{
@@ -31,12 +32,13 @@ pub use error::EngineError;
 pub use model::{
     AbortHandle, Bf16Weight, CodePredictorWeights, F32Weight, Model06B, ModelLoadOptions,
     RequestConfig, RequestExecution, SessionScratch, SpeechDecoderWeights, SynthesisTiming,
-    TalkerWeights, VoiceBindings, VoiceIdentity, DEFAULT_VOICE_NAME,
+    TalkerWeights,
 };
 pub use pipeline::{synthesize_to_samples, synthesize_to_sink};
 pub use speech_decoder::{speech_decoder_decode, speech_decoder_decode_streaming};
 pub use speech_encoder::{speech_encoder_encode, SpeechEncoderWeights};
-pub use voice_clone::{
-    build_voice_from_ref_audio, load_voice_from_file, mel_spectrogram,
-    speaker_encoder_forward, SaveVoiceOptions, SpeakerEncoderWeights, VoiceLoadOptions,
+pub use voice::{
+    clone_voice, ensure_qvoice_path, CloneOptions, IclPrompt, Voice, VoiceLoadOptions,
+    DEFAULT_VOICE_NAME,
 };
+pub use voice_clone::{mel_spectrogram, speaker_encoder_forward, SpeakerEncoderWeights};

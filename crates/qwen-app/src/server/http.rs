@@ -14,7 +14,7 @@ use qwen_engine::{
     encode_wav_bytes, prepare_markup_06b, render_spans_buffer,
     render_spans_stream, synthesize_to_samples, synthesize_to_sink, AbortHandle, AudioSink,
     EngineError, MemorySink, Model06B, RequestConfig, RequestExecution, SessionScratch,
-    StreamEdgeRamp, SynthesisTiming, VoiceBindings, VoiceIdentity,
+    StreamEdgeRamp, SynthesisTiming, Voice,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -265,16 +265,13 @@ pub fn handle_health(stream: &mut TcpStream) {
 }
 
 /// `GET /v1/voices`: voz cargada con su idioma y si lleva ICL.
-pub fn handle_voices(
-    stream: &mut TcpStream,
-    voice: &VoiceBindings,
-    voice_language_id: Option<i32>,
-) {
-    let language = voice_language_id
+pub fn handle_voices(stream: &mut TcpStream, voice: &Voice) {
+    let language = voice
+        .language_id
         .and_then(language_name)
         .map(serde_json::Value::from)
         .unwrap_or(serde_json::Value::Null);
-    let icl = matches!(voice.identity, VoiceIdentity::Icl { .. });
+    let icl = voice.icl.is_some();
     let body = serde_json::json!({
         "voices": [{ "name": voice.name, "language": language, "icl": icl }]
     });
@@ -402,15 +399,14 @@ const WARM_UP_FRAMES: usize = 12;
 pub fn warm_up_session(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    voice: &VoiceBindings,
-    voice_language_id: Option<i32>,
+    voice: &Voice,
     scratch: &mut SessionScratch,
 ) {
     let vreq = match ValidatedTtsRequest::parse(
         r#"{"text":"Hello.","seed":1}"#,
         true,
         &voice.name,
-        voice_language_id,
+        voice.language_id,
     ) {
         Ok(v) => v,
         Err(msg) => {
@@ -468,7 +464,7 @@ fn build_http_exec(
 pub fn handle_tts_full(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    voice: &VoiceBindings,
+    voice: &Voice,
     scratch: &mut SessionScratch,
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
@@ -551,7 +547,7 @@ pub fn handle_tts_full(
 pub fn handle_tts_stream(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    voice: &VoiceBindings,
+    voice: &Voice,
     scratch: &mut SessionScratch,
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
@@ -647,8 +643,7 @@ pub fn handle_tts_stream(
 pub fn handle_connection(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    voice: &VoiceBindings,
-    voice_language_id: Option<i32>,
+    voice: &Voice,
     scratch: &mut SessionScratch,
     mut stream: TcpStream,
     peer_ip: &str,
@@ -677,15 +672,15 @@ pub fn handle_connection(
 
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/v1/health") => handle_health(&mut stream),
-        ("GET", "/v1/voices") => handle_voices(&mut stream, voice, voice_language_id),
+        ("GET", "/v1/voices") => handle_voices(&mut stream, voice),
         ("POST", "/v1/tts") | ("POST", "/v1/audio/speech") => {
-            match ValidatedTtsRequest::parse(&req.body, false, voice_name, voice_language_id) {
+            match ValidatedTtsRequest::parse(&req.body, false, voice_name, voice.language_id) {
                 Ok(vreq) => handle_tts_full(runtime, model, voice, scratch, &mut stream, &vreq),
                 Err(msg) => send_error(&mut stream, 400, &msg),
             }
         }
         ("POST", "/v1/tts/stream") => {
-            match ValidatedTtsRequest::parse(&req.body, true, voice_name, voice_language_id) {
+            match ValidatedTtsRequest::parse(&req.body, true, voice_name, voice.language_id) {
                 Ok(vreq) => {
                     handle_tts_stream(runtime, model, voice, scratch, &mut stream, &vreq)
                 }

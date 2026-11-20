@@ -17,11 +17,11 @@ use std::thread;
 use qwen_core::config::{language_name, lookup_language, FRAME_RATE, SAMPLE_RATE};
 use qwen_core::{MarkupPlanner, QVoiceFile};
 use qwen_engine::{
-    build_voice_from_ref_audio, load_voice_from_file, onset_fade, prepare_markup_06b,
+    clone_voice, ensure_qvoice_path, onset_fade, prepare_markup_06b,
     render_spans_buffer, synthesize_to_samples, synthesize_to_sink,
     tail_glitch_score, tail_trim, validate_wav_path_or_header, write_wav,
-    Model06B, ModelLoadOptions, RequestConfig, RequestExecution, SaveVoiceOptions,
-    SessionScratch, StdoutRawSink, VoiceBindings, VoiceLoadOptions, WavStreamSink,
+    CloneOptions, Model06B, ModelLoadOptions, RequestConfig, RequestExecution,
+    SessionScratch, StdoutRawSink, Voice, VoiceLoadOptions, WavStreamSink,
 };
 use qwen_kernels::bench::run_matmat_bench;
 use qwen_kernels::selftest::run_kernel_selftest;
@@ -180,40 +180,47 @@ fn resolve_voice(
     runtime: &ComputeRuntime,
     model: &Model06B,
     cli_language_id: Option<i32>,
-) -> Result<(VoiceBindings, Option<i32>), String> {
-    // Idioma propio de la voz (`None` si no tiene).
-    let mut voice_lang: Option<i32> = None;
+) -> Result<Voice, String> {
     let voice = if let Some(ref ref_audio_path) = cfg.ref_audio {
-        let save_opts = SaveVoiceOptions {
-            ref_text: cfg.ref_text.as_deref(),
-            xvector_only: cfg.xvector_only,
-            icl_frames_cap: cfg.icl_frames,
+        if let Some(ref save_path) = cfg.save_voice {
+            ensure_qvoice_path(Path::new(save_path)).map_err(|e| e.to_string())?;
+        }
+        let clone_opts = CloneOptions {
+            ref_text: if cfg.xvector_only {
+                None
+            } else {
+                cfg.ref_text.clone()
+            },
             max_ref_seconds: cfg.max_ref_duration,
-            language: cfg.language.as_deref(),
-            voice_name: cfg.voice_name.as_deref(),
+            name: cfg.voice_name.clone(),
+            language_id: cli_language_id,
+            icl_frames_cap: cfg.icl_frames,
             silent: cfg.silent,
             debug: cfg.debug,
         };
-        voice_lang = cli_language_id;
-        build_voice_from_ref_audio(
-            runtime,
-            model,
-            Path::new(ref_audio_path),
-            cfg.save_voice.as_deref().map(Path::new),
-            &save_opts,
-        )
-        .map_err(|e| e.to_string())?
+        let (qv, voice) = clone_voice(runtime, model, Path::new(ref_audio_path), &clone_opts)
+            .map_err(|e| e.to_string())?;
+        if let Some(ref save_path) = cfg.save_voice {
+            qv.write_to_file(Path::new(save_path))
+                .map_err(|e| e.to_string())?;
+            if !cfg.silent {
+                eprintln!(
+                    "Saved .qvoice v4 to {} (embedding + {} ICL frames)",
+                    save_path,
+                    qv.n_ref_frames()
+                );
+            }
+        }
+        voice
     } else if let Some(ref lv_path) = cfg.load_voice {
         let lv_opts = VoiceLoadOptions {
-            xvector_only: cfg.xvector_only,
+            ref_text_override: cfg.ref_text.clone(),
+            use_icl: !cfg.xvector_only,
             icl_frames_cap: cfg.icl_frames,
             silent: cfg.silent,
         };
-        let (v, voice_lang_id) =
-            load_voice_from_file(Path::new(lv_path), cfg.ref_text.as_deref(), &lv_opts)
-                .map_err(|e| e.to_string())?;
-        voice_lang = voice_lang_id;
-        if let Some(vl_id) = voice_lang_id {
+        let v = Voice::load(Path::new(lv_path), &lv_opts).map_err(|e| e.to_string())?;
+        if let Some(vl_id) = v.language_id {
             let vl_name = language_name(vl_id).unwrap_or("");
             match cli_language_id {
                 None => {
@@ -233,14 +240,14 @@ fn resolve_voice(
         }
         v
     } else {
-        VoiceBindings::default_voice()
+        Voice::builtin_default()
     };
 
     if !cfg.silent {
         eprintln!("Voice: {}", voice.name);
     }
 
-    Ok((voice, voice_lang))
+    Ok(voice)
 }
 
 fn postprocess_and_write_wav(cfg: &CliArgs, audio: &mut Vec<f32>) -> Result<(), String> {
@@ -275,7 +282,7 @@ fn run_seed_audition(
     cfg: &CliArgs,
     runtime: &ComputeRuntime,
     model: &Model06B,
-    voice: &VoiceBindings,
+    voice: &Voice,
     scratch: &mut SessionScratch,
     req_cfg: &RequestConfig,
     active_text: &str,
@@ -427,8 +434,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         return Err("Error: --ref-audio is required to create a voice profile".to_string());
     }
 
-    let (voice, voice_lang) =
-        resolve_voice(&cfg, &runtime, &model, cli_language_id)?;
+    let voice = resolve_voice(&cfg, &runtime, &model, cli_language_id)?;
 
     if create_voice_only {
         if !cfg.silent {
@@ -440,7 +446,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
     let model = Arc::new(model);
     let voice = Arc::new(voice);
 
-    let language_id = cli_language_id.or(voice_lang).or(Some(2050));
+    let language_id = cli_language_id.or(voice.language_id).or(Some(2050));
 
     let max_tokens = if let Some(dur) = cfg.max_duration {
         if dur > 0.0 {
@@ -458,7 +464,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
             runtime: Arc::clone(&runtime),
             model: Arc::clone(&model),
             voice: Arc::clone(&voice),
-            voice_language_id: voice_lang,
             host: cfg.serve_host,
             port,
         })?;

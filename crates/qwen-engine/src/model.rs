@@ -505,47 +505,6 @@ pub struct Model06B {
     pub spk_ref_norm: f32,
 }
 
-/// Identidad de voz: x-vector solo o x-vector con audio de referencia ICL.
-#[derive(Debug, Clone)]
-pub enum VoiceIdentity {
-    XVector(Vec<f32>),
-    Icl {
-        speaker_embedding: Vec<f32>,
-        ref_text: String,
-        ref_codes: Vec<i32>,
-    },
-}
-
-/// x-vector de la voz `default` incorporada (1024 `f32` little-endian).
-const DEFAULT_VOICE_XVEC: &[u8] = include_bytes!("../assets/default_voice.xvec");
-const _: () = assert!(DEFAULT_VOICE_XVEC.len() == 4096);
-
-/// Nombre de la voz incorporada.
-pub const DEFAULT_VOICE_NAME: &str = "default";
-
-/// Vínculos de voz inmutables por locutor (x-vector, con ICL opcional).
-#[derive(Clone)]
-pub struct VoiceBindings {
-    pub identity: VoiceIdentity,
-    pub name: String,
-    pub icl_frames_cap: usize,
-}
-
-impl VoiceBindings {
-    /// Voz `default` incorporada en el binario; es la voz por defecto del motor.
-    pub fn default_voice() -> Self {
-        let xvec: Vec<f32> = DEFAULT_VOICE_XVEC
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
-        Self {
-            identity: VoiceIdentity::XVector(xvec),
-            name: DEFAULT_VOICE_NAME.to_string(),
-            icl_frames_cap: 0,
-        }
-    }
-}
-
 pub struct TalkerKvCache {
     pub k: AlignedBuf<u16>,
     pub v: AlignedBuf<u16>,

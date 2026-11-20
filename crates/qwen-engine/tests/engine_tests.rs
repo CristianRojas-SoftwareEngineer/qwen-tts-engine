@@ -12,7 +12,7 @@ use qwen_engine::model::{DecoderWorkspace, SdStreamState};
 use qwen_engine::{
     encode_wav_bytes, speech_decoder_decode, speech_decoder_decode_streaming,
     synthesize_to_samples, synthesize_to_sink, EngineError, MemorySink, Model06B, ModelLoadOptions,
-    RequestConfig, RequestExecution, SessionScratch, VoiceBindings,
+    RequestConfig, RequestExecution, SessionScratch, Voice,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -133,7 +133,7 @@ fn test_e2e_determinism_and_abort() {
     assert_eq!(model.cp.prec_label(), "INT8+Q4_0-FFN");
 
     let lang = lookup_language("Spanish").unwrap();
-    let voice = VoiceBindings::default_voice();
+    let voice = Voice::builtin_default();
 
     let req = RequestConfig {
         language_id: Some(lang),

@@ -9,11 +9,11 @@ use std::path::PathBuf;
 use qwen_core::config::{DEFAULT_SEED, DEFAULT_TEMPERATURE, ENC_DIM, SAMPLE_RATE};
 use qwen_core::{MarkupPlanner, QVoiceFile};
 use qwen_engine::{
-    build_voice_from_ref_audio, encode_wav_bytes, load_voice_from_file, mel_spectrogram,
+    clone_voice, encode_wav_bytes, mel_spectrogram,
     prepare_markup_06b, read_wav_24khz, render_spans_buffer, render_spans_stream,
     synthesize_to_samples, trim_trailing_silence, validate_wav_path_or_header, write_wav,
-    MemorySink, Model06B, ModelLoadOptions, RequestConfig, RequestExecution, SaveVoiceOptions,
-    SessionScratch, VoiceBindings, VoiceIdentity, VoiceLoadOptions,
+    CloneOptions, MemorySink, Model06B, ModelLoadOptions, RequestConfig, RequestExecution,
+    SessionScratch, Voice, VoiceLoadOptions,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -118,12 +118,11 @@ const DEFAULT_VOICE_BITS: [(usize, u32); 3] =
 
 #[test]
 fn test_default_voice_is_embedded() {
-    let voice = VoiceBindings::default_voice();
+    let voice = Voice::builtin_default();
     assert_eq!(voice.name, "default");
-    assert_eq!(voice.icl_frames_cap, 0);
-    let VoiceIdentity::XVector(emb) = &voice.identity else {
-        panic!("the default voice must be a plain x-vector");
-    };
+    assert!(voice.icl.is_none(), "the default voice must be a plain x-vector");
+    assert_eq!(voice.language_id, None);
+    let emb = &voice.xvector;
     assert_eq!(emb.len(), ENC_DIM);
     assert!(emb.iter().all(|v| v.is_finite()));
     let norm = emb
@@ -148,13 +147,14 @@ fn test_default_voice_is_embedded() {
 fn test_voice_file_extension_and_version_errors() {
     let dir = temp_dir("voice_errors");
     let opts = VoiceLoadOptions {
+        use_icl: true,
         silent: true,
         ..Default::default()
     };
 
     // Una extensión distinta de .qvoice se rechaza antes de leer (ni siquiera existe el archivo)
     let bin = dir.join("voice.bin");
-    let err = load_voice_from_file(&bin, None, &opts)
+    let err = Voice::load(&bin, &opts)
         .err()
         .unwrap()
         .to_string();
@@ -170,7 +170,7 @@ fn test_voice_file_extension_and_version_errors() {
     bytes.extend_from_slice(&3u32.to_le_bytes());
     bytes.extend_from_slice(&1024u32.to_le_bytes());
     fs::write(&v3, bytes).unwrap();
-    let err = load_voice_from_file(&v3, None, &opts)
+    let err = Voice::load(&v3, &opts)
         .err()
         .unwrap()
         .to_string();
@@ -231,7 +231,7 @@ fn test_clone_from_default_voice_e2e() {
         },
     )
     .unwrap();
-    let default_voice = VoiceBindings::default_voice();
+    let default_voice = Voice::builtin_default();
     let mut scratch = SessionScratch::new();
 
     // 1. Referencia: la voz `default` dice un texto conocido (WAV de 24 kHz)
@@ -259,39 +259,38 @@ fn test_clone_from_default_voice_e2e() {
 
     // 2. Clonado con ICL (con ref_text) y solo con x-vector
     let icl_path = dir.join("clone_icl.qvoice");
-    let icl_built = build_voice_from_ref_audio(
+    let (icl_qv, icl_built) = clone_voice(
         &runtime,
         &model,
         &ref_wav,
-        Some(&icl_path),
-        &SaveVoiceOptions {
-            ref_text: Some(ref_text),
+        &CloneOptions {
+            ref_text: Some(ref_text.to_string()),
             max_ref_seconds: 30.0,
-            language: Some("English"),
-            voice_name: Some("clone_icl"),
+            name: Some("clone_icl".to_string()),
+            language_id: Some(2050),
             silent: true,
             ..Default::default()
         },
     )
     .unwrap();
-    assert!(matches!(icl_built.identity, VoiceIdentity::Icl { .. }));
+    icl_qv.write_to_file(&icl_path).unwrap();
+    assert!(icl_built.icl.is_some());
     assert_eq!(icl_built.name, "clone_icl");
 
     let xvec_path = dir.join("xvec.qvoice");
-    let xvec_built = build_voice_from_ref_audio(
+    let (xvec_qv, xvec_built) = clone_voice(
         &runtime,
         &model,
         &ref_wav,
-        Some(&xvec_path),
-        &SaveVoiceOptions {
-            ref_text: Some(ref_text),
-            xvector_only: true,
+        &CloneOptions {
+            ref_text: None,
             silent: true,
             ..Default::default()
         },
     )
     .unwrap();
-    assert!(matches!(xvec_built.identity, VoiceIdentity::XVector(_)));
+    xvec_qv.write_to_file(&xvec_path).unwrap();
+    assert!(xvec_built.icl.is_none());
     // Sin `--voice-name` el nombre en memoria es el del WAV; el archivo guarda el nombre vacío
     assert_eq!(xvec_built.name, "ref");
 
@@ -315,41 +314,62 @@ fn test_clone_from_default_voice_e2e() {
 
     // 4. Carga de cada voz y síntesis de un texto corto
     let load_opts = VoiceLoadOptions {
+        use_icl: true,
         silent: true,
         ..Default::default()
     };
-    let (icl_voice, icl_lang) = load_voice_from_file(&icl_path, None, &load_opts).unwrap();
-    assert!(matches!(icl_voice.identity, VoiceIdentity::Icl { .. }));
+    let icl_voice = Voice::load(&icl_path, &load_opts).unwrap();
+    assert!(icl_voice.icl.is_some());
     assert_eq!(icl_voice.name, "clone_icl");
-    assert_eq!(icl_lang, Some(2050));
-    let (xvec_voice, xvec_lang) = load_voice_from_file(&xvec_path, None, &load_opts).unwrap();
-    assert!(matches!(xvec_voice.identity, VoiceIdentity::XVector(_)));
+    assert_eq!(icl_voice.language_id, Some(2050));
+    let xvec_voice = Voice::load(&xvec_path, &load_opts).unwrap();
+    assert!(xvec_voice.icl.is_none());
     assert_eq!(
         xvec_voice.name, "xvec",
         "an empty stored name falls back to the file name"
     );
-    assert_eq!(xvec_lang, None);
+    assert_eq!(xvec_voice.language_id, None);
 
-    // `xvector_only` al cargar descarta el ICL del archivo
-    let (icl_as_xvec, _) = load_voice_from_file(
+    // `use_icl = false` al cargar descarta el ICL del archivo
+    let icl_as_xvec = Voice::load(
         &icl_path,
-        None,
         &VoiceLoadOptions {
-            xvector_only: true,
+            use_icl: false,
             silent: true,
             ..Default::default()
         },
     )
     .unwrap();
-    assert!(matches!(icl_as_xvec.identity, VoiceIdentity::XVector(_)));
+    assert!(icl_as_xvec.icl.is_none());
 
-    // `ref_text` al cargar sustituye el texto ICL del archivo
-    let (icl_override, _) =
-        load_voice_from_file(&icl_path, Some("Another transcript."), &load_opts).unwrap();
-    match &icl_override.identity {
-        VoiceIdentity::Icl { ref_text, .. } => assert_eq!(ref_text, "Another transcript."),
-        other => panic!("expected ICL, got {other:?}"),
-    }
+    // `ref_text_override` al cargar sustituye el texto ICL del archivo
+    let icl_override = Voice::load(
+        &icl_path,
+        &VoiceLoadOptions {
+            ref_text_override: Some("Another transcript.".to_string()),
+            ..load_opts.clone()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        icl_override.icl.as_ref().map(|i| i.ref_text.as_str()),
+        Some("Another transcript.")
+    );
+
+    // El tope de fotogramas ICL se aplica al construir la voz
+    let n_file_frames = icl_file.n_ref_frames();
+    assert!(n_file_frames > 3);
+    let capped = Voice::load(
+        &icl_path,
+        &VoiceLoadOptions {
+            icl_frames_cap: 3,
+            ..load_opts.clone()
+        },
+    )
+    .unwrap();
+    let capped_icl = capped.icl.as_ref().unwrap();
+    assert_eq!(capped_icl.ref_codes.len(), 3 * 16);
+    assert_eq!(capped_icl.ref_codes[..], icl_file.ref_codes[..3 * 16]);
 
     for voice in [&icl_voice, &xvec_voice] {
         let (samples, t) = synthesize_to_samples(
@@ -365,19 +385,10 @@ fn test_clone_from_default_voice_e2e() {
     }
 
     // 5. Guardar con una extensión que no sea .qvoice es un error
-    let err = build_voice_from_ref_audio(
-        &runtime,
-        &model,
-        &ref_wav,
-        Some(&dir.join("clone.bin")),
-        &SaveVoiceOptions {
-            silent: true,
-            ..Default::default()
-        },
-    )
-    .err()
-    .unwrap()
-    .to_string();
+    let err = qwen_engine::ensure_qvoice_path(&dir.join("clone.bin"))
+        .err()
+        .unwrap()
+        .to_string();
     assert!(err.contains("voice files must be .qvoice"), "got: {err}");
 
     // 6. Marcado multi-span con roughness y streaming de spans, con la voz `default`

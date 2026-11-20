@@ -9,7 +9,8 @@ use qwen_kernels::ComputeRuntime;
 
 use crate::audio::AudioSink;
 use crate::error::EngineError;
-use crate::model::{Model06B, RequestExecution, SessionScratch, VoiceBindings};
+use crate::model::{Model06B, RequestExecution, SessionScratch};
+use crate::voice::Voice;
 use crate::pipeline::synthesize_to_samples;
 
 pub struct PreparedMarkup {
@@ -65,7 +66,7 @@ pub fn prepare_markup_06b(
 fn synth_one_span_06b(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    voice: &VoiceBindings,
+    voice: &Voice,
     scratch: &mut SessionScratch,
     exec: &RequestExecution,
     span_text: &str,
@@ -123,7 +124,7 @@ fn pause_sample_count(seconds: f32) -> usize {
 pub fn render_spans_buffer(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    voice: &VoiceBindings,
+    voice: &Voice,
     scratch: &mut SessionScratch,
     exec: &RequestExecution,
     spans: &[SpanSpec],
@@ -219,7 +220,7 @@ pub fn render_spans_buffer(
 pub fn render_spans_stream(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    voice: &VoiceBindings,
+    voice: &Voice,
     scratch: &mut SessionScratch,
     exec: &RequestExecution,
     spans: &[SpanSpec],

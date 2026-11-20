@@ -6,14 +6,12 @@
 use std::f32::consts::PI;
 use std::path::Path;
 
-use qwen_core::config::{ENC_DIM, MEL_DIM, NUM_CODEBOOKS, SAMPLE_RATE};
-use qwen_core::{lookup_language, F32Ref, MmapStore, QVoiceFile};
+use qwen_core::config::{ENC_DIM, MEL_DIM, SAMPLE_RATE};
+use qwen_core::{F32Ref, MmapStore};
 use qwen_kernels::{ComputeRuntime, Transpose};
 
 use crate::audio::{read_wav_24khz, trim_trailing_silence};
 use crate::error::EngineError;
-use crate::model::{Model06B, VoiceBindings, VoiceIdentity};
-use crate::speech_encoder::speech_encoder_encode;
 
 pub struct SeRes2NetWeights {
     pub tdnn1_conv_w: F32Ref,
@@ -721,7 +719,7 @@ pub fn speaker_encoder_forward(
     out_emb
 }
 
-fn load_and_trim_ref_audio(
+pub(crate) fn load_and_trim_ref_audio(
     ref_audio_path: &Path,
     max_ref_seconds: f32,
     silent: bool,
@@ -751,193 +749,4 @@ fn load_and_trim_ref_audio(
     }
     trim_trailing_silence(&mut audio, SAMPLE_RATE, silent);
     Ok(audio)
-}
-
-/// Opciones de carga de perfiles `.qvoice` mediante [`load_voice_from_file`].
-#[derive(Debug, Clone, Default)]
-pub struct VoiceLoadOptions {
-    /// Usa solo el x-vector aunque el archivo traiga ICL.
-    pub xvector_only: bool,
-    pub icl_frames_cap: usize,
-    pub silent: bool,
-}
-
-/// Carga un perfil `.qvoice` v4. Devuelve los vínculos de voz y el id de idioma de la voz
-/// (`None` si el archivo no tiene idioma).
-pub fn load_voice_from_file(
-    path: &Path,
-    ref_text_override: Option<&str>,
-    opts: &VoiceLoadOptions,
-) -> Result<(VoiceBindings, Option<i32>), EngineError> {
-    let is_qvoice = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("qvoice"));
-    if !is_qvoice {
-        return Err(EngineError::InvalidArg(format!(
-            "voice files must be .qvoice (got {})",
-            path.display()
-        )));
-    }
-
-    let qv = QVoiceFile::read_from_file(path)?;
-
-    let ref_text = ref_text_override
-        .map(str::to_string)
-        .unwrap_or_else(|| qv.ref_text.clone());
-
-    let use_icl = !opts.xvector_only && !qv.ref_codes.is_empty() && !ref_text.is_empty();
-    let identity = if use_icl {
-        VoiceIdentity::Icl {
-            speaker_embedding: qv.speaker_embedding,
-            ref_text,
-            ref_codes: qv.ref_codes,
-        }
-    } else {
-        VoiceIdentity::XVector(qv.speaker_embedding)
-    };
-
-    let name = if qv.voice_name.is_empty() {
-        path.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string()
-    } else {
-        qv.voice_name
-    };
-
-    if !opts.silent {
-        eprintln!(
-            "Voice clone: loaded .qvoice v4 from {}{}",
-            path.display(),
-            match &identity {
-                VoiceIdentity::Icl { ref_codes, .. } =>
-                    format!(" ({} ICL frames)", ref_codes.len() / NUM_CODEBOOKS),
-                _ => String::new(),
-            }
-        );
-    }
-
-    let lang_id = if qv.lang_id == 0 {
-        None
-    } else {
-        Some(qv.lang_id as i32)
-    };
-    Ok((
-        VoiceBindings {
-            identity,
-            name,
-            icl_frames_cap: opts.icl_frames_cap,
-        },
-        lang_id,
-    ))
-}
-
-/// Opciones para construir y guardar un perfil de voz desde `--ref-audio` con [`build_voice_from_ref_audio`].
-#[derive(Debug, Clone, Default)]
-pub struct SaveVoiceOptions<'a> {
-    pub ref_text: Option<&'a str>,
-    pub xvector_only: bool,
-    pub icl_frames_cap: usize,
-    pub max_ref_seconds: f32,
-    pub language: Option<&'a str>,
-    pub voice_name: Option<&'a str>,
-    pub silent: bool,
-    pub debug: bool,
-}
-
-/// Extrae el embedding de hablante (y códigos ICL si aplica) desde `ref_audio_path` y opcionalmente lo guarda en disco
-/// como `.qvoice` v4. El nombre de la voz es `voice_name` o, si falta, el nombre del WAV sin extensión.
-pub fn build_voice_from_ref_audio(
-    runtime: &ComputeRuntime,
-    model: &Model06B,
-    ref_audio_path: &Path,
-    save_path: Option<&Path>,
-    opts: &SaveVoiceOptions<'_>,
-) -> Result<VoiceBindings, EngineError> {
-    if let Some(out_path) = save_path {
-        let is_qvoice = out_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("qvoice"));
-        if !is_qvoice {
-            return Err(EngineError::InvalidArg(format!(
-                "voice files must be .qvoice (got {})",
-                out_path.display()
-            )));
-        }
-    }
-    let audio = load_and_trim_ref_audio(ref_audio_path, opts.max_ref_seconds, opts.silent)?;
-    let (mel, n_frames) = mel_spectrogram(&audio, SAMPLE_RATE)?;
-    if !opts.silent {
-        eprintln!("Mel spectrogram: {n_frames} frames x {MEL_DIM} mels");
-    }
-    let speaker_embedding = speaker_encoder_forward(runtime, &model.speaker_encoder, &mel, n_frames);
-
-    let need_icl = !opts.xvector_only && opts.ref_text.is_some_and(|t| !t.is_empty());
-    let mut ref_codes = Vec::new();
-    let mut n_ref_frames = 0usize;
-
-    if need_icl {
-        let (codes, frames) =
-            speech_encoder_encode(runtime, &model.speech_encoder, &audio, opts.debug, opts.silent)?;
-        ref_codes = codes;
-        n_ref_frames = frames;
-        if !opts.silent {
-            eprintln!("Encoded ref audio: {n_ref_frames} ICL frames");
-        }
-    }
-
-    let ref_text = if ref_codes.is_empty() {
-        String::new()
-    } else {
-        opts.ref_text.unwrap_or("").to_string()
-    };
-
-    if let Some(out_path) = save_path {
-        let lang_id = match opts.language {
-            Some(l) if !l.is_empty() => lookup_language(l).unwrap_or(0) as u32,
-            _ => 0,
-        };
-        let qv = QVoiceFile {
-            speaker_embedding: speaker_embedding.clone(),
-            voice_name: opts.voice_name.unwrap_or("").to_string(),
-            lang_id,
-            ref_text: ref_text.clone(),
-            ref_codes: ref_codes.clone(),
-        };
-        qv.write_to_file(out_path)?;
-        if !opts.silent {
-            eprintln!(
-                "Saved .qvoice v4 to {} (embedding + {} ICL frames)",
-                out_path.display(),
-                n_ref_frames
-            );
-        }
-    }
-
-    let name = match opts.voice_name {
-        Some(n) if !n.is_empty() => n.to_string(),
-        _ => ref_audio_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string(),
-    };
-
-    let identity = if !ref_codes.is_empty() {
-        VoiceIdentity::Icl {
-            speaker_embedding,
-            ref_text,
-            ref_codes,
-        }
-    } else {
-        VoiceIdentity::XVector(speaker_embedding)
-    };
-
-    Ok(VoiceBindings {
-        identity,
-        name,
-        icl_frames_cap: opts.icl_frames_cap,
-    })
 }

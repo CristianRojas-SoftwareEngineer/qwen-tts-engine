@@ -6,7 +6,7 @@
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
 
-use qwen_engine::{Model06B, SessionScratch, VoiceBindings};
+use qwen_engine::{Model06B, SessionScratch, Voice};
 use qwen_kernels::ComputeRuntime;
 
 use super::http::{handle_connection, warm_up_session};
@@ -14,9 +14,7 @@ use super::http::{handle_connection, warm_up_session};
 pub struct ServeConfig {
     pub runtime: Arc<ComputeRuntime>,
     pub model: Arc<Model06B>,
-    pub voice: Arc<VoiceBindings>,
-    /// Idioma propio de la voz cargada (`None` si no tiene); es el idioma por defecto de las peticiones.
-    pub voice_language_id: Option<i32>,
+    pub voice: Arc<Voice>,
     pub host: Ipv4Addr,
     pub port: u16,
 }
@@ -26,7 +24,6 @@ pub fn serve(cfg: ServeConfig) -> Result<(), String> {
         runtime,
         model,
         voice,
-        voice_language_id,
         host,
         port,
     } = cfg;
@@ -47,7 +44,7 @@ Endpoints:");
 ");
 
     let mut scratch = SessionScratch::new();
-    warm_up_session(&runtime, &model, &voice, voice_language_id, &mut scratch);
+    warm_up_session(&runtime, &model, &voice, &mut scratch);
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
@@ -59,7 +56,6 @@ Endpoints:");
                     &runtime,
                     &model,
                     &voice,
-                    voice_language_id,
                     &mut scratch,
                     stream,
                     &peer_ip,
