@@ -90,8 +90,8 @@ pub fn run_with_model(cfg: CliArgs, physical_cores: usize) -> Result<i32, String
         quant_mixed: cfg.quant_mixed,
         silent: cfg.silent,
     };
-    let model =
-        Model06B::load(Path::new(&model_dir_str), &runtime, load_opts).map_err(|e| e.to_string())?;
+    let model = Model06B::load(Path::new(&model_dir_str), &runtime, load_opts)
+        .map_err(|e| e.to_string())?;
 
     if cfg.mode == CliMode::CreateVoice && cfg.ref_audio.is_none() {
         return Err("Error: --ref-audio is required to create a voice profile".to_string());

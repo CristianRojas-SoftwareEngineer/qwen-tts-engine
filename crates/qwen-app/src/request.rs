@@ -159,16 +159,10 @@ mod tests {
     #[test]
     fn http_language_request_then_voice_then_spanish() {
         let v = parse(r#"{"text":"Hola."}"#, false);
-        assert_eq!(
-            from_http(&v, &voice(Some(2050)), false).0.language_id,
-            2050
-        );
+        assert_eq!(from_http(&v, &voice(Some(2050)), false).0.language_id, 2050);
         assert_eq!(from_http(&v, &voice(None), false).0.language_id, 2054);
         let e = parse(r#"{"text":"Hola.","language":"English"}"#, false);
-        assert_eq!(
-            from_http(&e, &voice(Some(2054)), false).0.language_id,
-            2050
-        );
+        assert_eq!(from_http(&e, &voice(Some(2054)), false).0.language_id, 2050);
     }
 
     #[test]

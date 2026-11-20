@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use qwen_core::config::{DEFAULT_SEED, ENC_DIM, NUM_CODEBOOKS, SAMPLE_RATE};
 use qwen_core::{plan_script, MarkupMode, QVoiceFile, SamplingParams, Script};
 use qwen_engine::{
-    clone_voice, encode_wav_bytes, write_wav, AbortHandle, CloneOptions, Delivery, EdgeRampSink, LogLevel,
-    Model06B, ModelLoadOptions, SessionScratch, SynthesisRequest, Synthesizer, Voice,
+    clone_voice, encode_wav_bytes, write_wav, AbortHandle, CloneOptions, Delivery, EdgeRampSink,
+    LogLevel, Model06B, ModelLoadOptions, SessionScratch, SynthesisRequest, Synthesizer, Voice,
     VoiceLoadOptions,
 };
 use qwen_kernels::ComputeRuntime;
@@ -167,7 +167,10 @@ fn test_voice_load_and_icl_cap_on_construction() {
     .unwrap();
     let capped_icl = capped.icl.unwrap();
     assert_eq!(capped_icl.ref_codes.len(), 4 * NUM_CODEBOOKS);
-    assert_eq!(capped_icl.ref_codes[..], icl_qv.ref_codes[..4 * NUM_CODEBOOKS]);
+    assert_eq!(
+        capped_icl.ref_codes[..],
+        icl_qv.ref_codes[..4 * NUM_CODEBOOKS]
+    );
     assert_eq!(QVoiceFile::read_from_file(&icl_path).unwrap(), icl_qv);
 
     // Un tope mayor que el ICL no recorta
@@ -185,7 +188,9 @@ fn test_voice_load_and_icl_cap_on_construction() {
 fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
     let runtime = ComputeRuntime::new(Some(4));
     let Some(model) = load_model(&runtime) else {
-        eprintln!("Skipping test_buffer_and_stream_deliver_same_pcm_and_clone_bytes (model absent)");
+        eprintln!(
+            "Skipping test_buffer_and_stream_deliver_same_pcm_and_clone_bytes (model absent)"
+        );
         return;
     };
     let dir = temp_dir("delivery");
@@ -245,10 +250,16 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
     )
     .unwrap();
     assert_eq!(qv.speaker_embedding.len(), ENC_DIM);
-    assert_eq!(qv.voice_name, "", "sin nombre dado, el archivo guarda el vacío");
+    assert_eq!(
+        qv.voice_name, "",
+        "sin nombre dado, el archivo guarda el vacío"
+    );
     assert_eq!(qv.lang_id, 0, "sin idioma dado, el archivo guarda 0");
     assert_eq!(qv.ref_text, ref_text);
-    assert!(qv.n_ref_frames() > 5, "el archivo conserva todos los fotogramas");
+    assert!(
+        qv.n_ref_frames() > 5,
+        "el archivo conserva todos los fotogramas"
+    );
     assert_eq!(built.name, "ref", "la voz construida usa el nombre del WAV");
     assert_eq!(built.language_id, None);
     assert_eq!(built.xvector, qv.speaker_embedding);
@@ -275,7 +286,10 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         },
     )
     .unwrap();
-    assert_eq!((named.voice_name.as_str(), named.lang_id), ("nombrada", 2050));
+    assert_eq!(
+        (named.voice_name.as_str(), named.lang_id),
+        ("nombrada", 2050)
+    );
     assert!(named.ref_codes.is_empty() && named.ref_text.is_empty());
     assert_eq!(
         (named_voice.name.as_str(), named_voice.language_id),
@@ -285,7 +299,10 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
     assert_eq!(named.speaker_embedding, qv.speaker_embedding);
     let named_path = dir.join("named.qvoice");
     named.write_to_file(&named_path).unwrap();
-    assert_eq!(fs::read(&named_path).unwrap(), expected_qvoice_bytes(&named));
+    assert_eq!(
+        fs::read(&named_path).unwrap(),
+        expected_qvoice_bytes(&named)
+    );
 
     // Buffer frente a Stream: mismos bytes PCM en texto plano, ICL y marcado
     let icl_voice = Voice::load(
@@ -302,7 +319,11 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
     let marked = plan_script("Hola. [pause:0.3] Adiós.", MarkupMode::Auto);
     assert!(matches!(marked.script, Script::Spans(_)));
     let cases = [
-        ("texto plano", &default_voice, Script::Plain("Hola mundo.".to_string())),
+        (
+            "texto plano",
+            &default_voice,
+            Script::Plain("Hola mundo.".to_string()),
+        ),
         ("ICL", &icl_voice, Script::Plain("Hola mundo.".to_string())),
         ("marcado", &default_voice, marked.script),
     ];
@@ -330,7 +351,10 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
                 Delivery::Stream(&mut sink),
             )
             .unwrap();
-        assert!(streamed.samples.is_none(), "{label}: Stream no devuelve muestras");
+        assert!(
+            streamed.samples.is_none(),
+            "{label}: Stream no devuelve muestras"
+        );
         let stream_pcm = sink.into_writer();
 
         assert!(!buffer_pcm.is_empty(), "{label}: audio vacío");

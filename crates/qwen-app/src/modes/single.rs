@@ -142,14 +142,26 @@ pub fn run(cfg: &CliArgs, synth: &Synthesizer<'_>) -> Result<i32, String> {
         if cfg.stdout_pcm {
             let mut sink = EdgeRampSink::new(StdoutWriter, SAMPLE_RATE as u32);
             synth
-                .synthesize(&mut scratch, &req, &abort, &script, Delivery::Stream(&mut sink))
+                .synthesize(
+                    &mut scratch,
+                    &req,
+                    &abort,
+                    &script,
+                    Delivery::Stream(&mut sink),
+                )
                 .map_err(|e| e.to_string())?;
         } else {
             let writer = WavFileWriter::create(Path::new(&cfg.output), SAMPLE_RATE as u32)
                 .map_err(|e| e.to_string())?;
             let mut sink = EdgeRampSink::new(writer, SAMPLE_RATE as u32);
             let out = synth
-                .synthesize(&mut scratch, &req, &abort, &script, Delivery::Stream(&mut sink))
+                .synthesize(
+                    &mut scratch,
+                    &req,
+                    &abort,
+                    &script,
+                    Delivery::Stream(&mut sink),
+                )
                 .map_err(|e| e.to_string())?;
             if !cfg.silent {
                 eprintln!(
@@ -165,7 +177,9 @@ pub fn run(cfg: &CliArgs, synth: &Synthesizer<'_>) -> Result<i32, String> {
 
     // Entrega completa (toma única o --seed-audition N)
     if cfg.audition_keep && cfg.seed_audition <= 1 && !cfg.silent {
-        eprintln!("Warning: --audition-keep has no effect without --seed-audition N (N>1, non-stream)");
+        eprintln!(
+            "Warning: --audition-keep has no effect without --seed-audition N (N>1, non-stream)"
+        );
     }
 
     let audio = if cfg.seed_audition > 1 {

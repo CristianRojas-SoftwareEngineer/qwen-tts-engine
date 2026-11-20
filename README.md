@@ -108,7 +108,7 @@ cargo build -p qwen-app --release
 ./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 --seed 4 -l English --quant-mixed --text "Hello, world!" -o output.wav
 ```
 
-> **Nota**: sin `--load-voice` ni `--ref-audio`, el motor habla con la voz `default` incorporada (la CLI imprime `Voice: default` en `stderr`). `--quant-mixed` es el perfil recomendado para producción en `0.6B` (los valores por defecto de muestreo son `temperature = 0.325` y `seed = 4`); añade `--stream` si necesitas escribir audio progresivamente conforme se decodifica. En Windows GNU, mantén `OPENBLAS_NUM_THREADS` sin definir para que el motor ajuste los hilos entre *prefill* y generación.
+> **Nota**: sin `--load-voice` ni `--ref-audio`, el motor habla con la voz `default` incorporada (la CLI imprime `Voice: default` en `stderr`). Sin `-l`, el idioma es el de la voz cargada o, si no tiene, español. `--quant-mixed` es el perfil recomendado para producción en `0.6B` (los valores por defecto de muestreo son `temperature = 0.325` y `seed = 4`); añade `--stream` si necesitas escribir audio progresivamente conforme se decodifica. En Windows GNU, mantén `OPENBLAS_NUM_THREADS` sin definir para que el motor ajuste los hilos entre *prefill* y generación.
 
 ### 2. Clonación de voz
 
@@ -166,31 +166,37 @@ Ejemplo mínimo de síntesis directa en memoria:
 
 ```rust
 use std::path::Path;
-use std::sync::Arc;
+use qwen_core::Script;
 use qwen_engine::{
-    synthesize_to_samples, write_wav, Model06B, ModelLoadOptions, RequestConfig,
-    RequestExecution, SessionScratch, VoiceBindings,
+    write_wav, AbortHandle, Delivery, Model06B, ModelLoadOptions, SessionScratch,
+    SynthesisRequest, Synthesizer, Voice,
 };
 use qwen_kernels::ComputeRuntime;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = Arc::new(ComputeRuntime::new(Some(4)));
+    let runtime = ComputeRuntime::new(Some(4));
     let opts = ModelLoadOptions { quant_mixed: true, ..Default::default() };
     let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, opts)?;
 
-    let voice = VoiceBindings::default_voice(); // voz incorporada
+    let voice = Voice::builtin_default(); // voz incorporada, idioma español
+    let synth = Synthesizer { runtime: &runtime, model: &model, voice: &voice };
     let mut scratch = SessionScratch::new();
-    let exec = RequestExecution::new(RequestConfig::default());
+    let abort = AbortHandle::new();
+    let req = SynthesisRequest::default(); // sin idioma pedido: el de la voz o español
 
-    let (samples, _timing) = synthesize_to_samples(
-        &runtime, &model, &voice, &mut scratch, &exec, "Hello from Rust!",
+    let out = synth.synthesize(
+        &mut scratch,
+        &req,
+        &abort,
+        &Script::Plain("Hola desde Rust.".to_string()),
+        Delivery::Buffer,
     )?;
-    write_wav(Path::new("out.wav"), &samples, 24_000)?;
+    write_wav(Path::new("out.wav"), &out.samples.unwrap(), 24_000)?;
     Ok(())
 }
 ```
 
-Para *streaming* sobre `AudioSink` (`synthesize_to_sink`), cancelación cooperativa (`AbortHandle`) y carga de voces clonadas, consulta [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md).
+El idioma de la síntesis es el del pedido (`SynthesisRequest::language_id`, que el llamador resuelve con `qwen_core::config::effective_language`); si no hay, el de la voz; y si tampoco, español. Para *streaming* (`Delivery::Stream` sobre un `AudioSink`, por ejemplo `EdgeRampSink`), cancelación cooperativa (`AbortHandle`), guiones con marcado (`Script::Spans`) y carga de voces clonadas, consulta [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md).
 
 ---
 
@@ -227,13 +233,14 @@ La documentación sigue el modelo **Diátaxis** para separar guías prácticas, 
 | [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md) | Referencia | Usuarios avanzados, integradores HTTP y Rust | Flags CLI (`qwen_tts`), endpoints HTTP (`--serve`), API Rust embebida, variables de entorno y logs contractuales. |
 | [`docs/SPEC_06B.md`](docs/SPEC_06B.md) | Referencia | Ingenieros del motor y mantenedores | Geometría fija `0.6B`, mapa de tensores `safetensors`, formato `.qvoice` v4, vocabularios, *prefill* y marcado inline. |
 | [`docs/NUMERIC_CONTRACT.md`](docs/NUMERIC_CONTRACT.md) | Referencia | Ingenieros de kernels y optimización | Cuantización `INT8`/`Q4_0`/`Q2_0`, `FTZ`/`DAZ`, reglas IEEE-754/`FMA`, determinismo de *streaming* y tolerancias. |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Explicación | Desarrolladores y contribuidores | Grafo de *crates* (DAG), política `unsafe`, cuatro tiempos de vida del estado, `ComputeRuntime`, pipeline y *schedulers*. |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Explicación | Desarrolladores y contribuidores | Grafo de *crates* (DAG), política `unsafe`, tiempos de vida del estado, `ComputeRuntime`, camino único de síntesis y servidor. |
 | [`docs/VERIFICATION_PLAN.md`](docs/VERIFICATION_PLAN.md) | Guía operativa | QA, contribuidores y mantenimiento de CI | Suites `cargo test`, verificación numérica de kernels, CI en CircleCI (`.circleci/config.yml`) y protocolo de medición de rendimiento. |
 | [`docs/adr/001-only-06b.md`](docs/adr/001-only-06b.md) | ADR | Mantenedores | Especialización del motor para Qwen3-TTS `0.6B`. |
 | [`docs/adr/002-blas-strategy.md`](docs/adr/002-blas-strategy.md) | ADR | Mantenedores | Estrategia BLAS (`FfiBlas` por defecto y `faer-blas` opcional). |
 | [`docs/adr/003-concurrency-pool.md`](docs/adr/003-concurrency-pool.md) | ADR | Mantenedores | Pool de hilos `ComputePool` y control de sobresuscripción. |
 | [`docs/adr/004-simd-baseline.md`](docs/adr/004-simd-baseline.md) | ADR | Mantenedores | Despacho SIMD en runtime sobre Rust estable (AVX2, NEON y escalar). |
 | [`docs/adr/005-cpu-inference-optimizations.md`](docs/adr/005-cpu-inference-optimizations.md) | ADR | Mantenedores | Optimizaciones de la inferencia en CPU adoptadas y descartadas, con su efecto medido, y rendimiento por plataforma. |
+| [`docs/adr/006-single-synthesis-path.md`](docs/adr/006-single-synthesis-path.md) | ADR | Mantenedores | Un único camino de síntesis (`Synthesizer`, `Script` × `Delivery`), una regla de idioma y retirada del procesamiento por lotes. |
 
 ---
 

@@ -8,9 +8,9 @@
 use std::time::Instant;
 
 use qwen_core::config::{
-    CODEBOOK_SIZE, CODEC_BOS, CODEC_PAD, CODEC_THINK, CODEC_THINK_BOS,
-    CODEC_THINK_EOS, HIDDEN_SIZE, HOP_SAMPLES, NUM_CODEBOOKS, TOKEN_ASSISTANT, TOKEN_IM_START,
-    TOKEN_NEWLINE, TOKEN_TTS_BOS, TOKEN_TTS_EOS, TOKEN_TTS_PAD,
+    CODEBOOK_SIZE, CODEC_BOS, CODEC_PAD, CODEC_THINK, CODEC_THINK_BOS, CODEC_THINK_EOS,
+    HIDDEN_SIZE, HOP_SAMPLES, NUM_CODEBOOKS, TOKEN_ASSISTANT, TOKEN_IM_START, TOKEN_NEWLINE,
+    TOKEN_TTS_BOS, TOKEN_TTS_EOS, TOKEN_TTS_PAD,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -86,8 +86,7 @@ enum Sec2Token {
     Speaker,
 }
 
-/// Construye el prompt de `text` con la voz `voice`.
-///
+/// Construye el prompt de `text` con la voz `voice` y el idioma `language_id`.
 pub(crate) fn build_prompt(
     runtime: &ComputeRuntime,
     model: &Model06B,

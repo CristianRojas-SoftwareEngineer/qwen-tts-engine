@@ -105,7 +105,7 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 ### 4.1 IDs de tokens especiales e idiomas
 
 - **Texto** (`0..151935`): `<|endoftext|>=151643`, `<|im_start|>=151644`, `<|im_end|>=151645`, `assistant=77091`, `\n=198`, `TTS_PAD=151671`, `TTS_BOS=151672`, `TTS_EOS=151673`.
-- **Control códec** (`0..3071`): `CODEC_PAD=2148`, `CODEC_BOS=2149`, `CODEC_EOS=2150`, `CODEC_THINK=2154`, `CODEC_NO_THINK=2155`, `CODEC_THINK_BOS=2156`, `CODEC_THINK_EOS=2157`.
+- **Control códec** (`0..3071`): `CODEC_PAD=2148`, `CODEC_BOS=2149`, `CODEC_EOS=2150`, `CODEC_THINK=2154`, `CODEC_NO_THINK=2155` (del vocabulario del checkpoint; el motor no lo usa porque el prompt siempre lleva idioma), `CODEC_THINK_BOS=2156`, `CODEC_THINK_EOS=2157`.
 
 | Idioma (`lookup_language`) | ID |
 |---|---:|
@@ -120,13 +120,14 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 | `italian` | `2070` |
 | `portuguese` | `2071` |
 
-### 4.2 Estructura del *prefill* (`qwen-engine/src/pipeline.rs`)
+### 4.2 Estructura del *prefill* (`qwen-engine/src/prompt.rs`)
 
 - **Role prefix**: `[151644, 77091, 198]` (`<|im_start|>assistant\n`).
-- **Prefijo códec**: con idioma `[2154, 2156, lang_id, 2157, -1, 2148, 2149]`; sin idioma `[2155, 2156, 2157, -1, 2148, 2149]`.
+- **Idioma**: siempre hay un `lang_id`, el de la petición, el de la voz o, si no hay ninguno, español (`2054`, `DEFAULT_LANGUAGE_ID`); la voz `default` declara español. No existe el prompt sin idioma.
+- **Prefijo códec**: `[2154, 2156, lang_id, 2157, <locutor>, 2148, 2149]`. La posición del locutor es explícita en el código (`Sec2Token::Speaker`, entre `CODEC_THINK_EOS` y `CODEC_PAD`); no hay token centinela.
 
 1. **Sección 1 (3 pos)**: `text_proj(role_prefix)` sin par códec.
-2. **Sección 2 (`codec_len - 1` pos)**: `tts_pad * (codec_len - 2) + tts_bos` + `codec_embed(codec[0..codec_len-1])` *(la posición `-1` inyecta el `speaker_embedding` reescalado a la norma L2 de la fila 3061 del embedding de códec, multiplicable por `QWEN_SPK_SCALE`)*.
+2. **Sección 2 (`codec_len - 1` pos)**: `tts_pad * (codec_len - 2) + tts_bos` + `codec_embed(codec[0..codec_len-1])` *(en la posición del locutor, `dst = tts_pad` y `dst[j] += spk[j]·scale`, con `scale = spk_ref_norm / ‖x‖` —la norma L2 de la fila `SPK_REF_CODEC_ROW = 3061` del embedding de códec, escala de referencia de la huella—, y después `*= QWEN_SPK_SCALE`)*.
 3. **Modo normal (sin ICL)**:
    - **Sección 3 (`N + 1` pos)**: `text_proj(BPE(text)) + tts_eos` + `codec_pad`.
    - **Sección 4 (1 pos)**: `tts_pad + codec_bos`.
@@ -139,6 +140,6 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 - **Recorte de silencio final (`trim_trailing_silence`)**: activo si `n_samples >= 3 * 24000` y no existe `QWEN_NO_REF_TRIM`. Escanea ventanas de `20 ms` desde el final con umbral `max(0.18 * global_rms, 0.004)`, deja `+50 ms` de margen y limita el recorte al `40 %` de la duración conservando al menos `2 s`.
 - **EOS boosting (`pipeline.rs`)**: `expected = text_content_len * 3`. Si `0 < text_content_len <= 11`: `start = expected * 3 / 2`, aplica `+1.0/frame` (tope `+15.0`) cuando `frame > start`. Si `> 11`: `start = expected * 2`, aplica `+0.5/frame` (tope `+10.0`) cuando `frame > start`. Suprime tokens `>= 2048` excepto `CODEC_EOS`, y suprime `CODEC_EOS` para `frame < 2`.
 - **Muestreo (`qwen-core/src/sampling.rs`)**: temperatura por defecto `DEFAULT_TEMPERATURE = 0.325` y semilla por defecto `DEFAULT_SEED = 4` (`qwen-core/src/config.rs`); penalización de repetición sobre `prev_tokens` → si `T < 1e-6`, argmax greedy; si no, `softmax(logits / T)` → *top-k* → *top-p* → renormalización → LCG `seed = seed.wrapping_mul(1103515245).wrapping_add(12345)`, `r = ((seed >> 16) & 0x7FFF) / 32768.0`.
-- **Paralingüística inline y `--compose` (`markup.rs`, `compose.rs`)**:
+- **Paralingüística inline y `--compose` (`markup.rs`, `compose.rs`)**: `plan_script` aplica los dos pasos, también con `--compose` y con `--stream`/`--stdout`.
   - Paso 1 (`para_substitute`): sustituye `[laugh]`/`[laughs]` (`"哈哈哈"`, `seed=2024, T=1.1`), `[sigh]`/`[sighs]` (`"唉"`, `seed=42, T=1.1`), `[yawn]`/`[yawns]` (`"哈啊"`, `seed=42, T=1.1`), `[wow]` (`"哇"`, `seed=2024, T=1.1`), `[giggle]`/`[giggles]` (`"嘿嘿"`, `seed=42, T=1.1`) y `[scoff]` (`"切"`, `seed=42, T=1.0`).
   - Paso 2 (`MarkupPlanner::parse_spans`): si persisten `[pause:...]`, `[break:...]`, `[0.5]`, `|` o `--compose`, divide en tramos con *prefill* frío por tramo. Una etiqueta desconocida (por ejemplo `[sad]` o `[xyz]`) no es marcado y queda como texto.

@@ -76,7 +76,12 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 - **Por qué no bloques de 10 en todos los modos**: retrasaría el primer audio del *streaming* (estimado: ~450 → ~850 ms sin carga). La subida gradual del calendario evita cortes con RTF cercano a 1.
 - **Para recuperar esa eficiencia sin perder la identidad entre modos**: haría falta un decoder cuyo redondeo no dependa del tamaño del fragmento.
 4. **Tiling y workspace del decodificador**: `DecoderWorkspace` reutiliza 8 ranuras crecientes por worker. En modo paralelo, los bloques residuales `up2` y `up3` (`SD_TILE_FROM_BLOCK = 2`) procesan por tramos de **`256 KB`** (`SD_TILE_BYTES = 262144`) durante toda la petición (incluido el drenaje final).
-5. **Rampas de borde**: 5 ms de entrada y 40 ms de salida, cada una acotada a la mitad del audio, aplicadas después de la ganancia (`apply_gain`) y antes de la conversión a PCM16. El WAV completo las aplica en `encode_wav_bytes`. Las salidas en *streaming* (`--stream`, `--stdout`, `/v1/tts/stream`) las aplican con `StreamEdgeRamp`, que retiene los últimos 40 ms hasta el fragmento siguiente o el cierre y no emite nada hasta reunir 80 ms. Ambos caminos usan las mismas operaciones en el mismo orden (prueba `audio::tests`).
+5. **Rampas de borde y composición.** Un mismo guion da el mismo PCM en la entrega completa y en *streaming*.
+   - **Rampas de borde**: 5 ms de entrada y 40 ms de salida, cada una acotada a la mitad del audio, aplicadas después de la ganancia (`apply_gain`) y antes de la conversión a PCM16. El WAV completo las aplica en `encode_wav_bytes`. Las salidas en *streaming* (`--stream`, `--stdout`, `/v1/tts/stream`) las aplican con `EdgeRampSink`, que retiene los últimos 40 ms hasta el fragmento siguiente o el cierre y no emite nada hasta reunir 80 ms. Ambos caminos usan las mismas operaciones en el mismo orden (prueba `audio::tests`).
+   - **Ganancia**: la aplica siempre `synthesize`, elemento a elemento (`(s·g)` con *clamp* a `[-1, 1]`), justo antes de escribir en el destino; `EdgeRampSink` no aplica ganancia. En texto plano es `x·v`. Con `rate != 1`, la ganancia va antes de `time_stretch`.
+   - **Composición multi-tramo** (`Script::Spans`, una sola implementación para las dos entregas): cada tramo hablado se sintetiza como texto plano con ganancia `x·(v·o)` (`v` el volumen de la petición, `o` el del tramo) y, si el tramo trae `rate`, `time_stretch` después de la ganancia. Entre tramos hablados va una pausa (`compose_pause_s`); junto a una muletilla (`[hmm]` y similares) no hay pausa y los tramos se unen con un **fundido cruzado de 45 ms**, para lo que se retienen las últimas 45 ms emitidas. Las pausas explícitas (`[pause:<s>]`) son silencio exacto.
+   - **Acabado** (`tail_trim` y `onset_fade`): solo en la entrega completa, una sola vez sobre la composición entera y después de `time_stretch`; los tramos se sintetizan sin él y el *streaming* nunca lo aplica.
+   - Verificado por `qwen-engine/tests/synthesis_paths_tests.rs`: `Delivery::Buffer` y `Delivery::Stream(EdgeRampSink)` dan los mismos bytes PCM en texto plano, con ICL y con marcado.
 
 ---
 
@@ -96,7 +101,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | **Kernels `bf16`** (`--self-test`) | `matvec_bf16` vs `f32` ref | `max_rel < 1e-2` |
 | | `matmat_bf16(B=8)` vs `B × matvec_bf16` | `L2_rel < 1e-4` |
 | **Speech Decoder aislado** | Streaming vs decodificación completa | **`SNR >= 100 dB`** |
-| **Pipeline E2E** (misma semilla/params) | 2 corridas independientes | **Bit-idéntico** entre corridas y entre los cuatro modos: CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream` dan el mismo PCM (mismo calendario de fragmentos y mismas rampas de borde, invariantes 3 y 5). Comprobado en las 4 combinaciones de idioma y longitud de la tabla de referencia. |
+| **Pipeline E2E** (misma semilla/params) | 2 corridas independientes | **Bit-idéntico** entre corridas y entre los cuatro modos: CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream` dan el mismo PCM (mismo calendario de fragmentos y mismas rampas de borde, invariantes 3 y 5); también con marcado y `--compose`, y con `--stdout`. Comprobado en las 4 combinaciones de idioma y longitud de la tabla de referencia. |
 
 ### Audio de referencia (x86-64)
 
