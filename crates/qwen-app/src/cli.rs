@@ -201,8 +201,8 @@ pub fn print_usage(prog: &str) {
     eprintln!("  -o, --output <path>        Archivo WAV de salida (por defecto: output.wav)");
     eprintln!("  -l, --language <name>      Idioma (por defecto: el de la voz; si no, Spanish)");
     eprintln!("  -T, --temperature <float>  Temperatura de muestreo (por defecto: 0.325)");
-    eprintln!("  -k, --top-k <int>          Muestreo top-k (por defecto: 50)");
-    eprintln!("  -p, --top-p <float>        Muestreo top-p (por defecto: 1.0)");
+    eprintln!("  -k, --top-k <int>          Candidatos más probables entre los que se muestrea (por defecto: 50)");
+    eprintln!("  -p, --top-p <float>        Probabilidad acumulada máxima de esos candidatos (por defecto: 1.0)");
     eprintln!("  -r, --rep-penalty <float>  Penalización por repetición (por defecto: 1.05)");
     eprintln!("  -m, --max-tokens <int>     Máximo de tokens (por defecto: {DEFAULT_MAX_FRAMES})");
     eprintln!("  -j, --threads <int>        Número de hilos (0=automático)");

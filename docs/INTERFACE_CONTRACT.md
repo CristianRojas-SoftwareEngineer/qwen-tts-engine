@@ -29,8 +29,8 @@
 | | `-o, --output <path>` | `output.wav` | Ruta de salida WAV (24 kHz, PCM s16le mono). Lleva una rampa de entrada de 5 ms y otra de salida de 40 ms con y sin `--stream`. El PCM es idéntico en los dos modos (`NUMERIC_CONTRACT.md` §4). |
 | **Voz e idioma** | `-l, --language <name>` | el de la voz cargada o, si no tiene, `Spanish` (`2054`) | Acepta 10 idiomas *sin distinguir mayúsculas*: `english`, `german`, `spanish`, `chinese`, `japanese`, `french`, `korean`, `russian`, `italian`, `portuguese`. Una sola regla en todos los modos: el pedido (`-l`); si no hay, el idioma guardado en la voz (si es distinto de `0`; la voz `default` declara español); si tampoco, español. Desconocido → `exit 1`. |
 | **Muestreo** | `-T, --temperature <f>` | `0.325` | Rango `[0.0, 2.0]`; `0.0` = voraz (siempre el código más probable). Si hay sustitución paralingüística en línea sin `-T`, usa la `T` del tag (`1.1`, o `1.0` en `[scoff]`). |
-| | `-k, --top-k <n>` | `50` | Límite de candidatos *top-k* en `[0, 3072]`. |
-| | `-p, --top-p <f>` | `1.0` | Umbral acumulado del muestreo *nucleus* en `[0.0, 1.0]`. |
+| | `-k, --top-k <n>` | `50` | Número de candidatos más probables entre los que se muestrea, en `[0, 3072]`. |
+| | `-p, --top-p <f>` | `1.0` | Probabilidad acumulada máxima de esos candidatos, en `[0.0, 1.0]`. |
 | | `-r, --rep-penalty <f>` | `1.05` | Penalización de repetición sobre tokens previos en `[0.5, 2.0]`. |
 | | `-m, --max-tokens <n>` | `8192` | Tope de frames generados (`>= 1`). |
 | | `--max-duration <secs>` | `None` | Si es `> 0`, sobrescribe `--max-tokens` con `max(1, floor(secs * 12.5))`. |
@@ -260,9 +260,9 @@ let pcm: Vec<u8> = sink.into_writer();
 - **Afinidad Win32 (`affinity.rs`)**: al arrancar en Windows con 1 grupo de procesadores, `qwen_tts` fija `SetProcessAffinityMask` a **1 hilo lógico por núcleo físico** para evitar contención SMT del planificador.
 - **OpenBLAS + OpenMP**: en Windows con `x86_64-pc-windows-gnu`, OpenBLAS está enlazado estático y se inicializa antes de `main`, reservando 128 MiB de memoria comprometida (*commit*) por hilo. Si no hay `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS` ni `GOTO_NUM_THREADS`, el binario fija `OMP_NUM_THREADS` al `-j` efectivo antes de esa inicialización (`.CRT$XCT`); no hace falta definir nada. `set_threads` aplica los hilos en cada hilo que llama a `sgemm` y nunca pasa de los iniciales (OpenBLAS 0.3.34 se cuelga si se le piden más). Mantén **sin definir** `OPENBLAS_NUM_THREADS` para que el motor pueda ajustar los hilos entre *prefill* (`nt`) y generación (`gen_blas`).
 
-### 4.3 Líneas de log contractuales
+### 4.3 Líneas de log de referencia
 
-Las pruebas y los scripts de operación esperan las siguientes líneas exactas en `stderr`:
+Formato actual de las líneas de diagnóstico que el motor escribe en `stderr`. Son texto para personas y no forman parte del contrato: pueden cambiar, y los scripts y las pruebas del repositorio que las leen se actualizan con ellas.
 
 - **Carga de Code Predictor** (`model.rs`):
   `  Code Predictor: 5 capas cargadas, q_dim=2048 kv_dim=1024 [BF16|INT8|Q4_0|INT8+Q4_0-FFN]`

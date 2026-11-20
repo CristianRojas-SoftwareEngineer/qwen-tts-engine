@@ -386,7 +386,7 @@ fn test_markup_sampling_and_lookups() {
     assert_eq!(s1, s2);
     assert_eq!(rng1.seed, rng2.seed);
 
-    // Muestreo *nucleus* (top_p < 1.0) determinista y sin bloqueo O(N^2)
+    // Muestreo con probabilidad acumulada máxima (top_p < 1.0) determinista y sin bloqueo O(N^2)
     let mut lp1 = vec![0.1f32, 3.0, 2.5, -1.0, 0.2];
     let mut lp2 = lp1.clone();
     let mut rng_p1 = LcgRng::new(123);
