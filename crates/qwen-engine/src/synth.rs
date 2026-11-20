@@ -13,7 +13,7 @@ use qwen_core::Script;
 use qwen_kernels::ComputeRuntime;
 
 use crate::audio::{time_stretch, AudioSink, MemorySink};
-use crate::compose::{render_spans_buffer, render_spans_stream};
+use crate::compose::compose_spans;
 use crate::error::EngineError;
 use crate::model::{AbortHandle, Model06B, SessionScratch, SynthesisTiming};
 use crate::pipeline::{finish_full_delivery, generate_to_sink, Run};
@@ -41,7 +41,8 @@ pub struct SynthesisOutput {
 /// - `Script::Plain` con `Buffer`: ganancia, `time_stretch` y, al final, `tail_trim` y
 ///   `onset_fade`.
 /// - `Script::Plain` con `Stream`: fragmentos con la ganancia aplicada justo antes del destino.
-/// - `Script::Spans`: composición por tramos (buffer o stream).
+/// - `Script::Spans`: una sola composición para las dos entregas (ganancia `x·(v·o)` por tramo,
+///   pausas y fundido cruzado de 45 ms); con `Buffer` además el acabado final.
 ///
 /// `rate` distinto de 1 con `Stream` es un error.
 #[allow(clippy::too_many_arguments)]
@@ -83,15 +84,17 @@ pub fn synthesize(
             })
         }
         (Script::Spans(spans), Delivery::Buffer) => {
-            let (samples, _) =
-                render_spans_buffer(runtime, model, voice, scratch, req, abort, spans)?;
+            let mut sink = MemorySink::new(0);
+            compose_spans(&job, scratch, spans, &mut sink)?;
+            let mut samples = sink.samples;
+            finish_full_delivery(&mut samples, req);
             Ok(SynthesisOutput {
                 samples: Some(samples),
                 timing: SynthesisTiming::default(),
             })
         }
         (Script::Spans(spans), Delivery::Stream(sink)) => {
-            render_spans_stream(runtime, model, voice, scratch, req, abort, spans, sink)?;
+            compose_spans(&job, scratch, spans, sink)?;
             Ok(SynthesisOutput {
                 samples: None,
                 timing: SynthesisTiming::default(),

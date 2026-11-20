@@ -459,26 +459,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
 
     let script = planned.script;
 
-    // Marcado o `--compose`: siempre entrega completa y WAV en `-o` (también con --stream/--stdout).
-    if matches!(script, Script::Spans(_)) {
-        if !cfg.silent {
-            eprintln!("Compose mode: rendering spans...");
-        }
-        let out = synthesize(
-            &runtime,
-            &model,
-            &voice,
-            &mut scratch,
-            &req,
-            &abort,
-            &script,
-            Delivery::Buffer,
-        )
-        .map_err(|e| e.to_string())?;
-        write_output_wav(&cfg, &out.samples.unwrap_or_default())?;
-        return Ok(0);
-    }
-
     // Modo CLI en streaming (--stream / --stdout)
     if cfg.stream {
         if !cfg.silent {
