@@ -110,7 +110,7 @@
 | Campo | Tipo | Default | Notas |
 |---|---|---|---|
 | `text` o `input` | `string` | *(obligatorio)* | No vacío ni solo espacios/escapes `\n`, `\t`, `\r`; `<= 8192` bytes. |
-| `voice` | `string` | *(opcional)* | Si viene, debe coincidir (sin distinguir mayúsculas) con el nombre de la voz cargada; si no, `400` con `voice '<x>' is not loaded (loaded: '<nombre>')`. |
+| `voice` | `string` | *(opcional)* | Si viene, debe coincidir (sin distinguir mayúsculas) con el nombre de la voz cargada; si no, `400` con `la voz '<x>' no está cargada (cargada: '<nombre>')`. |
 | `language` | `string` | idioma de la voz cargada o, si no tiene, `Spanish` | Debe existir en `lookup_language`. Es el idioma efectivo: el pedido, el de la voz o español, la misma regla que la CLI. El log `lang=` de las peticiones muestra el idioma efectivo. |
 | `temperature` | `number` | `0.325` | Rango válido `[0.0, 2.0]`. |
 | `top_k` | `integer` | `50` | Rango válido `[0, 3072]`. |
@@ -266,17 +266,17 @@ Los tests y scripts de operación esperan las siguientes líneas exactas en `std
 
 - **Carga de Code Predictor** (`model.rs`):
   `  Code Predictor: 5 layers loaded, q_dim=2048 kv_dim=1024 [BF16|INT8|Q4_0|INT8+Q4_0-FFN]`
-- **Voz cargada** (`modes/voice_cmd.rs`, salvo con `-S`): `Voice: <nombre>` (`default`, el nombre guardado en el `.qvoice`, el nombre del archivo o el del WAV clonado).
+- **Voz cargada** (`modes/voice_cmd.rs`, salvo con `-S`): `Voz: <nombre>` (`default`, el nombre guardado en el `.qvoice`, el nombre del archivo o el del WAV clonado).
 - **Semilla resuelta** (`request.rs`):
-  `seed: <u32>` *(o `seed: <u32> (auto/time-based)`)*
+  `semilla: <u32>` *(o `semilla: <u32> (automática/temporal)`)*
 - **Generación en pipeline** (`pipeline.rs`):
   `  Generated <N> frames (<S>s audio)`
 - **Servidor HTTP al arrancar** (`http.rs`): `[HTTP] Calentamiento: <ms> ms` (o `[HTTP] Calentamiento fallido (sin efecto en las peticiones): <causa>`).
 - **Servidor HTTP en petición exitosa** (`http.rs`):
   ```text
-  [HTTP] Sent <bytes> bytes WAV (<dur>s audio) in <sec>s (RTF <rtf>)
-  [HTTP] Streamed <samples> samples (<dur>s audio) in <sec>s (RTF <rtf>)
-  [HTTP] Desglose: prefill <ms> ms, Talker <ms> ms (<ms/f> ms/f), CP <ms> ms (<ms/f> ms/f), decodificador <ms> ms, drenaje <ms> ms, <N> fotogramas en <M> fragmentos, cola máxima <K> fotogramas
+  [HTTP] Enviados <bytes> bytes de WAV (<dur>s de audio) en <sec>s (RTF <rtf>)
+  [HTTP] Transmitidas <samples> muestras (<dur>s de audio) en <sec>s (RTF <rtf>)
+  [HTTP] Desglose: prefill <ms> ms, Talker <ms> ms (<ms/f> ms/f), CP <ms> ms (<ms/f> ms/f), decoder <ms> ms, drenaje <ms> ms, <N> frames en <M> chunks, cola máxima <K> frames
   ```
 - **Cancelación HTTP** (`http.rs`):
   `[HTTP] TTS cancelado: el cliente se desconectó tras <sec> s`

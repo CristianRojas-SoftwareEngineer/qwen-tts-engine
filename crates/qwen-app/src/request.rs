@@ -66,18 +66,18 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScrip
                 _ => paralinguistic_seed,
             };
             eprintln!(
-                "Paralinguistics: inline [tag]->onomatopoeia (seed {}, T{:.1}): \"{}\"",
+                "Paralingüística: [tag] en línea -> onomatopeya (semilla {}, T{:.1}): \"{}\"",
                 shown_seed, sampling.temperature, planned.text
             );
         }
         if mode == MarkupMode::Auto && matches!(planned.script, Script::Spans(_)) {
-            eprintln!("Inline markup detected in --text -> compose mode");
+            eprintln!("Marcado en línea detectado en --text -> modo compose");
         }
         eprintln!(
-            "seed: {}{}",
+            "semilla: {}{}",
             sampling.seed,
             if cli.seed == SeedChoice::Clock {
-                " (auto/time-based)"
+                " (automática/temporal)"
             } else {
                 ""
             }

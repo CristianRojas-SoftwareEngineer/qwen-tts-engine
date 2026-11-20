@@ -22,7 +22,7 @@ fn write_output_wav(cfg: &CliArgs, audio: &[f32]) -> Result<(), String> {
     write_wav(Path::new(&cfg.output), audio, SAMPLE_RATE as u32).map_err(|e| e.to_string())?;
     if !cfg.silent {
         eprintln!(
-            "Wrote {} ({} samples, {:.2}s)",
+            "Escrito {} ({} muestras, {:.2}s)",
             cfg.output,
             audio.len(),
             audio.len() as f64 / SAMPLE_RATE as f64
@@ -53,7 +53,7 @@ fn run_seed_audition(
                 let (g, _) = tail_glitch_score(&a, SAMPLE_RATE);
                 if !cfg.silent {
                     eprintln!(
-                        "  audition seed {}: {:.2}s glitch={g:.2}",
+                        "  audición semilla {}: {:.2}s glitch={g:.2}",
                         ccfg.sampling.seed,
                         a.len() as f32 / SAMPLE_RATE as f32
                     );
@@ -72,7 +72,7 @@ fn run_seed_audition(
                             .to_path_buf(),
                     };
                     if write_wav(&keep_name, &a, SAMPLE_RATE as u32).is_ok() && !cfg.silent {
-                        eprintln!("    kept -> {}", keep_name.display());
+                        eprintln!("    conservada -> {}", keep_name.display());
                     }
                 }
                 candidates.push((a, ccfg.sampling.seed, g));
@@ -80,7 +80,7 @@ fn run_seed_audition(
         }
     }
     if candidates.is_empty() {
-        return Err("Generation failed".to_string());
+        return Err("La generación falló".to_string());
     }
     let mut lengths: Vec<usize> = candidates.iter().map(|(a, _, _)| a.len()).collect();
     lengths.sort_unstable();
@@ -110,7 +110,7 @@ fn run_seed_audition(
     let best_len = candidates[best_idx].0.len();
     if !cfg.silent {
         eprintln!(
-            "  audition -> picked seed {best_seed} (glitch={best_g:.2}, {:.2}s of {} takes; {n_rej} rejected as broken)",
+            "  audición -> elegida semilla {best_seed} (glitch={best_g:.2}, {:.2}s de {} tomas; {n_rej} rechazadas por defectuosas)",
             best_len as f32 / SAMPLE_RATE as f32,
             candidates.len()
         );
@@ -133,7 +133,7 @@ pub fn run(cfg: &CliArgs, synth: &Synthesizer<'_>) -> Result<i32, String> {
                 req.chunk_frames,
                 req.chunk_frames as f32 / FRAME_RATE,
                 if cfg.stdout_pcm {
-                    "raw PCM to stdout"
+                    "PCM crudo a stdout"
                 } else {
                     &cfg.output
                 }
@@ -165,7 +165,7 @@ pub fn run(cfg: &CliArgs, synth: &Synthesizer<'_>) -> Result<i32, String> {
                 .map_err(|e| e.to_string())?;
             if !cfg.silent {
                 eprintln!(
-                    "Wrote {} ({} samples, {:.2}s) [streamed]",
+                    "Escrito {} ({} muestras, {:.2}s) [por streaming]",
                     cfg.output,
                     out.timing.samples_produced,
                     out.timing.samples_produced as f64 / SAMPLE_RATE as f64
@@ -178,7 +178,7 @@ pub fn run(cfg: &CliArgs, synth: &Synthesizer<'_>) -> Result<i32, String> {
     // Entrega completa (toma única o --seed-audition N)
     if cfg.audition_keep && cfg.seed_audition <= 1 && !cfg.silent {
         eprintln!(
-            "Warning: --audition-keep has no effect without --seed-audition N (N>1, non-stream)"
+            "Aviso: --audition-keep no tiene efecto sin --seed-audition N (N>1, sin streaming)"
         );
     }
 

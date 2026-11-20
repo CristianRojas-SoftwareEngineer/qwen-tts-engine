@@ -45,17 +45,17 @@ pub fn matmat_bench(cfg: &CliArgs) -> i32 {
 /// `decode-dump <codes.txt> <model_dir> <out.wav>`: decodifica códigos a WAV.
 pub fn decode_dump(codes_path: &str, model_dir: &str, out_wav: &str) -> Result<i32, String> {
     let raw = fs::read_to_string(codes_path)
-        .map_err(|e| format!("Failed to read codes file {codes_path}: {e}"))?;
+        .map_err(|e| format!("No se pudo leer el archivo de códigos {codes_path}: {e}"))?;
     let mut codes = Vec::new();
     for tok in raw.split_whitespace() {
         let v = tok
             .parse::<i32>()
-            .map_err(|_| format!("Invalid integer token '{tok}' in {codes_path}"))?;
+            .map_err(|_| format!("Token entero inválido '{tok}' en {codes_path}"))?;
         codes.push(v);
     }
     if codes.is_empty() || codes.len() % 16 != 0 {
         return Err(format!(
-            "Invalid code count {} in {codes_path} (expected multiple of 16)",
+            "Cantidad de códigos inválida {} en {codes_path} (se esperaba un múltiplo de 16)",
             codes.len()
         ));
     }
@@ -70,7 +70,7 @@ pub fn decode_dump(codes_path: &str, model_dir: &str, out_wav: &str) -> Result<i
         .map_err(|e| e.to_string())?;
     write_wav(Path::new(out_wav), &audio, SAMPLE_RATE as u32).map_err(|e| e.to_string())?;
     eprintln!(
-        "decode-dump: {n_frames} frames -> {} samples -> {out_wav}",
+        "decode-dump: {n_frames} frames -> {} muestras -> {out_wav}",
         audio.len()
     );
     Ok(0)

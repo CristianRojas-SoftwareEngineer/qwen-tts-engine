@@ -36,19 +36,25 @@ impl ServerContext {
 pub fn serve(ctx: ServerContext, host: Ipv4Addr, port: u16) -> Result<(), String> {
     let addr = SocketAddr::from((host, port));
     let listener = TcpListener::bind(addr)
-        .map_err(|e| format!("Failed to bind http://{host}:{port}: {e}"))?;
+        .map_err(|e| format!("No se pudo enlazar http://{host}:{port}: {e}"))?;
 
-    eprint!("Server listening on http://{host}:{port}");
-    eprintln!("
-Endpoints:");
-    eprintln!("  POST /v1/tts          — generate speech (returns WAV)");
-    eprintln!("  POST /v1/tts/stream   — generate speech (chunked PCM stream)");
-    eprintln!("  POST /v1/audio/speech — OpenAI-compatible TTS");
-    eprintln!("  GET  /v1/voices       — list the loaded voice");
-    eprintln!("  GET  /v1/health       — health check
-");
-    eprintln!("Press Ctrl+C to stop.
-");
+    eprint!("Servidor escuchando en http://{host}:{port}");
+    eprintln!(
+        "
+Endpoints:"
+    );
+    eprintln!("  POST /v1/tts          — genera voz (devuelve WAV)");
+    eprintln!("  POST /v1/tts/stream   — genera voz (stream PCM chunked)");
+    eprintln!("  POST /v1/audio/speech — TTS compatible con OpenAI");
+    eprintln!("  GET  /v1/voices       — lista la voz cargada");
+    eprintln!(
+        "  GET  /v1/health       — comprobación de estado
+"
+    );
+    eprintln!(
+        "Pulsa Ctrl+C para detener.
+"
+    );
 
     let mut scratch = SessionScratch::new();
     http::warm_up(&ctx.synthesizer(), &mut scratch);
@@ -65,7 +71,7 @@ Endpoints:");
                 if e.kind() == std::io::ErrorKind::Interrupted {
                     continue;
                 }
-                eprintln!("accept error: {e}");
+                eprintln!("error al aceptar la conexión: {e}");
             }
         }
     }

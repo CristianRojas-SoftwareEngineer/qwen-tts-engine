@@ -30,10 +30,7 @@ fn is_only_whitespace_or_escaped(s: &str) -> bool {
     let bytes = s.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
-        if bytes[i] == b'\\'
-            && i + 1 < bytes.len()
-            && matches!(bytes[i + 1], b'n' | b't' | b'r')
-        {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() && matches!(bytes[i + 1], b'n' | b't' | b'r') {
             i += 2;
             continue;
         }
@@ -45,11 +42,14 @@ fn is_only_whitespace_or_escaped(s: &str) -> bool {
     true
 }
 
-fn extract_opt_str<'a>(obj: &'a serde_json::Map<String, Value>, key: &str) -> Result<Option<&'a str>, String> {
+fn extract_opt_str<'a>(
+    obj: &'a serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<&'a str>, String> {
     match obj.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s.as_str())),
-        Some(_) => Err(format!("invalid '{key}' (expected string)")),
+        Some(_) => Err(format!("'{key}' inválido (se esperaba una cadena)")),
     }
 }
 
@@ -60,8 +60,8 @@ fn extract_opt_f64(obj: &serde_json::Map<String, Value>, key: &str) -> Result<Op
             .as_f64()
             .filter(|v| v.is_finite())
             .map(Some)
-            .ok_or_else(|| format!("invalid '{key}'")),
-        Some(_) => Err(format!("invalid '{key}' (expected number)")),
+            .ok_or_else(|| format!("'{key}' inválido")),
+        Some(_) => Err(format!("'{key}' inválido (se esperaba un número)")),
     }
 }
 
@@ -75,27 +75,23 @@ fn extract_opt_i64(obj: &serde_json::Map<String, Value>, key: &str) -> Result<Op
                 if f.is_finite() {
                     Ok(Some(f as i64))
                 } else {
-                    Err(format!("invalid '{key}'"))
+                    Err(format!("'{key}' inválido"))
                 }
             } else {
-                Err(format!("invalid '{key}'"))
+                Err(format!("'{key}' inválido"))
             }
         }
-        Some(_) => Err(format!("invalid '{key}' (expected integer)")),
+        Some(_) => Err(format!("'{key}' inválido (se esperaba un entero)")),
     }
 }
 
 impl ValidatedTtsRequest {
-    pub fn parse(
-        body: &str,
-        is_stream: bool,
-        loaded_voice_name: &str,
-    ) -> Result<Self, String> {
-        let val: Value = serde_json::from_str(body)
-            .map_err(|_| "invalid JSON body".to_string())?;
+    pub fn parse(body: &str, is_stream: bool, loaded_voice_name: &str) -> Result<Self, String> {
+        let val: Value =
+            serde_json::from_str(body).map_err(|_| "cuerpo JSON inválido".to_string())?;
         let obj = val
             .as_object()
-            .ok_or_else(|| "JSON body must be an object".to_string())?;
+            .ok_or_else(|| "el cuerpo JSON debe ser un objeto".to_string())?;
 
         // voice_design es exclusivo de 1.7B -> rechazar con 400
         if let Some(vd) = obj.get("voice_design") {
@@ -106,7 +102,7 @@ impl ValidatedTtsRequest {
                 _ => false,
             };
             if enabled {
-                return Err("voice_design requires the 1.7B VoiceDesign model".to_string());
+                return Err("voice_design requiere el modelo VoiceDesign de 1.7B".to_string());
             }
         }
 
@@ -116,24 +112,24 @@ impl ValidatedTtsRequest {
             None => extract_opt_str(obj, "input")?,
         };
         let Some(text) = text_raw else {
-            return Err("missing or empty 'text'".to_string());
+            return Err("falta 'text' o está vacío".to_string());
         };
         if text.is_empty() {
-            return Err("missing or empty 'text'".to_string());
+            return Err("falta 'text' o está vacío".to_string());
         }
         if is_only_whitespace_or_escaped(text) {
-            return Err("'text' contains only whitespace".to_string());
+            return Err("'text' solo contiene espacios en blanco".to_string());
         }
         if text.len() > MAX_TTS_TEXT {
-            return Err(format!("'text' exceeds {MAX_TTS_TEXT} bytes"));
+            return Err(format!("'text' excede {MAX_TTS_TEXT} bytes"));
         }
 
         // idioma
         let language_name = extract_opt_str(obj, "language")?;
         let language_id = match language_name {
-            Some(lang) => Some(
-                lookup_language(lang).ok_or_else(|| format!("unknown language '{lang}'"))?,
-            ),
+            Some(lang) => {
+                Some(lookup_language(lang).ok_or_else(|| format!("idioma desconocido '{lang}'"))?)
+            }
             None => None,
         };
 
@@ -141,7 +137,7 @@ impl ValidatedTtsRequest {
         if let Some(v) = extract_opt_str(obj, "voice")? {
             if !v.eq_ignore_ascii_case(loaded_voice_name) {
                 return Err(format!(
-                    "voice '{v}' is not loaded (loaded: '{loaded_voice_name}')"
+                    "la voz '{v}' no está cargada (cargada: '{loaded_voice_name}')"
                 ));
             }
         }
@@ -150,7 +146,7 @@ impl ValidatedTtsRequest {
         let temperature = match extract_opt_f64(obj, "temperature")? {
             Some(v) => {
                 if !(0.0..=2.0).contains(&v) {
-                    return Err("'temperature' out of range [0, 2]".to_string());
+                    return Err("'temperature' fuera de rango [0, 2]".to_string());
                 }
                 Some(v as f32)
             }
@@ -161,7 +157,7 @@ impl ValidatedTtsRequest {
         let top_k = match extract_opt_i64(obj, "top_k")? {
             Some(v) => {
                 if v < 0 || v > CODEC_VOCAB_SIZE as i64 {
-                    return Err(format!("'top_k' out of range [0, {CODEC_VOCAB_SIZE}]"));
+                    return Err(format!("'top_k' fuera de rango [0, {CODEC_VOCAB_SIZE}]"));
                 }
                 v as i32
             }
@@ -172,7 +168,7 @@ impl ValidatedTtsRequest {
         let top_p = match extract_opt_f64(obj, "top_p")? {
             Some(v) => {
                 if !(0.0..=1.0).contains(&v) {
-                    return Err("'top_p' out of range [0, 1]".to_string());
+                    return Err("'top_p' fuera de rango [0, 1]".to_string());
                 }
                 v as f32
             }
@@ -183,7 +179,7 @@ impl ValidatedTtsRequest {
         let rep_penalty = match extract_opt_f64(obj, "rep_penalty")? {
             Some(v) => {
                 if !(0.5..=2.0).contains(&v) {
-                    return Err("'rep_penalty' out of range [0.5, 2]".to_string());
+                    return Err("'rep_penalty' fuera de rango [0.5, 2]".to_string());
                 }
                 v as f32
             }
@@ -194,7 +190,7 @@ impl ValidatedTtsRequest {
         let seed = match extract_opt_i64(obj, "seed")? {
             Some(v) if v < 0 => SeedChoice::Clock,
             Some(v) if v <= u32::MAX as i64 => SeedChoice::Fixed(v as u32),
-            Some(_) => return Err("'seed' exceeds u32::MAX".to_string()),
+            Some(_) => return Err("'seed' excede u32::MAX".to_string()),
             None => SeedChoice::Default,
         };
 
@@ -202,7 +198,7 @@ impl ValidatedTtsRequest {
         let volume = match extract_opt_f64(obj, "volume")? {
             Some(v) => {
                 if !(0.0..=10.0).contains(&v) {
-                    return Err("'volume' out of range [0, 10]".to_string());
+                    return Err("'volume' fuera de rango [0, 10]".to_string());
                 }
                 v as f32
             }
@@ -211,14 +207,14 @@ impl ValidatedTtsRequest {
         let rate = match extract_opt_f64(obj, "rate")? {
             Some(v) => {
                 if !(0.25..=4.0).contains(&v) {
-                    return Err("'rate' out of range [0.25, 4.0]".to_string());
+                    return Err("'rate' fuera de rango [0.25, 4.0]".to_string());
                 }
                 v as f32
             }
             None => 1.0,
         };
         if is_stream && (rate - 1.0).abs() > 1e-6 {
-            return Err("'rate' is not supported on /v1/tts/stream".to_string());
+            return Err("'rate' no está soportado en /v1/tts/stream".to_string());
         }
 
         // chunk_frames (acotado a 2..=250, default 10)
@@ -292,7 +288,7 @@ mod tests {
         assert!(parse(r#"{"text":"Hi.","voice":"default"}"#, false).is_ok());
         assert!(parse(r#"{"text":"Hi.","voice":"DEFAULT"}"#, false).is_ok());
         let err = parse(r#"{"text":"Hi.","voice":"ryan"}"#, false).unwrap_err();
-        assert_eq!(err, "voice 'ryan' is not loaded (loaded: 'default')");
+        assert_eq!(err, "la voz 'ryan' no está cargada (cargada: 'default')");
         assert!(parse(r#"{"text":"Hi.","voice":5}"#, false).is_err());
     }
 

@@ -25,7 +25,7 @@ fn print_qvoice_info(path: &Path) {
     let basename = path
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or("unknown");
+        .unwrap_or("desconocido");
     let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     match QVoiceFile::read_from_file(path) {
         Ok(qv) => {
@@ -63,15 +63,15 @@ fn has_qvoice_ext(path: &Path) -> bool {
 pub fn list_voices(dir_str: &str) -> i32 {
     let p = Path::new(dir_str);
     if p.is_file() && has_qvoice_ext(p) {
-        println!("Voice profiles:");
+        println!("Perfiles de voz:");
         print_qvoice_info(p);
         return 0;
     }
     let Ok(entries) = fs::read_dir(p) else {
-        eprintln!("Error: cannot open directory {dir_str}");
+        eprintln!("Error: no se puede abrir el directorio {dir_str}");
         return 1;
     };
-    println!("Voice profiles in {dir_str}:\n");
+    println!("Perfiles de voz en {dir_str}:\n");
     let mut paths: Vec<_> = entries
         .filter_map(|e| e.ok().map(|x| x.path()))
         .filter(|path| has_qvoice_ext(path))
@@ -84,9 +84,9 @@ pub fn list_voices(dir_str: &str) -> i32 {
         count += 1;
     }
     if count == 0 {
-        println!("  (no .qvoice files found)");
+        println!("  (no se encontraron archivos .qvoice)");
     } else {
-        println!("\n  {count} voice profile(s)");
+        println!("\n  {count} perfil(es) de voz");
     }
     0
 }
@@ -96,22 +96,22 @@ pub fn list_voices(dir_str: &str) -> i32 {
 pub fn delete_voice(path_str: &str) -> i32 {
     let path = Path::new(path_str);
     if !has_qvoice_ext(path) {
-        eprintln!("Error: --delete-voice only works with .qvoice files");
+        eprintln!("Error: --delete-voice solo funciona con archivos .qvoice");
         return 1;
     }
     if !path.is_file() {
-        eprintln!("Error: file not found: {path_str}");
+        eprintln!("Error: archivo no encontrado: {path_str}");
         return 1;
     }
     if !QVoiceFile::has_magic(path) {
-        eprintln!("Error: {path_str} is not a valid .qvoice file");
+        eprintln!("Error: {path_str} no es un archivo .qvoice válido");
         return 1;
     }
     if let Err(e) = fs::remove_file(path) {
-        eprintln!("Error: failed to delete {path_str}: {e}");
+        eprintln!("Error: no se pudo borrar {path_str}: {e}");
         return 1;
     }
-    println!("Deleted {path_str}");
+    println!("Borrado {path_str}");
     0
 }
 
@@ -146,7 +146,7 @@ pub fn resolve_voice(
                 .map_err(|e| e.to_string())?;
             if !cfg.silent {
                 eprintln!(
-                    "Saved .qvoice v4 to {} (embedding + {} ICL frames)",
+                    "Guardado .qvoice v4 en {} (embedding + {} frames ICL)",
                     save_path,
                     qv.n_ref_frames()
                 );
@@ -166,13 +166,13 @@ pub fn resolve_voice(
             match cli_language_id {
                 None => {
                     if !cfg.silent && !vl_name.is_empty() {
-                        eprintln!("  Auto-set language from voice: {vl_name}");
+                        eprintln!("  Idioma tomado de la voz: {vl_name}");
                     }
                 }
                 Some(cl_id) => {
                     if cl_id != vl_id && !cfg.silent {
                         eprintln!(
-                            "WARNING: voice was created with language '{vl_name}' but you specified '{}'",
+                            "Aviso: la voz se creó con el idioma '{vl_name}' pero indicaste '{}'",
                             cfg.language.as_deref().unwrap_or("")
                         );
                     }
@@ -185,7 +185,7 @@ pub fn resolve_voice(
     };
 
     if !cfg.silent {
-        eprintln!("Voice: {}", voice.name);
+        eprintln!("Voz: {}", voice.name);
     }
 
     Ok(voice)

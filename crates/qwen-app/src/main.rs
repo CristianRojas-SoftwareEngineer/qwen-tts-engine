@@ -49,7 +49,9 @@ mod openblas_preinit {
             return;
         };
         if let Ok(crate::cli::ParseOutcome::Run(cfg)) = crate::cli::parse_cli(&args) {
-            qwen_kernels::set_initial_openblas_threads(qwen_kernels::resolve_num_threads(cfg.threads));
+            qwen_kernels::set_initial_openblas_threads(qwen_kernels::resolve_num_threads(
+                cfg.threads,
+            ));
         }
     }
 
@@ -62,7 +64,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("decode-dump") {
         if args.len() != 5 {
-            eprintln!("Usage: {} decode-dump <codes.txt> <model_dir> <out.wav>", args[0]);
+            eprintln!(
+                "Uso: {} decode-dump <codes.txt> <model_dir> <out.wav>",
+                args[0]
+            );
             process::exit(1);
         }
         match diag::decode_dump(&args[2], &args[3], &args[4]) {

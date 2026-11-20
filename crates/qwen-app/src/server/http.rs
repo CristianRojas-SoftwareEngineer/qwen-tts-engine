@@ -43,9 +43,7 @@ impl Drop for AbortGuard {
 pub fn socket_disconnected(stream: &TcpStream) -> bool {
     let mut buf = [0u8; 1];
     match stream.peek(&mut buf) {
-        Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted => {
-            false
-        }
+        Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted => false,
         Ok(0) => true,
         Ok(_) => false,
         Err(_) => true,
@@ -58,9 +56,7 @@ pub fn send_all(stream: &mut TcpStream, mut data: &[u8]) -> std::io::Result<()> 
         match stream.write(data) {
             Ok(0) => return Err(std::io::Error::from(ErrorKind::WriteZero)),
             Ok(n) => data = &data[n..],
-            Err(e)
-                if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted =>
-            {
+            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted => {
                 if start.elapsed() > Duration::from_secs(30) {
                     return Err(std::io::Error::from(ErrorKind::TimedOut));
                 }
@@ -73,9 +69,7 @@ pub fn send_all(stream: &mut TcpStream, mut data: &[u8]) -> std::io::Result<()> 
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|p| p + 4)
+    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
 }
 
 fn parse_content_length(headers: &str) -> Result<usize, ()> {
@@ -171,11 +165,11 @@ pub fn read_http_request(stream: &mut TcpStream) -> ReadHttpResult {
 
 pub fn log_http_request(req: &ParsedHttpRequest, peer_ip: &str) {
     eprintln!(
-        "[HTTP] {} {} {} from {}",
+        "[HTTP] {} {} {} desde {}",
         req.method,
         req.path,
         if req.method == "POST" && !req.body.is_empty() {
-            "(has body)"
+            "(con cuerpo)"
         } else {
             ""
         },
@@ -281,7 +275,7 @@ pub fn handle_voices(stream: &mut TcpStream, voice: &Voice) {
 pub fn log_wav_sent(bytes: usize, samples_len: usize, elapsed_s: f64) {
     let audio_secs = samples_len as f64 / SAMPLE_RATE as f64;
     eprintln!(
-        "[HTTP] Sent {} bytes WAV ({:.2}s audio) in {:.1}s (RTF {:.2})",
+        "[HTTP] Enviados {} bytes de WAV ({:.2}s de audio) en {:.1}s (RTF {:.2})",
         bytes,
         audio_secs,
         elapsed_s,
@@ -292,7 +286,7 @@ pub fn log_wav_sent(bytes: usize, samples_len: usize, elapsed_s: f64) {
 pub fn log_stream_sent(samples_len: usize, elapsed_s: f64) {
     let audio_secs = samples_len as f64 / SAMPLE_RATE as f64;
     eprintln!(
-        "[HTTP] Streamed {} samples ({:.2}s audio) in {:.1}s (RTF {:.2})",
+        "[HTTP] Transmitidas {} muestras ({:.2}s de audio) en {:.1}s (RTF {:.2})",
         samples_len,
         audio_secs,
         elapsed_s,
@@ -306,7 +300,7 @@ pub fn log_timing_breakdown(t: &SynthesisTiming) {
     }
     let f = t.frames as f64;
     eprintln!(
-        "[HTTP] Desglose: prefill {:.0} ms, Talker {:.0} ms ({:.1} ms/f), CP {:.0} ms ({:.1} ms/f), decodificador {:.0} ms, drenaje {:.0} ms, {} fotogramas en {} fragmentos, cola máxima {} fotogramas",
+        "[HTTP] Desglose: prefill {:.0} ms, Talker {:.0} ms ({:.1} ms/f), CP {:.0} ms ({:.1} ms/f), decoder {:.0} ms, drenaje {:.0} ms, {} frames en {} chunks, cola máxima {} frames",
         t.prefill_ms,
         t.talker_ms,
         t.talker_ms / f,
@@ -334,9 +328,8 @@ impl<'a> HttpChunkWriter<'a> {
 
 impl PcmWrite for HttpChunkWriter<'_> {
     fn write_pcm(&mut self, pcm: &[u8]) -> std::io::Result<()> {
-        send_pcm_chunk(self.stream, pcm).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e.to_string())
-        })
+        send_pcm_chunk(self.stream, pcm)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e.to_string()))
     }
 
     fn finish(&mut self) -> std::io::Result<()> {
@@ -373,7 +366,10 @@ pub fn warm_up(synth: &Synthesizer<'_>, scratch: &mut SessionScratch) {
         &Script::Plain("Hello.".to_string()),
         Delivery::Stream(&mut sink),
     ) {
-        Ok(_) => eprintln!("[HTTP] Calentamiento: {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0),
+        Ok(_) => eprintln!(
+            "[HTTP] Calentamiento: {:.0} ms",
+            t0.elapsed().as_secs_f64() * 1000.0
+        ),
         Err(e) => eprintln!("[HTTP] Calentamiento fallido (sin efecto en las peticiones): {e}"),
     }
 }
@@ -387,7 +383,7 @@ fn prepare(
 ) -> (SynthesisRequest, PlannedScript) {
     let (req, planned) = from_http(vreq, &ctx.voice, stream);
     eprintln!(
-        "[HTTP] {label}: \"{}\" (voice={}, lang={}, seed={})",
+        "[HTTP] {label}: \"{}\" (voz={}, idioma={}, semilla={})",
         planned.text, ctx.voice.name, req.language_id, req.sampling.seed
     );
     (req, planned)
@@ -398,7 +394,7 @@ fn abort_guard(stream: &mut TcpStream) -> Option<AbortGuard> {
     match AbortGuard::for_socket(stream) {
         Ok(g) => Some(g),
         Err(_) => {
-            send_error(stream, 500, "internal socket error");
+            send_error(stream, 500, "error interno del socket");
             None
         }
     }
@@ -417,10 +413,12 @@ fn run_synthesis(
 ) -> Result<SynthesisOutput, EngineError> {
     if let Script::Spans(spans) = script {
         if spans.is_empty() {
-            return Err(EngineError::InvalidArg("markup parse failed".to_string()));
+            return Err(EngineError::InvalidArg(
+                "falló el análisis del marcado".to_string(),
+            ));
         }
         eprintln!(
-            "[HTTP] inline markup -> per-sentence {markup_label} ({} spans)",
+            "[HTTP] marcado en línea -> {markup_label} por frase ({} tramos)",
             spans.len()
         );
     }
@@ -475,7 +473,7 @@ fn handle_tts_full(
                     t0.elapsed().as_secs_f64()
                 );
             } else {
-                send_error(stream, 500, "generation failed");
+                send_error(stream, 500, "la generación falló");
             }
             return;
         }
@@ -524,8 +522,10 @@ fn handle_tts_stream(
 
     let total_samples = chunk_sink.total_samples();
     if gen_res.is_err() || total_samples == 0 {
-        if socket_disconnected(stream) || matches!(gen_res, Err(EngineError::Aborted))
-            || matches!(&gen_res, Err(EngineError::Io(e)) if e.kind() == std::io::ErrorKind::ConnectionAborted) {
+        if socket_disconnected(stream)
+            || matches!(gen_res, Err(EngineError::Aborted))
+            || matches!(&gen_res, Err(EngineError::Io(e)) if e.kind() == std::io::ErrorKind::ConnectionAborted)
+        {
             eprintln!(
                 "[HTTP] TTS stream cancelado: el cliente se desconectó tras {:.1} s",
                 t0.elapsed().as_secs_f64()
@@ -556,11 +556,15 @@ pub fn handle_connection(
     let req = match read_http_request(&mut stream) {
         ReadHttpResult::Ok(req) => req,
         ReadHttpResult::TooLarge => {
-            send_error(&mut stream, 400, "request body exceeds 1 MiB limit");
+            send_error(
+                &mut stream,
+                400,
+                "el cuerpo de la petición excede el límite de 1 MiB",
+            );
             return;
         }
         ReadHttpResult::InvalidContentLength => {
-            send_error(&mut stream, 400, "invalid Content-Length header");
+            send_error(&mut stream, 400, "cabecera Content-Length inválida");
             return;
         }
         ReadHttpResult::Empty => return,
@@ -578,7 +582,7 @@ pub fn handle_connection(
         ("GET", "/v1/voices") => return handle_voices(&mut stream, &ctx.voice),
         ("POST", "/v1/tts") | ("POST", "/v1/audio/speech") => false,
         ("POST", "/v1/tts/stream") => true,
-        _ => return send_error(&mut stream, 404, "not found"),
+        _ => return send_error(&mut stream, 404, "no encontrado"),
     };
     match ValidatedTtsRequest::parse(&req.body, is_stream, &ctx.voice.name) {
         Ok(vreq) if is_stream => handle_tts_stream(ctx, scratch, &mut stream, &vreq),
@@ -603,7 +607,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let client_t = std::thread::spawn(move || {
             let mut c = TcpStream::connect(addr).unwrap();
-            let req = b"POST /v1/tts HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2000000\r\n\r\n{}";
+            let req =
+                b"POST /v1/tts HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2000000\r\n\r\n{}";
             c.write_all(req).unwrap();
             let mut resp = String::new();
             let _ = c.read_to_string(&mut resp);
@@ -612,7 +617,11 @@ mod tests {
         let (mut srv, _) = listener.accept().unwrap();
         let res = read_http_request(&mut srv);
         assert!(matches!(res, ReadHttpResult::TooLarge));
-        send_error(&mut srv, 400, "request body exceeds 1 MiB limit");
+        send_error(
+            &mut srv,
+            400,
+            "el cuerpo de la petición excede el límite de 1 MiB",
+        );
         drop(srv);
         let resp = client_t.join().unwrap();
         assert!(resp.contains("400 Bad Request"));

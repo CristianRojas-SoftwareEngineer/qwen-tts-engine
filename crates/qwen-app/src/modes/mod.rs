@@ -39,7 +39,7 @@ fn spawn_stdin_watcher() -> Result<(), String> {
             }
         })
         .map(|_| ())
-        .map_err(|e| format!("Error: --watch-stdin could not start the stdin watcher thread: {e}"))
+        .map_err(|e| format!("Error: --watch-stdin no pudo iniciar el hilo que vigila stdin: {e}"))
 }
 
 /// Modos con modelo: crear voz, servidor y una síntesis. Valida, carga el modelo, resuelve la
@@ -48,23 +48,23 @@ pub fn run_with_model(cfg: CliArgs, physical_cores: usize) -> Result<i32, String
     let model_dir_str = cfg
         .model_dir
         .clone()
-        .ok_or_else(|| "Error: --model-dir is required".to_string())?;
+        .ok_or_else(|| "Error: falta --model-dir".to_string())?;
 
     if cfg.mode == CliMode::NoJob {
-        return Err("Error: --text, --compose or --serve is required".to_string());
+        return Err("Error: falta --text, --compose o --serve".to_string());
     }
 
     let cli_language_id = if let Some(ref lang_name) = cfg.language {
         Some(
             lookup_language(lang_name)
-                .ok_or_else(|| format!("Error: unknown language '{lang_name}'"))?,
+                .ok_or_else(|| format!("Error: idioma desconocido '{lang_name}'"))?,
         )
     } else {
         None
     };
 
     if cfg.stream && (cfg.rate - 1.0).abs() > 1e-4 {
-        return Err("Error: --rate != 1.0 cannot be combined with --stream".to_string());
+        return Err("Error: --rate != 1.0 no se puede combinar con --stream".to_string());
     }
 
     // Validación temprana de WAV ANTES de cargar el modelo
@@ -76,11 +76,11 @@ pub fn run_with_model(cfg: CliArgs, physical_cores: usize) -> Result<i32, String
     }
 
     if !cfg.silent {
-        eprintln!("Model dir: {model_dir_str}");
+        eprintln!("Directorio del modelo: {model_dir_str}");
         if let Some(ref t) = cfg.text {
-            eprintln!("Text: \"{t}\"");
+            eprintln!("Texto: \"{t}\"");
         }
-        eprintln!("Output: {}", cfg.output);
+        eprintln!("Salida: {}", cfg.output);
     }
 
     let runtime = Arc::new(ComputeRuntime::for_cores(cfg.threads, physical_cores));
@@ -94,7 +94,7 @@ pub fn run_with_model(cfg: CliArgs, physical_cores: usize) -> Result<i32, String
         .map_err(|e| e.to_string())?;
 
     if cfg.mode == CliMode::CreateVoice && cfg.ref_audio.is_none() {
-        return Err("Error: --ref-audio is required to create a voice profile".to_string());
+        return Err("Error: falta --ref-audio para crear un perfil de voz".to_string());
     }
 
     let voice = voice_cmd::resolve_voice(&cfg, &runtime, &model, cli_language_id)?;
@@ -102,7 +102,7 @@ pub fn run_with_model(cfg: CliArgs, physical_cores: usize) -> Result<i32, String
     match cfg.mode {
         CliMode::CreateVoice => {
             if !cfg.silent {
-                eprintln!("Voice profile created. Use --load-voice to generate speech.");
+                eprintln!("Perfil de voz creado. Usa --load-voice para generar voz.");
             }
             Ok(0)
         }

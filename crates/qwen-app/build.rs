@@ -61,6 +61,6 @@ fn main() {
     }
 
     println!(
-        "cargo:warning=windres not found; Windows UTF-8 manifest was not embedded"
+        "cargo:warning=windres no encontrado; no se incrustó el manifiesto UTF-8 de Windows"
     );
 }

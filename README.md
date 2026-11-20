@@ -108,7 +108,7 @@ cargo build -p qwen-app --release
 ./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 --seed 4 -l English --quant-mixed --text "Hello, world!" -o output.wav
 ```
 
-> **Nota**: sin `--load-voice` ni `--ref-audio`, el motor habla con la voz `default` incorporada (la CLI imprime `Voice: default` en `stderr`). Sin `-l`, el idioma es el de la voz cargada o, si no tiene, español. `--quant-mixed` es el perfil recomendado para producción en `0.6B` (los valores por defecto de muestreo son `temperature = 0.325` y `seed = 4`); añade `--stream` si necesitas escribir audio progresivamente conforme se decodifica. En Windows GNU, mantén `OPENBLAS_NUM_THREADS` sin definir para que el motor ajuste los hilos entre *prefill* y generación.
+> **Nota**: sin `--load-voice` ni `--ref-audio`, el motor habla con la voz `default` incorporada (la CLI imprime `Voz: default` en `stderr`). Sin `-l`, el idioma es el de la voz cargada o, si no tiene, español. `--quant-mixed` es el perfil recomendado para producción en `0.6B` (los valores por defecto de muestreo son `temperature = 0.325` y `seed = 4`); añade `--stream` si necesitas escribir audio progresivamente conforme se decodifica. En Windows GNU, mantén `OPENBLAS_NUM_THREADS` sin definir para que el motor ajuste los hilos entre *prefill* y generación.
 
 ### 2. Clonación de voz
 
