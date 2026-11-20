@@ -6,24 +6,13 @@
 use std::f32::consts::PI;
 use std::path::Path;
 
-use qwen_core::config::{
-    CODEBOOK_SIZE, CODEC_VOCAB_SIZE, CP_HEAD_DIM, CP_HIDDEN_SIZE, CP_INTERMEDIATE_SIZE,
-    CP_KV_DIM, CP_Q_DIM, ENC_DIM, HEAD_DIM, HIDDEN_SIZE, INTERMEDIATE_SIZE, KV_DIM, MEL_DIM,
-    NUM_CODEBOOKS, Q_DIM, SAMPLE_RATE, TEXT_HIDDEN_SIZE, TEXT_VOCAB_SIZE, TOKEN_TTS_BOS,
-    TOKEN_TTS_EOS, TOKEN_TTS_PAD,
-};
-use qwen_core::{
-    encode_wdelta_bf16, lookup_language, read_bin_embedding, write_bin_embedding, F32Ref,
-    MmapStore, QVoiceFile, QVoiceMeta, QVoiceTpad, QVoiceWeightTensor, QVoiceWeightsOverride,
-    QVoiceWovr,
-};
-use qwen_kernels::{AlignedBuf, ComputeRuntime, Transpose};
+use qwen_core::config::{ENC_DIM, MEL_DIM, NUM_CODEBOOKS, SAMPLE_RATE};
+use qwen_core::{lookup_language, F32Ref, MmapStore, QVoiceFile};
+use qwen_kernels::{ComputeRuntime, Transpose};
 
 use crate::audio::{read_wav_24khz, trim_trailing_silence};
 use crate::error::EngineError;
-use crate::model::{
-    compute_text_proj_token, Model06B, TextProjOverride, VoiceBindings, VoiceIdentity,
-};
+use crate::model::{Model06B, VoiceBindings, VoiceIdentity};
 use crate::speech_encoder::speech_encoder_encode;
 
 pub struct SeRes2NetWeights {
@@ -762,152 +751,34 @@ fn load_and_trim_ref_audio(
     Ok(audio)
 }
 
-/// Opciones de carga de perfiles `.qvoice` / `.bin` mediante [`load_voice_from_file`].
-#[derive(Debug, Clone)]
+/// Opciones de carga de perfiles `.qvoice` mediante [`load_voice_from_file`].
+#[derive(Debug, Clone, Default)]
 pub struct VoiceLoadOptions {
-    pub icl_only: bool,
+    /// Usa solo el x-vector aunque el archivo traiga ICL.
     pub xvector_only: bool,
-    pub graft_mode: bool,
     pub icl_frames_cap: usize,
-    pub voice_strength: f32,
-    pub vs_l0: i32,
-    pub vs_l1: i32,
     pub silent: bool,
 }
 
-impl Default for VoiceLoadOptions {
-    fn default() -> Self {
-        Self {
-            icl_only: false,
-            xvector_only: false,
-            graft_mode: false,
-            icl_frames_cap: 0,
-            voice_strength: 1.0,
-            vs_l0: 14,
-            vs_l1: 27,
-            silent: false,
-        }
-    }
-}
-
-pub fn build_wovr_override(
-    runtime: &ComputeRuntime,
-    model: &Model06B,
-    wovr: &QVoiceWovr,
-    tpad: Option<&QVoiceTpad>,
-) -> TextProjOverride {
-    let mut pad = AlignedBuf::new_zeroed(HIDDEN_SIZE);
-    let mut bos = AlignedBuf::new_zeroed(HIDDEN_SIZE);
-    let mut eos = AlignedBuf::new_zeroed(HIDDEN_SIZE);
-
-    if let Some(tp) = tpad {
-        pad[..HIDDEN_SIZE].copy_from_slice(&tp.tts_pad_embed[..HIDDEN_SIZE]);
-        bos[..HIDDEN_SIZE].copy_from_slice(&tp.tts_bos_embed[..HIDDEN_SIZE]);
-        eos[..HIDDEN_SIZE].copy_from_slice(&tp.tts_eos_embed[..HIDDEN_SIZE]);
-    } else {
-        let mut tmp1 = AlignedBuf::<f32>::new_zeroed(TEXT_HIDDEN_SIZE);
-        let mut tmp2 = AlignedBuf::<f32>::new_zeroed(TEXT_HIDDEN_SIZE);
-        for (tid, out) in [
-            (TOKEN_TTS_PAD, &mut pad),
-            (TOKEN_TTS_BOS, &mut bos),
-            (TOKEN_TTS_EOS, &mut eos),
-        ] {
-            compute_text_proj_token(
-                runtime.dispatch,
-                &runtime.pool,
-                &model.talker.text_embedding_bf16,
-                &wovr.fc1_bf16,
-                Some(&wovr.fc1_bias),
-                &wovr.fc2_bf16,
-                Some(&wovr.fc2_bias),
-                tid,
-                &mut tmp1,
-                &mut tmp2,
-                out,
-            );
-        }
-    }
-
-    TextProjOverride {
-        fc1_bf16: wovr.fc1_bf16.clone(),
-        fc1_bias: wovr.fc1_bias.clone(),
-        fc2_bf16: wovr.fc2_bf16.clone(),
-        fc2_bias: wovr.fc2_bias.clone(),
-        codec_emb_0_2048_bf16: wovr.codec_emb_bf16.clone(),
-        tts_pad_embed: pad,
-        tts_bos_embed: bos,
-        tts_eos_embed: eos,
-    }
-}
-
-/// Carga un perfil `.qvoice` v3 o `.bin` (y aplica `WOVR`/`WDLT` sobre `model` si corresponde).
+/// Carga un perfil `.qvoice` v4. Devuelve los vínculos de voz y el id de idioma de la voz
+/// (`None` si el archivo no tiene idioma).
 pub fn load_voice_from_file(
-    runtime: &ComputeRuntime,
-    model: &mut Model06B,
     path: &Path,
     ref_text_override: Option<&str>,
     opts: &VoiceLoadOptions,
-) -> Result<(VoiceBindings, Option<QVoiceMeta>), EngineError> {
+) -> Result<(VoiceBindings, Option<i32>), EngineError> {
     let is_qvoice = path
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("qvoice"));
-
     if !is_qvoice {
-        let emb = read_bin_embedding(path)?;
-        if !opts.silent {
-            let norm = emb.iter().map(|&v| v * v).sum::<f32>().sqrt();
-            eprintln!(
-                "Voice clone: loaded speaker embedding from {} ({} floats, norm={norm:.4})",
-                path.display(),
-                emb.len()
-            );
-        }
-        return Ok((
-            VoiceBindings {
-                identity: VoiceIdentity::XVector(emb),
-                wovr: None,
-                emo_ref_text: None,
-                emo_ref_codes: None,
-                icl_frames_cap: opts.icl_frames_cap,
-                graft_mode: opts.graft_mode,
-            },
-            None,
-        ));
+        return Err(EngineError::InvalidArg(format!(
+            "voice files must be .qvoice (got {})",
+            path.display()
+        )));
     }
 
-    let skip_weights = opts.icl_only || opts.graft_mode;
-    let qv = QVoiceFile::read_from_file(path, skip_weights)?;
-    if let Some(weights) = &qv.weights {
-        if !skip_weights {
-            if model.config.is_base_model {
-                return Err(EngineError::InvalidArg(format!(
-                    "ERROR: {} contains weight deltas for CustomVoice, but you're loading it on a Base model.",
-                    path.display()
-                )));
-            }
-            model.apply_qvoice_weights_override(
-                runtime,
-                weights,
-                opts.voice_strength,
-                opts.vs_l0,
-                opts.vs_l1,
-                opts.silent,
-            )?;
-        }
-    }
-
-    let skip_wovr = std::env::var_os("QWEN_GRAFT_NO_WOVR").is_some();
-    let wovr_override = if !skip_wovr {
-        qv.wovr
-            .as_ref()
-            .map(|w| build_wovr_override(runtime, model, w, qv.tpad.as_ref()))
-    } else {
-        if !opts.silent {
-            eprintln!("  QWEN_GRAFT_NO_WOVR: skipped WOVR override (pure-CV graft)");
-        }
-        None
-    };
+    let qv = QVoiceFile::read_from_file(path)?;
 
     let ref_text = ref_text_override
         .map(str::to_string)
@@ -915,7 +786,7 @@ pub fn load_voice_from_file(
 
     let use_icl = !opts.xvector_only && !qv.ref_codes.is_empty() && !ref_text.is_empty();
     let identity = if use_icl {
-        VoiceIdentity::IclGraft {
+        VoiceIdentity::Icl {
             speaker_embedding: qv.speaker_embedding,
             ref_text,
             ref_codes: qv.ref_codes,
@@ -924,29 +795,39 @@ pub fn load_voice_from_file(
         VoiceIdentity::XVector(qv.speaker_embedding)
     };
 
+    let name = if qv.voice_name.is_empty() {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string()
+    } else {
+        qv.voice_name
+    };
+
     if !opts.silent {
         eprintln!(
-            "Voice clone: loaded .qvoice v{} from {}{}",
-            qv.version,
+            "Voice clone: loaded .qvoice v4 from {}{}",
             path.display(),
             match &identity {
-                VoiceIdentity::IclGraft { ref_codes, .. } =>
+                VoiceIdentity::Icl { ref_codes, .. } =>
                     format!(" ({} ICL frames)", ref_codes.len() / NUM_CODEBOOKS),
                 _ => String::new(),
             }
         );
     }
 
+    let lang_id = if qv.lang_id == 0 {
+        None
+    } else {
+        Some(qv.lang_id as i32)
+    };
     Ok((
         VoiceBindings {
             identity,
-            wovr: wovr_override,
-            emo_ref_text: None,
-            emo_ref_codes: None,
+            name,
             icl_frames_cap: opts.icl_frames_cap,
-            graft_mode: opts.graft_mode,
         },
-        qv.meta,
+        lang_id,
     ))
 }
 
@@ -955,17 +836,16 @@ pub fn load_voice_from_file(
 pub struct SaveVoiceOptions<'a> {
     pub ref_text: Option<&'a str>,
     pub xvector_only: bool,
-    pub graft_mode: bool,
     pub icl_frames_cap: usize,
     pub max_ref_seconds: f32,
     pub language: Option<&'a str>,
     pub voice_name: Option<&'a str>,
-    pub target_cv_dir: Option<&'a Path>,
     pub silent: bool,
     pub debug: bool,
 }
 
-/// Extrae el embedding de hablante (y códigos ICL si aplica) desde `ref_audio_path` y opcionalmente lo guarda en disco.
+/// Extrae el embedding de hablante (y códigos ICL si aplica) desde `ref_audio_path` y opcionalmente lo guarda en disco
+/// como `.qvoice` v4. El nombre de la voz es `voice_name` o, si falta, el nombre del WAV sin extensión.
 pub fn build_voice_from_ref_audio(
     runtime: &ComputeRuntime,
     model: &Model06B,
@@ -973,9 +853,22 @@ pub fn build_voice_from_ref_audio(
     save_path: Option<&Path>,
     opts: &SaveVoiceOptions<'_>,
 ) -> Result<VoiceBindings, EngineError> {
+    if let Some(out_path) = save_path {
+        let is_qvoice = out_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("qvoice"));
+        if !is_qvoice {
+            return Err(EngineError::InvalidArg(format!(
+                "voice files must be .qvoice (got {})",
+                out_path.display()
+            )));
+        }
+    }
     let spk_enc = model.speaker_encoder.as_ref().ok_or_else(|| {
         EngineError::InvalidArg(
-            "Error: --ref-audio requires a Base model (not CustomVoice)".to_string(),
+            "Error: the model has no speaker encoder (--ref-audio requires the Base model)"
+                .to_string(),
         )
     })?;
     let audio = load_and_trim_ref_audio(ref_audio_path, opts.max_ref_seconds, opts.silent)?;
@@ -1003,105 +896,47 @@ pub fn build_voice_from_ref_audio(
         }
     }
 
+    let ref_text = if ref_codes.is_empty() {
+        String::new()
+    } else {
+        opts.ref_text.unwrap_or("").to_string()
+    };
+
     if let Some(out_path) = save_path {
-        let is_qvoice = out_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("qvoice"));
-        if !is_qvoice {
-            write_bin_embedding(out_path, &speaker_embedding)?;
-            if !opts.silent {
-                eprintln!(
-                    "Saved speaker embedding to {} ({} floats)",
-                    out_path.display(),
-                    speaker_embedding.len()
-                );
-            }
-        } else {
-            let lang_name = opts.language.unwrap_or("");
-            let lang_id = if lang_name.is_empty() {
-                0
-            } else {
-                lookup_language(lang_name).unwrap_or(0) as u32
-            };
-            let mut flags = 0u32;
-            if opts.xvector_only {
-                flags |= 1;
-            }
-            if n_ref_frames > 0 {
-                flags |= 2;
-            }
-            if model.config.is_base_model {
-                flags |= 4;
-            }
-
-            let meta = QVoiceMeta {
-                lang_id,
-                lang_name: lang_name.to_string(),
-                model_size: HIDDEN_SIZE as u32,
-                enc_dim: ENC_DIM as u32,
-                ref_dur: opts.max_ref_seconds,
-                voice_name: opts.voice_name.unwrap_or("").to_string(),
-                flags,
-            };
-            let tpad = QVoiceTpad {
-                hidden: HIDDEN_SIZE as u32,
-                tts_pad_embed: model.cached_tts_pad_embed.to_vec(),
-                tts_bos_embed: model.cached_tts_bos_embed.to_vec(),
-                tts_eos_embed: model.cached_tts_eos_embed.to_vec(),
-            };
-            let wovr = QVoiceWovr {
-                wh: HIDDEN_SIZE as u32,
-                wth: TEXT_HIDDEN_SIZE as u32,
-                wcv: CODEBOOK_SIZE as u32,
-                fc1_bf16: model.talker.text_proj_fc1_bf16.to_vec(),
-                fc1_bias: model
-                    .talker
-                    .text_proj_fc1_bias
-                    .as_deref()
-                    .map_or_else(|| vec![0.0; TEXT_HIDDEN_SIZE], |b| b.to_vec()),
-                fc2_bf16: model.talker.text_proj_fc2_bf16.to_vec(),
-                fc2_bias: model
-                    .talker
-                    .text_proj_fc2_bias
-                    .as_deref()
-                    .map_or_else(|| vec![0.0; HIDDEN_SIZE], |b| b.to_vec()),
-                codec_emb_bf16: model.talker.codec_embedding_bf16[..CODEBOOK_SIZE * HIDDEN_SIZE]
-                    .to_vec(),
-            };
-
-            let weights = if let Some(cv_dir) = opts.target_cv_dir {
-                Some(encode_wdelta_override(model, cv_dir, opts.silent)?)
-            } else {
-                None
-            };
-
-            let qv = QVoiceFile {
-                version: 3,
-                enc_dim: ENC_DIM as u32,
-                speaker_embedding: speaker_embedding.clone(),
-                ref_text: opts.ref_text.unwrap_or("").to_string(),
-                ref_codes: ref_codes.clone(),
-                meta: Some(meta),
-                tpad: Some(tpad),
-                wovr: Some(wovr),
-                weights,
-            };
-            qv.write_to_file(out_path)?;
-            if !opts.silent {
-                eprintln!(
-                    "Saved .qvoice v3 to {} (embedding + {} ICL frames + metadata + weights)",
-                    out_path.display(),
-                    n_ref_frames
-                );
-            }
+        let lang_id = match opts.language {
+            Some(l) if !l.is_empty() => lookup_language(l).unwrap_or(0) as u32,
+            _ => 0,
+        };
+        let qv = QVoiceFile {
+            speaker_embedding: speaker_embedding.clone(),
+            voice_name: opts.voice_name.unwrap_or("").to_string(),
+            lang_id,
+            ref_text: ref_text.clone(),
+            ref_codes: ref_codes.clone(),
+        };
+        qv.write_to_file(out_path)?;
+        if !opts.silent {
+            eprintln!(
+                "Saved .qvoice v4 to {} (embedding + {} ICL frames)",
+                out_path.display(),
+                n_ref_frames
+            );
         }
     }
 
+    let name = match opts.voice_name {
+        Some(n) if !n.is_empty() => n.to_string(),
+        _ => ref_audio_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string(),
+    };
+
     let identity = if !ref_codes.is_empty() && !opts.xvector_only {
-        VoiceIdentity::IclGraft {
+        VoiceIdentity::Icl {
             speaker_embedding,
-            ref_text: opts.ref_text.unwrap_or("").to_string(),
+            ref_text,
             ref_codes,
         }
     } else {
@@ -1110,126 +945,7 @@ pub fn build_voice_from_ref_audio(
 
     Ok(VoiceBindings {
         identity,
-        wovr: None,
-        emo_ref_text: None,
-        emo_ref_codes: None,
+        name,
         icl_frames_cap: opts.icl_frames_cap,
-        graft_mode: opts.graft_mode,
-    })
-}
-
-fn encode_wdelta_override(
-    model: &Model06B,
-    cv_dir: &Path,
-    silent: bool,
-) -> Result<QVoiceWeightsOverride, EngineError> {
-    let cv_store = MmapStore::open_model(cv_dir)?;
-    if !silent {
-        eprintln!("  Computing deltas vs {} for WDELTA encoding", cv_dir.display());
-    }
-
-    let mut tensors = Vec::with_capacity(402);
-    let push_bf16 = |tensors: &mut Vec<QVoiceWeightTensor>, name: &str, base: &[u16]| -> Result<(), EngineError> {
-        if let Some(cv_bf16) = cv_store.tensor_bf16_opt(name)? {
-            tensors.push(encode_wdelta_bf16(name, base, cv_bf16)?);
-        } else {
-            let mut payload = Vec::with_capacity(base.len() * 2);
-            for &u in base {
-                payload.extend_from_slice(&u.to_le_bytes());
-            }
-            tensors.push(QVoiceWeightTensor {
-                name: name.to_string(),
-                data_bytes: payload.len() as u32,
-                dtype_flag: 0,
-                payload,
-            });
-        }
-        Ok(())
-    };
-    let push_f32 = |tensors: &mut Vec<QVoiceWeightTensor>, name: &str, data: &[f32]| {
-        let mut payload = Vec::with_capacity(data.len() * 4);
-        for &v in data {
-            payload.extend_from_slice(&v.to_le_bytes());
-        }
-        tensors.push(QVoiceWeightTensor {
-            name: name.to_string(),
-            data_bytes: payload.len() as u32,
-            dtype_flag: 0,
-            payload,
-        });
-    };
-
-    // 8 tensores globales
-    push_bf16(
-        &mut tensors,
-        "talker.model.text_embedding.weight",
-        &model.talker.text_embedding_bf16[..TEXT_VOCAB_SIZE * TEXT_HIDDEN_SIZE],
-    )?;
-    push_bf16(
-        &mut tensors,
-        "talker.text_projection.linear_fc1.weight",
-        &model.talker.text_proj_fc1_bf16,
-    )?;
-    if let Some(b) = model.talker.text_proj_fc1_bias.as_deref() {
-        push_f32(&mut tensors, "talker.text_projection.linear_fc1.bias", b);
-    }
-    push_bf16(
-        &mut tensors,
-        "talker.text_projection.linear_fc2.weight",
-        &model.talker.text_proj_fc2_bf16,
-    )?;
-    if let Some(b) = model.talker.text_proj_fc2_bias.as_deref() {
-        push_f32(&mut tensors, "talker.text_projection.linear_fc2.bias", b);
-    }
-    push_bf16(
-        &mut tensors,
-        "talker.model.codec_embedding.weight",
-        &model.talker.codec_embedding_bf16[..CODEC_VOCAB_SIZE * HIDDEN_SIZE],
-    )?;
-    push_bf16(
-        &mut tensors,
-        "talker.codec_head.weight",
-        &model.talker.codec_head_bf16[..CODEC_VOCAB_SIZE * HIDDEN_SIZE],
-    )?;
-    push_f32(&mut tensors, "talker.model.norm.weight", &model.talker.norm);
-
-    // 28 capas del Talker
-    for (li, l) in model.talker.layers.iter().enumerate() {
-        push_bf16(&mut tensors, &format!("talker.model.layers.{li}.self_attn.q_proj.weight"), &l.wq_bf16[..Q_DIM * HIDDEN_SIZE])?;
-        push_bf16(&mut tensors, &format!("talker.model.layers.{li}.self_attn.k_proj.weight"), &l.wk_bf16[..KV_DIM * HIDDEN_SIZE])?;
-        push_bf16(&mut tensors, &format!("talker.model.layers.{li}.self_attn.v_proj.weight"), &l.wv_bf16[..KV_DIM * HIDDEN_SIZE])?;
-        push_bf16(&mut tensors, &format!("talker.model.layers.{li}.self_attn.o_proj.weight"), &l.wo_bf16[..HIDDEN_SIZE * Q_DIM])?;
-        push_f32(&mut tensors, &format!("talker.model.layers.{li}.self_attn.q_norm.weight"), &l.q_norm[..HEAD_DIM]);
-        push_f32(&mut tensors, &format!("talker.model.layers.{li}.self_attn.k_norm.weight"), &l.k_norm[..HEAD_DIM]);
-        push_f32(&mut tensors, &format!("talker.model.layers.{li}.input_layernorm.weight"), &l.input_norm[..HIDDEN_SIZE]);
-        push_f32(&mut tensors, &format!("talker.model.layers.{li}.post_attention_layernorm.weight"), &l.post_attn_norm[..HIDDEN_SIZE]);
-        push_bf16(&mut tensors, &format!("talker.model.layers.{li}.mlp.gate_proj.weight"), &l.gate_bf16[..INTERMEDIATE_SIZE * HIDDEN_SIZE])?;
-        push_bf16(&mut tensors, &format!("talker.model.layers.{li}.mlp.up_proj.weight"), &l.up_bf16[..INTERMEDIATE_SIZE * HIDDEN_SIZE])?;
-        push_bf16(&mut tensors, &format!("talker.model.layers.{li}.mlp.down_proj.weight"), &l.down_bf16[..HIDDEN_SIZE * INTERMEDIATE_SIZE])?;
-    }
-
-    // Tensores del Code Predictor
-    push_f32(&mut tensors, "talker.code_predictor.model.norm.weight", &model.cp.norm[..CP_HIDDEN_SIZE]);
-    for ci in 0..15 {
-        push_bf16(&mut tensors, &format!("talker.code_predictor.model.codec_embedding.{ci}.weight"), &model.cp.codec_emb_bf16[ci][..CODEBOOK_SIZE * CP_HIDDEN_SIZE])?;
-        push_bf16(&mut tensors, &format!("talker.code_predictor.lm_head.{ci}.weight"), &model.cp.lm_heads[ci].bf16[..CODEBOOK_SIZE * CP_HIDDEN_SIZE])?;
-    }
-    for (li, cl) in model.cp.layers.iter().enumerate() {
-        push_bf16(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.self_attn.q_proj.weight"), &cl.wq_bf16[..CP_Q_DIM * CP_HIDDEN_SIZE])?;
-        push_bf16(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.self_attn.k_proj.weight"), &cl.wk_bf16[..CP_KV_DIM * CP_HIDDEN_SIZE])?;
-        push_bf16(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.self_attn.v_proj.weight"), &cl.wv_bf16[..CP_KV_DIM * CP_HIDDEN_SIZE])?;
-        push_bf16(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.self_attn.o_proj.weight"), &cl.wo_bf16[..CP_HIDDEN_SIZE * CP_Q_DIM])?;
-        push_f32(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.self_attn.q_norm.weight"), &cl.q_norm[..CP_HEAD_DIM]);
-        push_f32(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.self_attn.k_norm.weight"), &cl.k_norm[..CP_HEAD_DIM]);
-        push_f32(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.input_layernorm.weight"), &cl.input_norm[..CP_HIDDEN_SIZE]);
-        push_f32(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.post_attention_layernorm.weight"), &cl.post_attn_norm[..CP_HIDDEN_SIZE]);
-        push_bf16(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.mlp.gate_proj.weight"), &cl.gate_bf16[..CP_INTERMEDIATE_SIZE * CP_HIDDEN_SIZE])?;
-        push_bf16(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.mlp.up_proj.weight"), &cl.up_bf16[..CP_INTERMEDIATE_SIZE * CP_HIDDEN_SIZE])?;
-        push_bf16(&mut tensors, &format!("talker.code_predictor.model.layers.{li}.mlp.down_proj.weight"), &cl.down_bf16[..CP_HIDDEN_SIZE * CP_INTERMEDIATE_SIZE])?;
-    }
-
-    Ok(QVoiceWeightsOverride {
-        target_hidden: HIDDEN_SIZE as u32,
-        tensors,
     })
 }

@@ -6,8 +6,7 @@
 use std::path::PathBuf;
 
 use qwen_core::config::{
-    lookup_language, lookup_speaker, DEFAULT_SEED, DEFAULT_TEMPERATURE, NUM_CODEBOOKS,
-    SAMPLE_RATE,
+    lookup_language, DEFAULT_SEED, DEFAULT_TEMPERATURE, NUM_CODEBOOKS, SAMPLE_RATE,
 };
 use qwen_engine::model::{DecoderWorkspace, SdStreamState};
 use qwen_engine::{
@@ -46,7 +45,7 @@ fn snr_db_f32(ref_s: &[f32], test_s: &[f32]) -> f64 {
 #[test]
 fn test_decoder_streaming_equivalence() {
     let root = repo_root();
-    let model_dir = root.join("models/qwen3-tts-0.6b");
+    let model_dir = root.join("models/qwen3-tts-0.6b-base");
     if !model_dir.exists() {
         eprintln!("Skipping test_decoder_streaming_equivalence (model absent)");
         return;
@@ -114,7 +113,7 @@ fn test_decoder_streaming_equivalence() {
 #[test]
 fn test_e2e_determinism_and_abort() {
     let root = repo_root();
-    let model_dir = root.join("models/qwen3-tts-0.6b");
+    let model_dir = root.join("models/qwen3-tts-0.6b-base");
     if !model_dir.exists() {
         eprintln!("Skipping test_e2e_determinism_and_abort (model absent)");
         return;
@@ -133,12 +132,10 @@ fn test_e2e_determinism_and_abort() {
     .unwrap();
     assert_eq!(model.cp.prec_label(), "INT8+Q4_0-FFN");
 
-    let spk = lookup_speaker("ryan").unwrap();
     let lang = lookup_language("Spanish").unwrap();
-    let voice = VoiceBindings::preset(spk.id);
+    let voice = VoiceBindings::default_voice();
 
     let req = RequestConfig {
-        speaker_id: spk.id,
         language_id: Some(lang),
         silent: true,
         ..Default::default()

@@ -20,7 +20,7 @@ use qwen_engine::{
 use qwen_kernels::{spin_budget_for, ComputeRuntime};
 
 use super::http::{
-    default_voice_context, handle_connection, handle_health, handle_speakers, handle_tts_full,
+    handle_connection, handle_health, handle_tts_full, handle_voices,
     handle_tts_stream, log_http_request, log_stream_sent, log_wav_sent, read_http_request,
     send_chunked_end, send_chunked_header, send_cors_options, send_error, send_pcm_chunk,
     send_response, socket_disconnected, warm_up_session, ReadHttpResult,
@@ -37,6 +37,7 @@ pub struct WorkerPoolScheduler {
     pub runtime: Arc<ComputeRuntime>,
     pub model: Arc<Model06B>,
     pub voice: Arc<VoiceBindings>,
+    pub voice_language_id: Option<i32>,
     pub n_workers: usize,
     pub physical_cores: usize,
 }
@@ -45,7 +46,13 @@ impl SynthesisScheduler for WorkerPoolScheduler {
     fn run(self: Box<Self>, listener: TcpListener) -> Result<(), String> {
         if self.n_workers <= 1 {
             let mut scratch = SessionScratch::new();
-            warm_up_session(&self.runtime, &self.model, &self.voice, &mut scratch);
+            warm_up_session(
+                &self.runtime,
+                &self.model,
+                &self.voice,
+                self.voice_language_id,
+                &mut scratch,
+            );
             for incoming in listener.incoming() {
                 match incoming {
                     Ok(stream) => {
@@ -57,6 +64,7 @@ impl SynthesisScheduler for WorkerPoolScheduler {
                             &self.runtime,
                             &self.model,
                             &self.voice,
+                            self.voice_language_id,
                             &mut scratch,
                             stream,
                             &peer_ip,
@@ -85,6 +93,7 @@ impl SynthesisScheduler for WorkerPoolScheduler {
             let rx_c = Arc::clone(&rx);
             let model_c = Arc::clone(&self.model);
             let voice_c = Arc::clone(&self.voice);
+            let voice_lang = self.voice_language_id;
             let h = thread::Builder::new()
                 .name("qwen-http-worker".to_string())
                 .spawn(move || {
@@ -94,7 +103,7 @@ impl SynthesisScheduler for WorkerPoolScheduler {
                         Some(worker_threads),
                     );
                     let mut scratch = SessionScratch::new();
-                    warm_up_session(&rt, &model_c, &voice_c, &mut scratch);
+                    warm_up_session(&rt, &model_c, &voice_c, voice_lang, &mut scratch);
                     loop {
                         let item = {
                             let guard = rx_c.lock().unwrap_or_else(|e| e.into_inner());
@@ -103,7 +112,15 @@ impl SynthesisScheduler for WorkerPoolScheduler {
                         let Ok((stream, peer_ip)) = item else {
                             break;
                         };
-                        handle_connection(&rt, &model_c, &voice_c, &mut scratch, stream, &peer_ip);
+                        handle_connection(
+                            &rt,
+                            &model_c,
+                            &voice_c,
+                            voice_lang,
+                            &mut scratch,
+                            stream,
+                            &peer_ip,
+                        );
                     }
                 })
                 .map_err(|e| format!("failed to spawn HTTP worker: {e}"))?;
@@ -284,6 +301,7 @@ pub struct ContinuousBatchScheduler {
     pub runtime: Arc<ComputeRuntime>,
     pub model: Arc<Model06B>,
     pub voice: Arc<VoiceBindings>,
+    pub voice_language_id: Option<i32>,
     pub max_batch: usize,
 }
 
@@ -299,7 +317,7 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
         let jq_single = Arc::new(JobQueue::<SingleHttpJob>::new());
         let running = Arc::new(AtomicBool::new(true));
 
-        let (has_clone, def_spk, def_lang) = default_voice_context(&self.voice);
+        let voice_lang = self.voice_language_id;
 
         let mut reader_handles = Vec::with_capacity(n_readers);
         for _ in 0..n_readers {
@@ -340,8 +358,8 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
                         handle_health(&mut stream);
                         continue;
                     }
-                    if req.method == "GET" && req.path == "/v1/speakers" {
-                        handle_speakers(&mut stream);
+                    if req.method == "GET" && req.path == "/v1/voices" {
+                        handle_voices(&mut stream, &voice_c, voice_lang);
                         continue;
                     }
                     if req.method == "POST"
@@ -354,9 +372,8 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
                         let vreq = match ValidatedTtsRequest::parse(
                             &req.body,
                             is_stream,
-                            has_clone,
-                            def_spk,
-                            def_lang,
+                            &voice_c.name,
+                            voice_lang,
                         ) {
                             Ok(v) => v,
                             Err(msg) => {
@@ -368,7 +385,6 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
                         let seed = vreq.resolve_seed_or_time();
                         let prep = prepare_markup_06b(
                             &vreq.text,
-                            &voice_c,
                             false,
                             if vreq.seed_set { Some(seed) } else { None },
                             if vreq.temp_set {
@@ -412,7 +428,6 @@ impl SynthesisScheduler for ContinuousBatchScheduler {
                             });
                             let breq = BatchReq {
                                 text: prep.text,
-                                speaker_id: vreq.speaker_id,
                                 language_id: vreq.language_id,
                                 temperature: prep.temperature,
                                 top_k: vreq.top_k,
@@ -559,6 +574,8 @@ pub struct ServeConfig {
     pub runtime: Arc<ComputeRuntime>,
     pub model: Arc<Model06B>,
     pub voice: Arc<VoiceBindings>,
+    /// Idioma propio de la voz cargada (`None` si no tiene); es el idioma por defecto de las peticiones.
+    pub voice_language_id: Option<i32>,
     pub host: Ipv4Addr,
     pub port: u16,
     pub workers: usize,
@@ -571,6 +588,7 @@ pub fn serve(cfg: ServeConfig) -> Result<(), String> {
         runtime,
         model,
         voice,
+        voice_language_id,
         host,
         port,
         workers,
@@ -591,7 +609,7 @@ pub fn serve(cfg: ServeConfig) -> Result<(), String> {
         eprintln!("  POST /v1/tts          — generate speech (returns WAV, BATCHED)");
         eprintln!("  POST /v1/tts/stream   — generate speech (chunked PCM, BATCHED)");
         eprintln!("  POST /v1/audio/speech — OpenAI-compatible TTS (BATCHED)");
-        eprintln!("  GET  /v1/speakers     — list speakers");
+        eprintln!("  GET  /v1/voices       — list the loaded voice");
         eprintln!("  GET  /v1/health       — health check\n");
         eprintln!("Press Ctrl+C to stop.\n");
 
@@ -599,6 +617,7 @@ pub fn serve(cfg: ServeConfig) -> Result<(), String> {
             runtime,
             model,
             voice,
+            voice_language_id,
             max_batch,
         });
         sched.run(listener)
@@ -611,7 +630,7 @@ pub fn serve(cfg: ServeConfig) -> Result<(), String> {
         eprintln!("  POST /v1/tts          — generate speech (returns WAV)");
         eprintln!("  POST /v1/tts/stream   — generate speech (chunked PCM stream)");
         eprintln!("  POST /v1/audio/speech — OpenAI-compatible TTS");
-        eprintln!("  GET  /v1/speakers     — list speakers");
+        eprintln!("  GET  /v1/voices       — list the loaded voice");
         eprintln!("  GET  /v1/health       — health check\n");
         eprintln!("Press Ctrl+C to stop.\n");
 
@@ -619,6 +638,7 @@ pub fn serve(cfg: ServeConfig) -> Result<(), String> {
             runtime,
             model,
             voice,
+            voice_language_id,
             n_workers: workers,
             physical_cores,
         });

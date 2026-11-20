@@ -8,7 +8,7 @@ use std::net::TcpStream;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use qwen_core::config::{PRESET_SPEAKERS, SAMPLE_RATE};
+use qwen_core::config::{language_name, SAMPLE_RATE};
 use qwen_core::MarkupPlanner;
 use qwen_engine::{
     encode_wav_bytes, prepare_markup_06b, render_spans_buffer,
@@ -264,28 +264,21 @@ pub fn handle_health(stream: &mut TcpStream) {
     send_json(stream, 200, "{\"status\":\"ok\"}");
 }
 
-pub fn handle_speakers(stream: &mut TcpStream) {
-    let mut out = String::from("{\"speakers\":[");
-    for (idx, spk) in PRESET_SPEAKERS.iter().enumerate() {
-        if idx > 0 {
-            out.push(',');
-        }
-        out.push_str(&format!(
-            "{{\"name\":\"{}\",\"language\":\"{}\",\"gender\":\"{}\"}}",
-            spk.name, spk.language, spk.gender
-        ));
-    }
-    out.push_str("]}");
-    send_json(stream, 200, &out);
-}
-
-pub fn default_voice_context(base_voice: &VoiceBindings) -> (bool, i32, Option<i32>) {
-    let has_clone = !matches!(base_voice.identity, VoiceIdentity::Preset(_));
-    let (def_spk, def_lang) = match &base_voice.identity {
-        VoiceIdentity::Preset(id) => (*id, Some(2050)),
-        _ => (3061, None),
-    };
-    (has_clone, def_spk, def_lang)
+/// `GET /v1/voices`: voz cargada con su idioma y si lleva ICL.
+pub fn handle_voices(
+    stream: &mut TcpStream,
+    voice: &VoiceBindings,
+    voice_language_id: Option<i32>,
+) {
+    let language = voice_language_id
+        .and_then(language_name)
+        .map(serde_json::Value::from)
+        .unwrap_or(serde_json::Value::Null);
+    let icl = matches!(voice.identity, VoiceIdentity::Icl { .. });
+    let body = serde_json::json!({
+        "voices": [{ "name": voice.name, "language": language, "icl": icl }]
+    });
+    send_json(stream, 200, &body.to_string());
 }
 
 pub fn log_wav_sent(bytes: usize, samples_len: usize, elapsed_s: f64) {
@@ -369,29 +362,15 @@ impl AudioSink for HttpAudioChunkSink<'_> {
     }
 }
 
-struct PreparedHttpTts<'a> {
-    voice_ref: &'a VoiceBindings,
+struct PreparedHttpTts {
     prep: qwen_engine::PreparedMarkup,
     effective_seed: u32,
 }
 
-fn prepare_http_tts<'a>(
-    base_voice: &'a VoiceBindings,
-    vreq: &ValidatedTtsRequest,
-    owned_voice: &'a mut Option<VoiceBindings>,
-) -> PreparedHttpTts<'a> {
+fn prepare_http_tts(vreq: &ValidatedTtsRequest) -> PreparedHttpTts {
     let seed = vreq.resolve_seed_or_time();
-    if matches!(base_voice.identity, VoiceIdentity::Preset(_)) {
-        // Las voces preset no tienen pesos WOVR; solo cambia la identidad del preset.
-        *owned_voice = Some(VoiceBindings {
-            identity: VoiceIdentity::Preset(vreq.speaker_id),
-            ..base_voice.clone()
-        });
-    }
-    let voice_ref = owned_voice.as_ref().unwrap_or(base_voice);
     let prep = prepare_markup_06b(
         &vreq.text,
-        voice_ref,
         false,
         if vreq.seed_set { Some(seed) } else { None },
         if vreq.temp_set {
@@ -407,7 +386,6 @@ fn prepare_http_tts<'a>(
         seed
     };
     PreparedHttpTts {
-        voice_ref,
         prep,
         effective_seed,
     }
@@ -425,15 +403,14 @@ pub fn warm_up_session(
     runtime: &ComputeRuntime,
     model: &Model06B,
     base_voice: &VoiceBindings,
+    voice_language_id: Option<i32>,
     scratch: &mut SessionScratch,
 ) {
-    let (has_clone, def_spk, def_lang) = default_voice_context(base_voice);
     let vreq = match ValidatedTtsRequest::parse(
         r#"{"text":"Hello.","seed":1}"#,
         true,
-        has_clone,
-        def_spk,
-        def_lang,
+        &base_voice.name,
+        voice_language_id,
     ) {
         Ok(v) => v,
         Err(msg) => {
@@ -441,8 +418,7 @@ pub fn warm_up_session(
             return;
         }
     };
-    let mut owned_voice = None;
-    let ctx = prepare_http_tts(base_voice, &vreq, &mut owned_voice);
+    let ctx = prepare_http_tts(&vreq);
     let mut exec = build_http_exec(&vreq, &ctx.prep, ctx.effective_seed, true, AbortHandle::new());
     exec.config.max_tokens = WARM_UP_FRAMES;
     let mut sink = MemorySink::new(0);
@@ -450,7 +426,7 @@ pub fn warm_up_session(
     match synthesize_to_sink(
         runtime,
         model,
-        ctx.voice_ref,
+        base_voice,
         scratch,
         &exec,
         &ctx.prep.text,
@@ -470,7 +446,6 @@ fn build_http_exec(
 ) -> RequestExecution {
     RequestExecution {
         config: RequestConfig {
-            speaker_id: vreq.speaker_id,
             language_id: vreq.language_id,
             temperature: prep.temperature,
             top_k: vreq.top_k,
@@ -499,16 +474,15 @@ pub fn handle_tts_full(
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
-    let mut owned_voice = None;
-    let ctx = prepare_http_tts(base_voice, vreq, &mut owned_voice);
-    let voice_ref = ctx.voice_ref;
+    let ctx = prepare_http_tts(vreq);
+    let voice_ref = base_voice;
     let prep = ctx.prep;
     let effective_seed = ctx.effective_seed;
 
     eprintln!(
-        "[HTTP] TTS: \"{}\" (speaker={}, lang={}, seed={})",
+        "[HTTP] TTS: \"{}\" (voice={}, lang={}, seed={})",
         prep.text,
-        vreq.speaker_id,
+        base_voice.name,
         vreq.language_id.unwrap_or(0),
         effective_seed
     );
@@ -584,16 +558,15 @@ pub fn handle_tts_stream(
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
-    let mut owned_voice = None;
-    let ctx = prepare_http_tts(base_voice, vreq, &mut owned_voice);
-    let voice_ref = ctx.voice_ref;
+    let ctx = prepare_http_tts(vreq);
+    let voice_ref = base_voice;
     let prep = ctx.prep;
     let effective_seed = ctx.effective_seed;
 
     eprintln!(
-        "[HTTP] TTS stream: \"{}\" (speaker={}, lang={}, seed={})",
+        "[HTTP] TTS stream: \"{}\" (voice={}, lang={}, seed={})",
         prep.text,
-        vreq.speaker_id,
+        base_voice.name,
         vreq.language_id.unwrap_or(0),
         effective_seed
     );
@@ -678,6 +651,7 @@ pub fn handle_connection(
     runtime: &ComputeRuntime,
     model: &Model06B,
     base_voice: &VoiceBindings,
+    voice_language_id: Option<i32>,
     scratch: &mut SessionScratch,
     mut stream: TcpStream,
     peer_ip: &str,
@@ -702,19 +676,19 @@ pub fn handle_connection(
         return;
     }
 
-    let (has_clone, def_spk, def_lang) = default_voice_context(base_voice);
+    let voice_name = base_voice.name.as_str();
 
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/v1/health") => handle_health(&mut stream),
-        ("GET", "/v1/speakers") => handle_speakers(&mut stream),
+        ("GET", "/v1/voices") => handle_voices(&mut stream, base_voice, voice_language_id),
         ("POST", "/v1/tts") | ("POST", "/v1/audio/speech") => {
-            match ValidatedTtsRequest::parse(&req.body, false, has_clone, def_spk, def_lang) {
+            match ValidatedTtsRequest::parse(&req.body, false, voice_name, voice_language_id) {
                 Ok(vreq) => handle_tts_full(runtime, model, base_voice, scratch, &mut stream, &vreq),
                 Err(msg) => send_error(&mut stream, 400, &msg),
             }
         }
         ("POST", "/v1/tts/stream") => {
-            match ValidatedTtsRequest::parse(&req.body, true, has_clone, def_spk, def_lang) {
+            match ValidatedTtsRequest::parse(&req.body, true, voice_name, voice_language_id) {
                 Ok(vreq) => {
                     handle_tts_stream(runtime, model, base_voice, scratch, &mut stream, &vreq)
                 }

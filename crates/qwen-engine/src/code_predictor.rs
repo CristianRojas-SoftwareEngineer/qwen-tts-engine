@@ -12,7 +12,6 @@ use qwen_kernels::{AlignedBuf, ComputeRuntime, KernelDispatch};
 
 use crate::model::{
     lookup_codec_embed, Model06B, QuantWeight, SessionScratch, TransformerLayerWeights,
-    VoiceBindings,
 };
 
 #[inline]
@@ -396,7 +395,6 @@ fn cp_transformer_step(
 pub fn cp_predict(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    voice: &VoiceBindings,
     scratch: &mut SessionScratch,
     talker_hidden: &[f32],
     code0: i32,
@@ -422,7 +420,7 @@ pub fn cp_predict(
 
     scratch.cp_bufs.dec_x[..CP_HIDDEN_SIZE].copy_from_slice(&talker_hidden[..CP_HIDDEN_SIZE]);
     if code0 >= 0 && (code0 as usize) < CODEC_VOCAB_SIZE {
-        lookup_codec_embed(d, model, voice, code0, &mut scratch.cp_bufs.x1in);
+        lookup_codec_embed(d, model, code0, &mut scratch.cp_bufs.x1in);
     } else {
         scratch.cp_bufs.x1in.fill_zero();
     }
@@ -506,9 +504,9 @@ mod tests {
     use crate::model::ModelLoadOptions;
     use std::path::PathBuf;
 
-    /// Carga `models/qwen3-tts-0.6b`; `None` (y la prueba se omite) si el modelo no está.
+    /// Carga `models/qwen3-tts-0.6b-base`; `None` (y la prueba se omite) si el modelo no está.
     fn load_model() -> Option<(ComputeRuntime, Model06B)> {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/qwen3-tts-0.6b");
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/qwen3-tts-0.6b-base");
         if !dir.exists() {
             eprintln!("Se omite la prueba: falta el modelo en {}", dir.display());
             return None;
@@ -552,7 +550,6 @@ mod tests {
     fn build_prefix(
         runtime: &ComputeRuntime,
         model: &Model06B,
-        voice: &VoiceBindings,
         scratch: &mut SessionScratch,
         seed: u32,
         pos: usize,
@@ -563,7 +560,7 @@ mod tests {
         let code0 = rng.code();
         scratch.cp_kv.len = 0;
         scratch.cp_bufs.dec_x[..CP_HIDDEN_SIZE].copy_from_slice(&hidden);
-        lookup_codec_embed(d, model, voice, code0, &mut scratch.cp_bufs.x1in);
+        lookup_codec_embed(d, model, code0, &mut scratch.cp_bufs.x1in);
         cp_step2(runtime, model, scratch, 0);
         let cb = &mut scratch.cp_bufs;
         cb.dec_x[..CP_HIDDEN_SIZE].copy_from_slice(&cb.x1in[..CP_HIDDEN_SIZE]);
@@ -623,7 +620,6 @@ mod tests {
     #[test]
     fn step2_equals_two_steps_at_arbitrary_pos() {
         let Some((runtime, model)) = load_model() else { return };
-        let voice = VoiceBindings::preset(3061);
         let d = runtime.dispatch;
         for pos in [2usize, 9] {
             let mut rng = Lcg(0xABCD_0000 + pos as u32);
@@ -631,7 +627,7 @@ mod tests {
 
             // Camino A: dos pasos de 1 posicion.
             let mut sa = SessionScratch::new();
-            build_prefix(&runtime, &model, &voice, &mut sa, 77, pos);
+            build_prefix(&runtime, &model, &mut sa, 77, pos);
             cp_code_embed(d, &model, 0, c0, &mut sa.cp_bufs.dec_x);
             cp_transformer_step(&runtime, &model, &mut sa, pos, 0.0);
             let xa0: Vec<f32> = sa.cp_bufs.dec_x[..CP_HIDDEN_SIZE].to_vec();
@@ -641,7 +637,7 @@ mod tests {
 
             // Camino B: una pasada de 2 posiciones, con centinela NaN a partir de `pos`.
             let mut sb = SessionScratch::new();
-            build_prefix(&runtime, &model, &voice, &mut sb, 77, pos);
+            build_prefix(&runtime, &model, &mut sb, 77, pos);
             poison_kv_from(&mut sb, pos);
             cp_code_embed(d, &model, 0, c0, &mut sb.cp_bufs.dec_x);
             cp_code_embed(d, &model, 1, c1, &mut sb.cp_bufs.x1in);
@@ -657,7 +653,6 @@ mod tests {
     #[test]
     fn rejection_rollback_is_exact() {
         let Some((runtime, model)) = load_model() else { return };
-        let voice = VoiceBindings::preset(3061);
         let d = runtime.dispatch;
         let pos = 9usize;
         let mut rng = Lcg(0x5EED_0001);
@@ -666,7 +661,7 @@ mod tests {
 
         // Camino B: pasada de 2 posiciones, rechazo y paso de 1 posicion con otra entrada.
         let mut sb = SessionScratch::new();
-        build_prefix(&runtime, &model, &voice, &mut sb, 91, pos);
+        build_prefix(&runtime, &model, &mut sb, 91, pos);
         cp_code_embed(d, &model, 0, c0, &mut sb.cp_bufs.dec_x);
         cp_code_embed(d, &model, 1, c1, &mut sb.cp_bufs.x1in);
         cp_step2(&runtime, &model, &mut sb, pos);
@@ -676,7 +671,7 @@ mod tests {
 
         // Referencia: dos pasos de 1 posicion con la entrada real.
         let mut sr = SessionScratch::new();
-        build_prefix(&runtime, &model, &voice, &mut sr, 91, pos);
+        build_prefix(&runtime, &model, &mut sr, 91, pos);
         cp_code_embed(d, &model, 0, c0, &mut sr.cp_bufs.dec_x);
         cp_transformer_step(&runtime, &model, &mut sr, pos, 0.0);
         cp_code_embed(d, &model, 1, c1b, &mut sr.cp_bufs.dec_x);
@@ -694,7 +689,6 @@ mod tests {
     fn sequential_reference(
         runtime: &ComputeRuntime,
         model: &Model06B,
-        voice: &VoiceBindings,
         hidden: &[f32],
         code0: i32,
     ) -> ([i32; 15], usize) {
@@ -703,7 +697,7 @@ mod tests {
         let mut scratch = SessionScratch::new();
         scratch.cp_kv.len = 0;
         scratch.cp_bufs.dec_x[..CP_HIDDEN_SIZE].copy_from_slice(&hidden[..CP_HIDDEN_SIZE]);
-        lookup_codec_embed(d, model, voice, code0, &mut scratch.cp_bufs.x1in);
+        lookup_codec_embed(d, model, code0, &mut scratch.cp_bufs.x1in);
         cp_step2(runtime, model, &mut scratch, 0);
         let cb = &mut scratch.cp_bufs;
         cb.dec_x[..CP_HIDDEN_SIZE].copy_from_slice(&cb.x1in[..CP_HIDDEN_SIZE]);
@@ -744,13 +738,12 @@ mod tests {
     #[test]
     fn cp_predict_matches_sequential_reference() {
         let Some((runtime, model)) = load_model() else { return };
-        let voice = VoiceBindings::preset(3061);
         let mut rng = Lcg(0xC0DE_1234);
         let (mut total_hits, mut total_guesses) = (0usize, 0usize);
         for pair in 0..16 {
             let hidden = rng.hidden();
             let code0 = rng.code();
-            let (expected, hits) = sequential_reference(&runtime, &model, &voice, &hidden, code0);
+            let (expected, hits) = sequential_reference(&runtime, &model, &hidden, code0);
             total_hits += hits;
             total_guesses += 13;
 
@@ -759,7 +752,6 @@ mod tests {
             cp_predict(
                 &runtime,
                 &model,
-                &voice,
                 &mut scratch,
                 &hidden,
                 code0,

@@ -3,7 +3,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -86,31 +85,6 @@ pub const CODEC_NO_THINK: i32 = 2155;
 pub const CODEC_THINK_BOS: i32 = 2156;
 pub const CODEC_THINK_EOS: i32 = 2157;
 
-#[derive(Debug, Clone, Copy)]
-pub struct SpeakerPreset {
-    pub name: &'static str,
-    pub id: i32,
-    pub language: &'static str,
-    pub gender: &'static str,
-}
-
-pub const PRESET_SPEAKERS: &[SpeakerPreset] = &[
-    SpeakerPreset { name: "ryan", id: 3061, language: "English", gender: "male" },
-    SpeakerPreset { name: "aiden", id: 2861, language: "English", gender: "male" },
-    SpeakerPreset { name: "vivian", id: 3065, language: "Chinese", gender: "female" },
-    SpeakerPreset { name: "serena", id: 3066, language: "Chinese", gender: "female" },
-    SpeakerPreset { name: "uncle_fu", id: 3010, language: "Chinese", gender: "male" },
-    SpeakerPreset { name: "dylan", id: 2878, language: "Chinese", gender: "male" },
-    SpeakerPreset { name: "eric", id: 2875, language: "Chinese", gender: "male" },
-    SpeakerPreset { name: "ono_anna", id: 2873, language: "Japanese", gender: "female" },
-    SpeakerPreset { name: "sohee", id: 2864, language: "Korean", gender: "female" },
-];
-
-pub fn lookup_speaker(name: &str) -> Option<SpeakerPreset> {
-    let lower = name.trim().to_ascii_lowercase();
-    PRESET_SPEAKERS.iter().copied().find(|s| s.name == lower)
-}
-
 pub fn lookup_language(name: &str) -> Option<i32> {
     match name.trim().to_ascii_lowercase().as_str() {
         "english" => Some(2050),
@@ -119,12 +93,27 @@ pub fn lookup_language(name: &str) -> Option<i32> {
         "chinese" => Some(2055),
         "japanese" => Some(2058),
         "french" => Some(2061),
-        "sichuan_dialect" => Some(2062),
         "korean" => Some(2064),
         "russian" => Some(2069),
         "italian" => Some(2070),
         "portuguese" => Some(2071),
-        "beijing_dialect" => Some(2074),
+        _ => None,
+    }
+}
+
+/// Inversa de [`lookup_language`]: nombre capitalizado del id de idioma.
+pub fn language_name(id: i32) -> Option<&'static str> {
+    match id {
+        2050 => Some("English"),
+        2053 => Some("German"),
+        2054 => Some("Spanish"),
+        2055 => Some("Chinese"),
+        2058 => Some("Japanese"),
+        2061 => Some("French"),
+        2064 => Some("Korean"),
+        2069 => Some("Russian"),
+        2070 => Some("Italian"),
+        2071 => Some("Portuguese"),
         _ => None,
     }
 }
@@ -157,8 +146,6 @@ struct RawTalkerConfig {
     vocab_size: Option<usize>,
     rms_norm_eps: Option<f32>,
     rope_theta: Option<f32>,
-    #[serde(default)]
-    spk_id: HashMap<String, i32>,
     code_predictor_config: RawCpConfig,
 }
 
@@ -174,11 +161,9 @@ struct RawCpConfig {
 
 #[derive(Debug, Clone)]
 pub struct ModelConfig06B {
-    pub is_base_model: bool,
     pub tts_model_type: String,
     pub rms_norm_eps: f32,
     pub rope_theta: f32,
-    pub spk_ids: HashMap<String, i32>,
 }
 
 impl ModelConfig06B {
@@ -200,10 +185,7 @@ impl ModelConfig06B {
             }
         }
 
-        let tts_model_type = raw
-            .tts_model_type
-            .clone()
-            .unwrap_or_else(|| "custom_voice".to_string());
+        let tts_model_type = raw.tts_model_type.clone().unwrap_or_default();
 
         if tts_model_type.eq_ignore_ascii_case("voice_design") {
             return Err(CoreError::InvalidConfig(
@@ -277,8 +259,12 @@ impl ModelConfig06B {
             )));
         }
 
-        let is_base_model =
-            tts_model_type == "base" || raw.speaker_encoder_config.is_some();
+        if !tts_model_type.eq_ignore_ascii_case("base") || raw.speaker_encoder_config.is_none() {
+            return Err(CoreError::InvalidConfig(
+                "This engine only loads Qwen3-TTS 0.6B Base; CustomVoice is not supported"
+                    .to_string(),
+            ));
+        }
         if let Some(sec) = &raw.speaker_encoder_config {
             if let Some(ed) = sec.enc_dim {
                 if ed != ENC_DIM {
@@ -297,11 +283,9 @@ impl ModelConfig06B {
         }
 
         Ok(Self {
-            is_base_model,
             tts_model_type,
             rms_norm_eps: tc.rms_norm_eps.unwrap_or(RMS_NORM_EPS),
             rope_theta: tc.rope_theta.unwrap_or(ROPE_THETA),
-            spk_ids: tc.spk_id.clone(),
         })
     }
 }

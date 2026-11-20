@@ -14,17 +14,15 @@ use std::process;
 use std::sync::Arc;
 use std::thread;
 
-use qwen_core::config::{lookup_language, lookup_speaker, FRAME_RATE, SAMPLE_RATE};
-use qwen_core::{emotion_name_to_tok, MarkupPlanner, QVoiceFile};
+use qwen_core::config::{language_name, lookup_language, FRAME_RATE, SAMPLE_RATE};
+use qwen_core::{MarkupPlanner, QVoiceFile};
 use qwen_engine::{
-    apply_emotion_direction, attach_emo_ref, batch_bench, batch_self_test,
-    build_voice_from_ref_audio, generate_batch_longform, generate_batch_multi,
-    load_voice_from_file, onset_fade, prepare_markup_06b, render_spans_buffer,
-    resolve_emovoice_06b, split_text_for_batch, synthesize_to_samples, synthesize_to_sink,
+    batch_bench, batch_self_test, build_voice_from_ref_audio, generate_batch_longform,
+    generate_batch_multi, load_voice_from_file, onset_fade, prepare_markup_06b,
+    render_spans_buffer, split_text_for_batch, synthesize_to_samples, synthesize_to_sink,
     tail_glitch_score, tail_trim, time_stretch, validate_wav_path_or_header, write_wav, BatchReq,
-    EmoVoice06BAction, Model06B, ModelLoadOptions, RequestConfig, RequestExecution,
-    SaveVoiceOptions, SessionScratch, StdoutRawSink, VoiceBindings, VoiceIdentity,
-    VoiceLoadOptions, WavStreamSink,
+    Model06B, ModelLoadOptions, RequestConfig, RequestExecution, SaveVoiceOptions,
+    SessionScratch, StdoutRawSink, VoiceBindings, VoiceLoadOptions, WavStreamSink,
 };
 use qwen_kernels::bench::run_matmat_bench;
 use qwen_kernels::selftest::run_kernel_selftest;
@@ -53,47 +51,38 @@ fn spawn_stdin_watcher() -> Result<(), String> {
         .map_err(|e| format!("Error: --watch-stdin could not start the stdin watcher thread: {e}"))
 }
 
-fn print_qvoice_info(path: &Path) -> Result<(), String> {
-    let meta_size = fs::metadata(path)
-        .map_err(|e| format!("stat failed: {e}"))?
-        .len();
-    let qv = QVoiceFile::read_from_file(path, true).map_err(|e| e.to_string())?;
-    let n_ref_frames = qv.ref_codes.len() / 16;
+/// Imprime una línea por voz: archivo, nombre, idioma, ICL y tamaño. Un archivo que el lector
+/// rechaza se muestra con `unsupported: <mensaje del lector>`.
+fn print_qvoice_info(path: &Path) {
     let basename = path
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
-
-    print!(
-        "  {:<30}  v{}  {:3} frames ({:.1}s ref)  {:5.1} KB",
-        basename,
-        qv.version,
-        n_ref_frames,
-        n_ref_frames as f32 / FRAME_RATE,
-        meta_size as f32 / 1024.0
-    );
-    if let Some(m) = &qv.meta {
-        if !m.voice_name.is_empty() {
-            print!("  [{}]", m.voice_name);
+    let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    match QVoiceFile::read_from_file(path) {
+        Ok(qv) => {
+            let name = if qv.voice_name.is_empty() {
+                "-"
+            } else {
+                qv.voice_name.as_str()
+            };
+            let lang = i32::try_from(qv.lang_id)
+                .ok()
+                .and_then(language_name)
+                .unwrap_or("-");
+            let icl = if qv.has_icl() {
+                let n = qv.n_ref_frames();
+                format!("{n} frames ({:.1}s)", n as f32 / FRAME_RATE)
+            } else {
+                "no".to_string()
+            };
+            println!(
+                "  {basename:<30}  name={name}  lang={lang}  icl={icl}  {:.1} KB",
+                size as f32 / 1024.0
+            );
         }
-        if !m.lang_name.is_empty() {
-            print!("  lang={}", m.lang_name);
-        }
-        let msz = if m.model_size >= 2048 {
-            "1.7B"
-        } else if m.model_size > 0 {
-            "0.6B"
-        } else {
-            "?"
-        };
-        print!("  model={msz}");
+        Err(e) => println!("  {basename:<30}  unsupported: {e}"),
     }
-    if !qv.ref_text.is_empty() {
-        let preview: String = qv.ref_text.chars().take(255).collect();
-        print!("  \"{preview}\"");
-    }
-    println!();
-    Ok(())
 }
 
 fn has_qvoice_ext(path: &Path) -> bool {
@@ -106,10 +95,7 @@ fn list_voices(dir_str: &str) -> i32 {
     let p = Path::new(dir_str);
     if p.is_file() && has_qvoice_ext(p) {
         println!("Voice profiles:");
-        if let Err(e) = print_qvoice_info(p) {
-            eprintln!("Error: {dir_str} is not a valid .qvoice file ({e})");
-            return 1;
-        }
+        print_qvoice_info(p);
         return 0;
     }
     let Ok(entries) = fs::read_dir(p) else {
@@ -125,9 +111,8 @@ fn list_voices(dir_str: &str) -> i32 {
 
     let mut count = 0usize;
     for path in paths {
-        if print_qvoice_info(&path).is_ok() {
-            count += 1;
-        }
+        print_qvoice_info(&path);
+        count += 1;
     }
     if count == 0 {
         println!("  (no .qvoice files found)");
@@ -191,69 +176,26 @@ fn try_run_auxiliary_cmd(cfg: &CliArgs) -> Option<i32> {
     None
 }
 
-fn resolve_voice_and_emotion(
+fn resolve_voice(
     cfg: &CliArgs,
     runtime: &ComputeRuntime,
-    model: &mut Model06B,
-    speaker_id: i32,
+    model: &Model06B,
     cli_language_id: Option<i32>,
 ) -> Result<(VoiceBindings, Option<i32>), String> {
-    // Resolver emoción (`0.6B emovoice`) fuera del modo compose
-    let mut emo06b_dir_path: Option<std::path::PathBuf> = None;
-    let mut effective_load_voice = cfg.load_voice.clone();
-    let mut effective_xvector_only = cfg.xvector_only;
-    let mut effective_icl_only = cfg.icl_only;
-
-    if let Some(ref emo_spec) = cfg.emotion {
-        if cfg.compose_spec.is_none() {
-            if emotion_name_to_tok(emo_spec).is_none() {
-                return Err(format!("Error: '{emo_spec}' is not a known emotion"));
-            }
-            let lv_path = cfg.load_voice.as_deref().map(Path::new);
-            let has_clone = cfg.load_voice.is_some() || cfg.ref_audio.is_some();
-            match resolve_emovoice_06b(
-                emo_spec,
-                lv_path,
-                has_clone,
-                cfg.speaker_name.as_deref(),
-                &[],
-            ) {
-                Ok(EmoVoice06BAction::LoadQVoiceIclOnly(p)) => {
-                    if !cfg.silent {
-                        eprintln!("Emotion '{emo_spec}' on 0.6B: voice asset {}", p.display());
-                    }
-                    effective_load_voice = Some(p.to_string_lossy().to_string());
-                    effective_icl_only = true;
-                }
-                Ok(EmoVoice06BAction::LoadBinXVector(p)) => {
-                    if !cfg.silent {
-                        eprintln!("Emotion '{emo_spec}' on 0.6B: voice asset {}", p.display());
-                    }
-                    effective_load_voice = Some(p.to_string_lossy().to_string());
-                    effective_xvector_only = true;
-                }
-                Ok(EmoVoice06BAction::ApplyDirection { tok: _, dir_path }) => {
-                    emo06b_dir_path = Some(dir_path);
-                }
-                Err(e) => return Err(e.to_string()),
-            }
-        }
-    }
-
-    let mut voice_lang_override: Option<i32> = None;
-    let mut voice = if let Some(ref ref_audio_path) = cfg.ref_audio {
+    // Idioma propio de la voz (`None` si no tiene).
+    let mut voice_lang: Option<i32> = None;
+    let voice = if let Some(ref ref_audio_path) = cfg.ref_audio {
         let save_opts = SaveVoiceOptions {
             ref_text: cfg.ref_text.as_deref(),
-            xvector_only: effective_xvector_only || cfg.ref_text.is_none(),
-            graft_mode: cfg.graft,
+            xvector_only: cfg.xvector_only || cfg.ref_text.is_none(),
             icl_frames_cap: cfg.icl_frames,
             max_ref_seconds: cfg.max_ref_duration,
-            language: cfg.language.as_deref().or(Some("English")),
+            language: cfg.language.as_deref(),
             voice_name: cfg.voice_name.as_deref(),
-            target_cv_dir: cfg.target_cv.as_deref().map(Path::new),
             silent: cfg.silent,
             debug: cfg.debug,
         };
+        voice_lang = cli_language_id;
         build_voice_from_ref_audio(
             runtime,
             model,
@@ -262,37 +204,28 @@ fn resolve_voice_and_emotion(
             &save_opts,
         )
         .map_err(|e| e.to_string())?
-    } else if let Some(ref lv_path) = effective_load_voice {
+    } else if let Some(ref lv_path) = cfg.load_voice {
         let lv_opts = VoiceLoadOptions {
-            icl_only: effective_icl_only,
-            graft_mode: cfg.graft,
-            xvector_only: effective_xvector_only,
+            xvector_only: cfg.xvector_only,
             icl_frames_cap: cfg.icl_frames,
-            voice_strength: cfg.voice_strength,
-            vs_l0: cfg.vs_l0,
-            vs_l1: cfg.vs_l1,
             silent: cfg.silent,
         };
-        let (v, meta_opt) = load_voice_from_file(
-            runtime,
-            model,
-            Path::new(lv_path),
-            cfg.ref_text.as_deref(),
-            &lv_opts,
-        )
-        .map_err(|e| e.to_string())?;
-        if let Some(meta) = meta_opt {
-            if meta.lang_id > 0 {
-                if cli_language_id.is_none() {
-                    voice_lang_override = Some(meta.lang_id as i32);
-                    if !cfg.silent && !meta.lang_name.is_empty() {
-                        eprintln!("  Auto-set language from voice: {}", meta.lang_name);
+        let (v, voice_lang_id) =
+            load_voice_from_file(Path::new(lv_path), cfg.ref_text.as_deref(), &lv_opts)
+                .map_err(|e| e.to_string())?;
+        voice_lang = voice_lang_id;
+        if let Some(vl_id) = voice_lang_id {
+            let vl_name = language_name(vl_id).unwrap_or("");
+            match cli_language_id {
+                None => {
+                    if !cfg.silent && !vl_name.is_empty() {
+                        eprintln!("  Auto-set language from voice: {vl_name}");
                     }
-                } else if let Some(cl_id) = cli_language_id {
-                    if cl_id != meta.lang_id as i32 && !cfg.silent {
+                }
+                Some(cl_id) => {
+                    if cl_id != vl_id && !cfg.silent {
                         eprintln!(
-                            "WARNING: voice was created with language '{}' but you specified '{}'",
-                            meta.lang_name,
+                            "WARNING: voice was created with language '{vl_name}' but you specified '{}'",
                             cfg.language.as_deref().unwrap_or("")
                         );
                     }
@@ -301,43 +234,14 @@ fn resolve_voice_and_emotion(
         }
         v
     } else {
-        VoiceBindings::preset(speaker_id)
+        VoiceBindings::default_voice()
     };
 
-    if let Some(dir_path) = emo06b_dir_path {
-        let applied = match &mut voice.identity {
-            VoiceIdentity::XVector(emb) | VoiceIdentity::IclGraft { speaker_embedding: emb, .. } => {
-                apply_emotion_direction(emb, &dir_path, cfg.emotion_strength)
-                    .map_err(|e| e.to_string())?;
-                true
-            }
-            VoiceIdentity::Preset(_) => false,
-        };
-        if !applied {
-            return Err("Error: generic emotion direction requires a cloned voice".to_string());
-        }
-        if !cfg.silent {
-            eprintln!(
-                "Emotion on 0.6B: generic direction @ {:.2}",
-                cfg.emotion_strength
-            );
-        }
+    if !cfg.silent {
+        eprintln!("Voice: {}", voice.name);
     }
 
-    if let (Some(ref emo_ref_path), Some(ref emo_ref_text)) = (&cfg.emo_ref, &cfg.emo_ref_text) {
-        attach_emo_ref(
-            runtime,
-            model,
-            &mut voice,
-            Path::new(emo_ref_path),
-            emo_ref_text,
-            cfg.silent,
-            cfg.debug,
-        )
-        .map_err(|e| e.to_string())?;
-    }
-
-    Ok((voice, voice_lang_override))
+    Ok((voice, voice_lang))
 }
 
 fn postprocess_and_write_wav(cfg: &CliArgs, audio: &mut Vec<f32>) -> Result<(), String> {
@@ -482,14 +386,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         return Err("Error: --text, --compose or --serve is required".to_string());
     }
 
-    let speaker_id = if let Some(ref spk_name) = cfg.speaker_name {
-        lookup_speaker(spk_name)
-            .ok_or_else(|| format!("Error: unknown speaker '{spk_name}'"))?
-            .id
-    } else {
-        3061 // ryan
-    };
-
     let cli_language_id = if let Some(ref lang_name) = cfg.language {
         Some(
             lookup_language(lang_name)
@@ -507,16 +403,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
     if let Some(ref ref_audio) = cfg.ref_audio {
         validate_wav_path_or_header(Path::new(ref_audio)).map_err(|e| e.to_string())?;
     }
-    if let Some(ref emo_ref) = cfg.emo_ref {
-        if cfg.emo_ref_text.as_deref().unwrap_or("").is_empty() {
-            return Err(
-                "Error: --emo-ref requires --emo-ref-text (the reference's transcript)"
-                    .to_string(),
-            );
-        }
-        validate_wav_path_or_header(Path::new(emo_ref)).map_err(|e| e.to_string())?;
-    }
-
     if cfg.watch_stdin {
         spawn_stdin_watcher()?;
     }
@@ -537,18 +423,15 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         silent: cfg.silent,
     };
 
-    let mut model =
+    let model =
         Model06B::load(Path::new(&model_dir_str), &runtime, load_opts).map_err(|e| e.to_string())?;
 
-    if cfg.ref_audio.is_some() && !model.config.is_base_model {
-        return Err("Error: --ref-audio requires a Base model (not CustomVoice)".to_string());
-    }
     if create_voice_only && cfg.ref_audio.is_none() {
         return Err("Error: --ref-audio is required to create a voice profile".to_string());
     }
 
-    let (voice, voice_lang_override) =
-        resolve_voice_and_emotion(&cfg, &runtime, &mut model, speaker_id, cli_language_id)?;
+    let (voice, voice_lang) =
+        resolve_voice(&cfg, &runtime, &model, cli_language_id)?;
 
     if create_voice_only {
         if !cfg.silent {
@@ -570,11 +453,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         return Ok(0);
     }
 
-    let language_id = if matches!(voice.identity, VoiceIdentity::Preset(_)) {
-        Some(cli_language_id.unwrap_or(2050))
-    } else {
-        cli_language_id.or(voice_lang_override).or(Some(2050))
-    };
+    let language_id = cli_language_id.or(voice_lang).or(Some(2050));
 
     let max_tokens = if let Some(dur) = cfg.max_duration {
         if dur > 0.0 {
@@ -595,7 +474,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         let reqs: Vec<BatchReq> = (0..n_multi)
             .map(|b| BatchReq {
                 text: text.to_string(),
-                speaker_id,
                 language_id,
                 temperature: cfg.temperature,
                 top_k: cfg.top_k,
@@ -629,6 +507,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
             runtime: Arc::clone(&runtime),
             model: Arc::clone(&model),
             voice: Arc::clone(&voice),
+            voice_language_id: voice_lang,
             host: cfg.serve_host,
             port,
             workers: cfg.workers,
@@ -672,7 +551,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
             );
         }
         let req_cfg = RequestConfig {
-            speaker_id,
             language_id,
             temperature: cfg.temperature,
             top_k: cfg.top_k,
@@ -698,7 +576,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
                 &chunks,
                 cfg.compose_pause,
                 &req_cfg,
-                speaker_id,
             )
             .map_err(|e| e.to_string())?;
             if (cfg.rate - 1.0).abs() > 1e-4 {
@@ -711,7 +588,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
                 .iter()
                 .map(|c| qwen_core::SpanSpec::Utterance {
                     text: c.clone(),
-                    mood: None,
                     is_filler: false,
                     rate: 0.0,
                     volume: 0.0,
@@ -753,7 +629,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
     if compose_spec.is_none() && !active_text.is_empty() {
         let prep = prepare_markup_06b(
             &active_text,
-            &voice,
             cfg.no_compose,
             if cfg.seed_set { cfg.seed } else { None },
             if cfg.temp_set {
@@ -793,7 +668,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
     }
 
     let req_cfg = RequestConfig {
-        speaker_id,
         language_id,
         temperature: resolved_temp,
         top_k: cfg.top_k,

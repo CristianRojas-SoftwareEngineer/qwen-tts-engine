@@ -6,7 +6,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use qwen_core::config::{
-    lookup_language, lookup_speaker, CODEC_VOCAB_SIZE, DEFAULT_SEED, DEFAULT_TEMPERATURE,
+    lookup_language, CODEC_VOCAB_SIZE, DEFAULT_SEED, DEFAULT_TEMPERATURE,
 };
 use serde_json::Value;
 
@@ -16,7 +16,6 @@ pub const DEFAULT_CHUNK_FRAMES: usize = 10;
 #[derive(Debug, Clone)]
 pub struct ValidatedTtsRequest {
     pub text: String,
-    pub speaker_id: i32,
     pub language_id: Option<i32>,
     pub temperature: f32,
     pub temp_set: bool,
@@ -101,8 +100,7 @@ impl ValidatedTtsRequest {
     pub fn parse(
         body: &str,
         is_stream: bool,
-        has_clone_voice: bool,
-        default_speaker_id: i32,
+        loaded_voice_name: &str,
         default_language_id: Option<i32>,
     ) -> Result<Self, String> {
         let val: Value = serde_json::from_str(body)
@@ -148,26 +146,18 @@ impl ValidatedTtsRequest {
             let id = lookup_language(lang)
                 .ok_or_else(|| format!("unknown language '{lang}'"))?;
             Some(id)
-        } else if has_clone_voice {
-            default_language_id
         } else {
-            Some(2050) // English
+            default_language_id
         };
 
-        // speaker o voice
-        let spk_raw = match extract_opt_str(obj, "speaker")? {
-            Some(s) => Some(s),
-            None => extract_opt_str(obj, "voice")?,
-        };
-        let speaker_id = if let Some(spk) = spk_raw {
-            let preset = lookup_speaker(spk)
-                .ok_or_else(|| format!("unknown speaker '{spk}'"))?;
-            preset.id
-        } else if has_clone_voice {
-            default_speaker_id
-        } else {
-            3061
-        };
+        // voice (opcional): debe coincidir con la voz cargada
+        if let Some(v) = extract_opt_str(obj, "voice")? {
+            if !v.eq_ignore_ascii_case(loaded_voice_name) {
+                return Err(format!(
+                    "voice '{v}' is not loaded (loaded: '{loaded_voice_name}')"
+                ));
+            }
+        }
 
         // temperature en [0.0, 2.0], default = 0.325 (DEFAULT_TEMPERATURE)
         let temp_opt = extract_opt_f64(obj, "temperature")?;
@@ -222,9 +212,6 @@ impl ValidatedTtsRequest {
             None => (Some(DEFAULT_SEED), false),
         };
 
-        // emotion (opcional, validado como string si está presente)
-        let _emotion = extract_opt_str(obj, "emotion")?;
-
         // volumen / velocidad
         let volume = match extract_opt_f64(obj, "volume")? {
             Some(v) => {
@@ -258,7 +245,6 @@ impl ValidatedTtsRequest {
 
         Ok(Self {
             text: text.to_string(),
-            speaker_id,
             language_id,
             temperature,
             temp_set,
@@ -282,42 +268,76 @@ impl ValidatedTtsRequest {
 mod tests {
     use super::*;
 
+    fn parse(body: &str, is_stream: bool) -> Result<ValidatedTtsRequest, String> {
+        ValidatedTtsRequest::parse(body, is_stream, "default", None)
+    }
+
     #[test]
     fn test_http_400_validations() {
-        assert!(ValidatedTtsRequest::parse(r#"{"text":"   \n\t "}"#, false, false, 3061, Some(2050)).is_err());
-        assert!(ValidatedTtsRequest::parse(r#"{"text":"   \\n\\t "}"#, false, false, 3061, Some(2050)).is_err());
-        assert!(ValidatedTtsRequest::parse(r#"{"text":""}"#, false, false, 3061, Some(2050)).is_err());
-        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","language":"Klingon"}"#, false, false, 3061, Some(2050)).is_err());
-        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","speaker":"nadie"}"#, false, false, 3061, Some(2050)).is_err());
-        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","temperature":5}"#, false, false, 3061, Some(2050)).is_err());
-        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","top_k":4000}"#, false, false, 3061, Some(2050)).is_err());
-        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","top_p":1.5}"#, false, false, 3061, Some(2050)).is_err());
-        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","rep_penalty":0.2}"#, false, false, 3061, Some(2050)).is_err());
-        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","voice_design":"true"}"#, false, false, 3061, Some(2050)).is_err());
-        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","speaker":"ryan","rate":1.2}"#, true, false, 3061, Some(2050)).is_err());
-        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","rate":0.01}"#, false, false, 3061, Some(2050)).is_err());
-        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","volume":-1.0}"#, false, false, 3061, Some(2050)).is_err());
-        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","seed":99999999999}"#, false, false, 3061, Some(2050)).is_err());
-        assert!(ValidatedTtsRequest::parse(r#"{"text":"Hi.","voice_design":"TRUE"}"#, false, false, 3061, Some(2050)).is_err());
+        assert!(parse(r#"{"text":"   \n\t "}"#, false).is_err());
+        assert!(parse(r#"{"text":"   \\n\\t "}"#, false).is_err());
+        assert!(parse(r#"{"text":""}"#, false).is_err());
+        assert!(parse(r#"{"text":"Hi.","language":"Klingon"}"#, false).is_err());
+        assert!(parse(r#"{"text":"Hi.","temperature":5}"#, false).is_err());
+        assert!(parse(r#"{"text":"Hi.","top_k":4000}"#, false).is_err());
+        assert!(parse(r#"{"text":"Hi.","top_p":1.5}"#, false).is_err());
+        assert!(parse(r#"{"text":"Hi.","rep_penalty":0.2}"#, false).is_err());
+        assert!(parse(r#"{"text":"Hi.","voice_design":"true"}"#, false).is_err());
+        assert!(parse(r#"{"text":"Hi.","rate":1.2}"#, true).is_err());
+        assert!(parse(r#"{"text":"Hi.","rate":0.01}"#, false).is_err());
+        assert!(parse(r#"{"text":"Hi.","volume":-1.0}"#, false).is_err());
+        assert!(parse(r#"{"text":"Hi.","seed":99999999999}"#, false).is_err());
+        assert!(parse(r#"{"text":"Hi.","voice_design":"TRUE"}"#, false).is_err());
 
-        let ok = ValidatedTtsRequest::parse(r#"{"input":"Hello!","voice":"ryan","rate":1.2}"#, false, false, 3061, Some(2050)).unwrap();
+        let ok = parse(r#"{"input":"Hello!","rate":1.2}"#, false).unwrap();
         assert_eq!(ok.text, "Hello!");
-        assert_eq!(ok.speaker_id, 3061);
         assert_eq!(ok.temperature, DEFAULT_TEMPERATURE);
         assert_eq!(ok.seed, Some(DEFAULT_SEED));
         assert!(!ok.seed_set);
         assert_eq!(ok.resolve_seed_or_time(), DEFAULT_SEED);
         assert!((ok.rate - 1.2).abs() < 1e-6);
 
-        let neg_seed = ValidatedTtsRequest::parse(r#"{"text":"Hi.","seed":-1}"#, false, false, 3061, Some(2050)).unwrap();
+        let neg_seed = parse(r#"{"text":"Hi.","seed":-1}"#, false).unwrap();
         assert_eq!(neg_seed.seed, None);
         assert!(neg_seed.seed_set);
 
-        // Con voz clonada, si se omite `language` se mantiene `None` (no fuerza `English` ni `META`).
-        let clone_ok = ValidatedTtsRequest::parse(r#"{"text":"Cloned.","chunk_frames":999}"#, true, true, 3061, None).unwrap();
+        // Sin `language` y sin idioma en la voz cargada se mantiene `None` (no fuerza `English`).
+        let clone_ok = parse(r#"{"text":"Cloned.","chunk_frames":999}"#, true).unwrap();
         assert_eq!(clone_ok.language_id, None);
         assert_eq!(clone_ok.chunk_frames, 250);
-        let clone_min = ValidatedTtsRequest::parse(r#"{"text":"Cloned.","chunk_frames":0}"#, true, true, 3061, None).unwrap();
+        let clone_min = parse(r#"{"text":"Cloned.","chunk_frames":0}"#, true).unwrap();
         assert_eq!(clone_min.chunk_frames, 2);
+    }
+
+    #[test]
+    fn test_language_defaults_to_voice_language() {
+        let with_voice_lang =
+            ValidatedTtsRequest::parse(r#"{"text":"Hola."}"#, false, "default", Some(2054)).unwrap();
+        assert_eq!(with_voice_lang.language_id, Some(2054));
+        let explicit = ValidatedTtsRequest::parse(
+            r#"{"text":"Hola.","language":"English"}"#,
+            false,
+            "default",
+            Some(2054),
+        )
+        .unwrap();
+        assert_eq!(explicit.language_id, Some(2050));
+    }
+
+    #[test]
+    fn test_voice_field_must_match_loaded_voice() {
+        assert!(parse(r#"{"text":"Hi."}"#, false).is_ok());
+        assert!(parse(r#"{"text":"Hi.","voice":"default"}"#, false).is_ok());
+        assert!(parse(r#"{"text":"Hi.","voice":"DEFAULT"}"#, false).is_ok());
+        let err = parse(r#"{"text":"Hi.","voice":"ryan"}"#, false).unwrap_err();
+        assert_eq!(err, "voice 'ryan' is not loaded (loaded: 'default')");
+        assert!(parse(r#"{"text":"Hi.","voice":5}"#, false).is_err());
+    }
+
+    #[test]
+    fn test_removed_fields_are_ignored() {
+        let r = parse(r#"{"text":"Hi.","speaker":"ryan","emotion":"sad"}"#, false).unwrap();
+        assert_eq!(r.text, "Hi.");
+        assert!(parse(r#"{"text":"Hi.","speaker":"nadie","emotion":7}"#, false).is_ok());
     }
 }

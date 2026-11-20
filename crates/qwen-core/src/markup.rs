@@ -3,18 +3,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VoiceClass {
-    PresetOther = 0,
-    Vivian = 1,
-    Clone = 2,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpanSpec {
     Utterance {
         text: String,
-        mood: Option<String>,
         is_filler: bool,
         rate: f32,
         volume: f32,
@@ -52,35 +44,10 @@ const COMPOSE_MACROS: &[ComposeMacro] = &[
     ComposeMacro { tag: "ugh", text: "Ugh...", rate: 1.00, volume: 0.78 },
 ];
 
-pub fn emotion_name_to_tok(name: &str) -> Option<&'static str> {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "sad" | "sadness" => Some("sad"),
-        "joy" | "happy" | "joyful" => Some("joy"),
-        "anger" | "angry" | "rage" => Some("ang"),
-        "fear" | "afraid" => Some("fear"),
-        "disgust" | "disgusted" => Some("disgust"),
-        "surprise" | "surprised" => Some("surprise"),
-        "contempt" | "scorn" => Some("contempt"),
-        "awe" | "wonder" => Some("awe"),
-        "nostalgia" | "wistful" => Some("nostalgia"),
-        "disapproval" => Some("disapproval"),
-        "remorse" | "regret" => Some("remorse"),
-        "outrage" => Some("outrage"),
-        "despair" => Some("despair"),
-        _ => None,
-    }
-}
-
-fn para_pick_06b(tag: &str, voice_class: VoiceClass) -> Option<(&'static str, u32, f32)> {
+fn para_pick_06b(tag: &str) -> Option<(&'static str, u32, f32)> {
     match tag.to_ascii_lowercase().as_str() {
         "laugh" | "laughs" => Some(("\u{54c8}\u{54c8}\u{54c8}", 2024, 1.1)),
-        "sigh" | "sighs" => {
-            if voice_class == VoiceClass::Vivian {
-                Some(("ahh", 7, 1.1))
-            } else {
-                Some(("\u{5509}", 42, 1.1))
-            }
-        }
+        "sigh" | "sighs" => Some(("\u{5509}", 42, 1.1)),
         "yawn" | "yawns" => Some(("\u{54c8}\u{554a}", 42, 1.1)),
         "wow" => Some(("\u{54c7}", 2024, 1.1)),
         "giggle" | "giggles" => Some(("\u{563f}\u{563f}", 42, 1.1)),
@@ -90,7 +57,7 @@ fn para_pick_06b(tag: &str, voice_class: VoiceClass) -> Option<(&'static str, u3
 }
 
 pub fn is_para_event_tag(tag: &str) -> bool {
-    para_pick_06b(tag, VoiceClass::PresetOther).is_some()
+    para_pick_06b(tag).is_some()
 }
 
 pub struct ParaSubResult {
@@ -106,7 +73,7 @@ impl MarkupPlanner {
     /// Sustitución paralingüística inline para `0.6B`.
     /// Reemplaza `[laugh]`, `[sigh]`, etc. por onomatopeyas delimitadas por comas
     /// en una única generación, fijando la semilla y temperatura de la primera etiqueta.
-    pub fn para_substitute(text: &str, voice_class: VoiceClass) -> ParaSubResult {
+    pub fn para_substitute(text: &str) -> ParaSubResult {
         let mut out = String::with_capacity(text.len() + 48);
         let mut did = false;
         let mut seed = 7u32;
@@ -122,7 +89,7 @@ impl MarkupPlanner {
                     if tl < 32 {
                         if let Ok(raw_tag) = std::str::from_utf8(&bytes[p + 1..close]) {
                             let tag = raw_tag.trim();
-                            if let Some((onom, sd, td)) = para_pick_06b(tag, voice_class) {
+                            if let Some((onom, sd, td)) = para_pick_06b(tag) {
                                 while out.ends_with(' ') {
                                     out.pop();
                                 }
@@ -187,16 +154,10 @@ impl MarkupPlanner {
                     if t.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
                         return true;
                     }
-                    if matches!(tl.as_str(), "neutral" | "none" | "normal") {
-                        return true;
-                    }
                     if is_para_event_tag(t) {
                         return true;
                     }
                     if COMPOSE_MACROS.iter().any(|m| m.tag == tl) {
-                        return true;
-                    }
-                    if emotion_name_to_tok(t).is_some() {
                         return true;
                     }
                 }
@@ -229,18 +190,16 @@ impl MarkupPlanner {
     }
 
     /// Parsea marcado inline / `--compose` en `Vec<SpanSpec>`.
-    /// En `0.6B`, las etiquetas `[emotion]` dividen los spans limpiamente sin aplicar steering.
+    /// Las etiquetas desconocidas (por ejemplo `[xyz]`) quedan como texto.
     pub fn parse_spans(input: &str) -> Vec<SpanSpec> {
         let mut spans = Vec::new();
-        let mut cur_mood: Option<String> = None;
         let mut seg = String::new();
 
-        let flush = |seg: &mut String, cur_mood: &Option<String>, spans: &mut Vec<SpanSpec>| {
+        let flush = |seg: &mut String, spans: &mut Vec<SpanSpec>| {
             let trimmed = seg.trim_matches(|c| matches!(c, ' ' | '\t' | '\n'));
             if !trimmed.is_empty() {
                 spans.push(SpanSpec::Utterance {
                     text: trimmed.to_string(),
-                    mood: cur_mood.clone(),
                     is_filler: false,
                     rate: 0.0,
                     volume: 0.0,
@@ -253,7 +212,7 @@ impl MarkupPlanner {
         let mut p = 0usize;
         while p < bytes.len() {
             if bytes[p] == b'|' {
-                flush(&mut seg, &cur_mood, &mut spans);
+                flush(&mut seg, &mut spans);
                 p += 1;
                 continue;
             }
@@ -274,34 +233,25 @@ impl MarkupPlanner {
                                 } else {
                                     t.get(5..).unwrap_or("")
                                 };
-                                flush(&mut seg, &cur_mood, &mut spans);
+                                flush(&mut seg, &mut spans);
                                 spans.push(SpanSpec::Pause {
                                     seconds: Self::parse_duration_s(num),
                                 });
                                 handled = true;
                             } else if t.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
-                                flush(&mut seg, &cur_mood, &mut spans);
+                                flush(&mut seg, &mut spans);
                                 spans.push(SpanSpec::Pause {
                                     seconds: Self::parse_duration_s(t),
                                 });
                                 handled = true;
                             } else if let Some(m) = COMPOSE_MACROS.iter().find(|m| m.tag == tlow) {
-                                flush(&mut seg, &cur_mood, &mut spans);
+                                flush(&mut seg, &mut spans);
                                 spans.push(SpanSpec::Utterance {
                                     text: m.text.to_string(),
-                                    mood: None,
                                     is_filler: true,
                                     rate: m.rate,
                                     volume: m.volume,
                                 });
-                                handled = true;
-                            } else if matches!(tlow.as_str(), "neutral" | "none" | "normal") {
-                                flush(&mut seg, &cur_mood, &mut spans);
-                                cur_mood = None;
-                                handled = true;
-                            } else if emotion_name_to_tok(t).is_some() {
-                                flush(&mut seg, &cur_mood, &mut spans);
-                                cur_mood = Some(t.to_string());
                                 handled = true;
                             }
                             if handled {
@@ -318,7 +268,7 @@ impl MarkupPlanner {
             seg.push(ch);
             p += ch.len_utf8();
         }
-        flush(&mut seg, &cur_mood, &mut spans);
+        flush(&mut seg, &mut spans);
         spans
     }
 }

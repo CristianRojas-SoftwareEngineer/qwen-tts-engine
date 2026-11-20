@@ -18,10 +18,7 @@ use qwen_core::config::{
     HEAD_DIM, HIDDEN_SIZE, INTERMEDIATE_SIZE, KV_DIM, NUM_CODEBOOKS, NUM_HEADS, NUM_LAYERS,
     Q_DIM, TEXT_HIDDEN_SIZE, TOKEN_TTS_BOS, TOKEN_TTS_EOS, TOKEN_TTS_PAD,
 };
-use qwen_core::{
-    decode_wdelta_bf16, Bf16Ref, BpeTokenizer, F32Ref, LcgRng, MmapStore, ModelConfig06B,
-    QVoiceWeightsOverride, Sampler,
-};
+use qwen_core::{Bf16Ref, BpeTokenizer, F32Ref, LcgRng, MmapStore, ModelConfig06B, Sampler};
 use qwen_kernels::quant::{
     interleave_gate_up_bf16, quant_shape_check, quantize_bf16_to_int8,
     quantize_bf16_to_q4_0, quantize_gate_up_int8, quantize_gate_up_q4_0,
@@ -328,49 +325,6 @@ impl TransformerLayerWeights {
         })
     }
 
-    fn match_wdelta_slot(
-        &mut self,
-        suffix: &str,
-    ) -> (Option<&mut Bf16Weight>, Option<&mut F32Weight>) {
-        match suffix {
-            "self_attn.q_proj.weight" => (Some(&mut self.wq_bf16), None),
-            "self_attn.k_proj.weight" => (Some(&mut self.wk_bf16), None),
-            "self_attn.v_proj.weight" => (Some(&mut self.wv_bf16), None),
-            "self_attn.o_proj.weight" => (Some(&mut self.wo_bf16), None),
-            "self_attn.q_norm.weight" => (None, Some(&mut self.q_norm)),
-            "self_attn.k_norm.weight" => (None, Some(&mut self.k_norm)),
-            "input_layernorm.weight" => (None, Some(&mut self.input_norm)),
-            "post_attention_layernorm.weight" => (None, Some(&mut self.post_attn_norm)),
-            "mlp.gate_proj.weight" => (Some(&mut self.gate_bf16), None),
-            "mlp.up_proj.weight" => (Some(&mut self.up_bf16), None),
-            "mlp.down_proj.weight" => (Some(&mut self.down_bf16), None),
-            _ => (None, None),
-        }
-    }
-
-    fn refresh_derived_weights(
-        &mut self,
-        hidden: usize,
-        q_dim: usize,
-        kv_dim: usize,
-        inter: usize,
-    ) {
-        if let Some(ref mut fused) = self.gate_up_fused_bf16 {
-            interleave_gate_up_bf16(fused, &self.gate_bf16, &self.up_bf16, inter, hidden);
-        }
-        if matches!(self.wq_q, Some(QuantWeight::Int8 { .. })) {
-            let (gu_d, gu_s) = quantize_gate_up_int8(&self.gate_bf16, &self.up_bf16, inter, hidden);
-            self.wq_q = Some(quantize_matrix_int8(&self.wq_bf16, q_dim, hidden));
-            self.wk_q = Some(quantize_matrix_int8(&self.wk_bf16, kv_dim, hidden));
-            self.wv_q = Some(quantize_matrix_int8(&self.wv_bf16, kv_dim, hidden));
-            self.wo_q = Some(quantize_matrix_int8(&self.wo_bf16, hidden, q_dim));
-            self.gate_up_q = Some(QuantWeight::Int8 {
-                data: gu_d,
-                scale: gu_s,
-            });
-            self.down_q = Some(quantize_matrix_int8(&self.down_bf16, hidden, inter));
-        }
-    }
 }
 
 pub struct TalkerWeights {
@@ -533,7 +487,7 @@ pub struct SpeechDecoderWeights {
     pub final_conv_bias: Option<F32Ref>,
 }
 
-/// Modelo Qwen3-TTS `0.6B` (`CustomVoice` o `Base`) inmutable y compartible entre hilos (`Send + Sync`).
+/// Modelo Qwen3-TTS `0.6B` (`Base`) inmutable y compartible entre hilos (`Send + Sync`).
 pub struct Model06B {
     pub config: ModelConfig06B,
     pub tokenizer: BpeTokenizer,
@@ -545,52 +499,47 @@ pub struct Model06B {
     pub cached_tts_pad_embed: AlignedBuf<f32>,
     pub cached_tts_bos_embed: AlignedBuf<f32>,
     pub cached_tts_eos_embed: AlignedBuf<f32>,
-    pub ryan_embed_norm: f32,
+    /// Norma L2 de la fila 3061 del embedding de códec, referencia de escala de la huella.
+    pub spk_ref_norm: f32,
 }
 
+/// Identidad de voz: x-vector solo o x-vector con audio de referencia ICL.
 #[derive(Debug, Clone)]
 pub enum VoiceIdentity {
-    Preset(i32),
     XVector(Vec<f32>),
-    IclGraft {
+    Icl {
         speaker_embedding: Vec<f32>,
         ref_text: String,
         ref_codes: Vec<i32>,
     },
 }
 
-#[derive(Clone)]
-pub struct TextProjOverride {
-    pub fc1_bf16: Vec<u16>,
-    pub fc1_bias: Vec<f32>,
-    pub fc2_bf16: Vec<u16>,
-    pub fc2_bias: Vec<f32>,
-    pub codec_emb_0_2048_bf16: Vec<u16>,
-    pub tts_pad_embed: AlignedBuf<f32>,
-    pub tts_bos_embed: AlignedBuf<f32>,
-    pub tts_eos_embed: AlignedBuf<f32>,
-}
+/// x-vector de la voz `default` incorporada (1024 `f32` little-endian).
+const DEFAULT_VOICE_XVEC: &[u8] = include_bytes!("../assets/default_voice.xvec");
+const _: () = assert!(DEFAULT_VOICE_XVEC.len() == 4096);
 
-/// Vínculos de voz inmutables por locutor (preset, x-vector o injerto ICL + `WOVR`/`emo_ref`).
+/// Nombre de la voz incorporada.
+pub const DEFAULT_VOICE_NAME: &str = "default";
+
+/// Vínculos de voz inmutables por locutor (x-vector, con ICL opcional).
 #[derive(Clone)]
 pub struct VoiceBindings {
     pub identity: VoiceIdentity,
-    pub wovr: Option<TextProjOverride>,
-    pub emo_ref_text: Option<String>,
-    pub emo_ref_codes: Option<Vec<i32>>,
+    pub name: String,
     pub icl_frames_cap: usize,
-    pub graft_mode: bool,
 }
 
 impl VoiceBindings {
-    pub fn preset(speaker_id: i32) -> Self {
+    /// Voz `default` incorporada en el binario; es la voz por defecto del motor.
+    pub fn default_voice() -> Self {
+        let xvec: Vec<f32> = DEFAULT_VOICE_XVEC
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
         Self {
-            identity: VoiceIdentity::Preset(speaker_id),
-            wovr: None,
-            emo_ref_text: None,
-            emo_ref_codes: None,
+            identity: VoiceIdentity::XVector(xvec),
+            name: DEFAULT_VOICE_NAME.to_string(),
             icl_frames_cap: 0,
-            graft_mode: false,
         }
     }
 }
@@ -1098,7 +1047,6 @@ impl Default for SessionScratch {
 /// Por defecto usa `DEFAULT_TEMPERATURE` (`0.325`) y `DEFAULT_SEED` (`4`).
 #[derive(Debug, Clone)]
 pub struct RequestConfig {
-    pub speaker_id: i32,
     pub language_id: Option<i32>,
     /// Temperatura de muestreo del Talker (`[0.0, 2.0]`; por defecto `0.325`).
     pub temperature: f32,
@@ -1121,7 +1069,6 @@ pub struct RequestConfig {
 impl Default for RequestConfig {
     fn default() -> Self {
         Self {
-            speaker_id: 3061, // ryan
             language_id: None,
             temperature: DEFAULT_TEMPERATURE,
             top_k: 50,
@@ -1321,27 +1268,17 @@ pub fn embed_one_text_token_compute(
     dispatch: &KernelDispatch,
     pool: &qwen_kernels::ComputePool,
     model: &Model06B,
-    voice: &VoiceBindings,
     tid: i32,
     tmp1: &mut [f32],
     tmp2: &mut [f32],
     out: &mut [f32],
 ) {
-    let (fc1_w, fc1_b, fc2_w, fc2_b) = if let Some(wovr) = &voice.wovr {
-        (
-            wovr.fc1_bf16.as_slice(),
-            Some(wovr.fc1_bias.as_slice()),
-            wovr.fc2_bf16.as_slice(),
-            Some(wovr.fc2_bias.as_slice()),
-        )
-    } else {
-        (
-            model.talker.text_proj_fc1_bf16.as_slice(),
-            model.talker.text_proj_fc1_bias.as_deref(),
-            model.talker.text_proj_fc2_bf16.as_slice(),
-            model.talker.text_proj_fc2_bias.as_deref(),
-        )
-    };
+    let (fc1_w, fc1_b, fc2_w, fc2_b) = (
+        model.talker.text_proj_fc1_bf16.as_slice(),
+        model.talker.text_proj_fc1_bias.as_deref(),
+        model.talker.text_proj_fc2_bf16.as_slice(),
+        model.talker.text_proj_fc2_bias.as_deref(),
+    );
     compute_text_proj_token(
         dispatch,
         pool,
@@ -1360,7 +1297,6 @@ pub fn embed_one_text_token_compute(
 pub fn lookup_codec_embed(
     dispatch: &KernelDispatch,
     model: &Model06B,
-    voice: &VoiceBindings,
     token_id: i32,
     out: &mut [f32],
 ) {
@@ -1369,16 +1305,7 @@ pub fn lookup_codec_embed(
         return;
     }
     let tid = token_id as usize;
-    let row = if let Some(wovr) = &voice.wovr {
-        let wcv = wovr.codec_emb_0_2048_bf16.len() / HIDDEN_SIZE;
-        if tid < wcv {
-            &wovr.codec_emb_0_2048_bf16[tid * HIDDEN_SIZE..(tid + 1) * HIDDEN_SIZE]
-        } else {
-            &model.talker.codec_embedding_bf16[tid * HIDDEN_SIZE..(tid + 1) * HIDDEN_SIZE]
-        }
-    } else {
-        &model.talker.codec_embedding_bf16[tid * HIDDEN_SIZE..(tid + 1) * HIDDEN_SIZE]
-    };
+    let row = &model.talker.codec_embedding_bf16[tid * HIDDEN_SIZE..(tid + 1) * HIDDEN_SIZE];
     dispatch.bf16_to_f32_vec(&mut out[..HIDDEN_SIZE], row);
 }
 
@@ -1508,12 +1435,13 @@ impl Model06B {
         let (cached_tts_pad_embed, cached_tts_bos_embed, cached_tts_eos_embed) =
             compute_special_text_embeds(runtime, &talker);
 
-        let mut ryan_tmp = [0.0f32; HIDDEN_SIZE];
+        // Norma L2 de la fila 3061 del embedding de códec, referencia de escala de la huella.
+        let mut spk_ref_tmp = [0.0f32; HIDDEN_SIZE];
         runtime.dispatch.bf16_to_f32_vec(
-            &mut ryan_tmp,
+            &mut spk_ref_tmp,
             &talker.codec_embedding_bf16[3061 * HIDDEN_SIZE..3062 * HIDDEN_SIZE],
         );
-        let ryan_embed_norm = ryan_tmp.iter().map(|&v| v * v).sum::<f32>().sqrt();
+        let spk_ref_norm = spk_ref_tmp.iter().map(|&v| v * v).sum::<f32>().sqrt();
 
         if !opts.silent {
             eprintln!("Model loaded in {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0);
@@ -1530,7 +1458,7 @@ impl Model06B {
             cached_tts_pad_embed,
             cached_tts_bos_embed,
             cached_tts_eos_embed,
-            ryan_embed_norm,
+            spk_ref_norm,
         })
     }
 
@@ -1555,166 +1483,6 @@ impl Model06B {
             }
         }
         false
-    }
-
-    pub fn apply_qvoice_weights_override(
-        &mut self,
-        runtime: &ComputeRuntime,
-        weights: &QVoiceWeightsOverride,
-        voice_strength: f32,
-        vs_l0: i32,
-        vs_l1: i32,
-        silent: bool,
-    ) -> Result<(), EngineError> {
-        if !weights.tensors.is_empty() && self.weights_have_q4() {
-            return Err(EngineError::InvalidArg(
-                "error: la voz .qvoice (WDELTA) sobrescribe pesos que están cuantizados en q4_0 y no se pueden recuantizar; use bf16 o --int8"
-                    .to_string(),
-            ));
-        }
-
-        let mut loaded = 0usize;
-        let mut total_bytes = 0usize;
-
-        let parse_f32_payload =
-            |t: &qwen_core::QVoiceWeightTensor, expected_len: usize| -> Result<F32Weight, EngineError> {
-                if t.payload.len() != expected_len * 4 {
-                    return Err(EngineError::Model(format!(
-                        "Invalid F32 payload length in .qvoice tensor '{}': expected {} bytes, got {}",
-                        t.name,
-                        expected_len * 4,
-                        t.payload.len()
-                    )));
-                }
-                let vals: Vec<f32> = t
-                    .payload
-                    .chunks_exact(4)
-                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                    .collect();
-                Ok(F32Weight::Owned(Arc::new(vals)))
-            };
-
-        for t in &weights.tensors {
-            let name = t.name.as_str();
-            let mut matched_bf16: Option<&mut Bf16Weight> = None;
-            let mut matched_f32: Option<&mut F32Weight> = None;
-
-            match name {
-                "talker.model.text_embedding.weight" => {
-                    matched_bf16 = Some(&mut self.talker.text_embedding_bf16)
-                }
-                "talker.text_projection.linear_fc1.weight" => {
-                    matched_bf16 = Some(&mut self.talker.text_proj_fc1_bf16)
-                }
-                "talker.text_projection.linear_fc1.bias" => {
-                    matched_f32 = self.talker.text_proj_fc1_bias.as_mut()
-                }
-                "talker.text_projection.linear_fc2.weight" => {
-                    matched_bf16 = Some(&mut self.talker.text_proj_fc2_bf16)
-                }
-                "talker.text_projection.linear_fc2.bias" => {
-                    matched_f32 = self.talker.text_proj_fc2_bias.as_mut()
-                }
-                "talker.model.codec_embedding.weight" => {
-                    matched_bf16 = Some(&mut self.talker.codec_embedding_bf16)
-                }
-                "talker.codec_head.weight" => matched_bf16 = Some(&mut self.talker.codec_head_bf16),
-                "talker.model.norm.weight" => matched_f32 = Some(&mut self.talker.norm),
-                "talker.code_predictor.model.norm.weight" => matched_f32 = Some(&mut self.cp.norm),
-                _ if name.starts_with("talker.code_predictor.model.codec_embedding.") => {
-                    if let Some(idx_s) = name
-                        .strip_prefix("talker.code_predictor.model.codec_embedding.")
-                        .and_then(|s| s.split('.').next())
-                    {
-                        if let Ok(ci) = idx_s.parse::<usize>() {
-                            if ci < self.cp.codec_emb_bf16.len() {
-                                matched_bf16 = Some(&mut self.cp.codec_emb_bf16[ci]);
-                            }
-                        }
-                    }
-                }
-                _ if name.starts_with("talker.code_predictor.lm_head.") => {
-                    if let Some(idx_s) = name
-                        .strip_prefix("talker.code_predictor.lm_head.")
-                        .and_then(|s| s.split('.').next())
-                    {
-                        if let Ok(ci) = idx_s.parse::<usize>() {
-                            if ci < self.cp.lm_heads.len() {
-                                matched_bf16 = Some(&mut self.cp.lm_heads[ci].bf16);
-                            }
-                        }
-                    }
-                }
-                _ if name.starts_with("talker.code_predictor.model.layers.") => {
-                    if let Some(rest) = name.strip_prefix("talker.code_predictor.model.layers.") {
-                        if let Some((idx_s, suffix)) = rest.split_once('.') {
-                            if let Ok(li) = idx_s.parse::<usize>() {
-                                if let Some(cl) = self.cp.layers.get_mut(li) {
-                                    (matched_bf16, matched_f32) = cl.match_wdelta_slot(suffix);
-                                }
-                            }
-                        }
-                    }
-                }
-                _ if name.starts_with("talker.model.layers.") => {
-                    if let Some(rest) = name.strip_prefix("talker.model.layers.") {
-                        if let Some((idx_s, suffix)) = rest.split_once('.') {
-                            if let Ok(li) = idx_s.parse::<usize>() {
-                                if let Some(l) = self.talker.layers.get_mut(li) {
-                                    (matched_bf16, matched_f32) = l.match_wdelta_slot(suffix);
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-
-            if let Some(slot) = matched_bf16 {
-                let updated = decode_wdelta_bf16(slot.as_slice(), t, voice_strength, vs_l0, vs_l1)?;
-                *slot = Bf16Weight::Owned(Arc::new(updated));
-                loaded += 1;
-                total_bytes += t.payload.len();
-            } else if let Some(slot) = matched_f32 {
-                *slot = parse_f32_payload(t, slot.len())?;
-                loaded += 1;
-                total_bytes += t.payload.len();
-            }
-        }
-
-        if loaded > 0 {
-            for l in &mut self.talker.layers {
-                l.refresh_derived_weights(HIDDEN_SIZE, Q_DIM, KV_DIM, INTERMEDIATE_SIZE);
-            }
-            for cl in &mut self.cp.layers {
-                cl.refresh_derived_weights(
-                    CP_HIDDEN_SIZE,
-                    CP_Q_DIM,
-                    CP_KV_DIM,
-                    CP_INTERMEDIATE_SIZE,
-                );
-            }
-            for head in &mut self.cp.lm_heads {
-                if matches!(head.quant, Some(QuantWeight::Int8 { .. })) {
-                    head.quant = Some(quantize_matrix_int8(&head.bf16, CODEBOOK_SIZE, CP_HIDDEN_SIZE));
-                }
-            }
-
-            let (pad, bos, eos) = compute_special_text_embeds(runtime, &self.talker);
-            self.cached_tts_pad_embed = pad;
-            self.cached_tts_bos_embed = bos;
-            self.cached_tts_eos_embed = eos;
-
-            if !silent {
-                eprintln!(
-                    "  Loaded {loaded}/{} source talker tensors ({:.1} MB) — full weight override",
-                    weights.tensors.len(),
-                    total_bytes as f32 / (1024.0 * 1024.0)
-                );
-            }
-        }
-
-        Ok(())
     }
 
     fn load_talker(

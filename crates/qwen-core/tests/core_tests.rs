@@ -5,11 +5,9 @@
 
 use std::path::PathBuf;
 
-use qwen_core::config::{lookup_language, lookup_speaker, HIDDEN_SIZE, TEXT_HIDDEN_SIZE};
+use qwen_core::config::{language_name, lookup_language, HIDDEN_SIZE, TEXT_HIDDEN_SIZE};
 use qwen_core::{
-    decode_wdelta_bf16, emotion_name_to_tok, encode_wdelta_bf16, read_bin_embedding,
-    write_bin_embedding, BpeTokenizer, LcgRng, MarkupPlanner, MmapStore, ModelConfig06B,
-    QVoiceFile, Sampler, SpanSpec, VoiceClass,
+    BpeTokenizer, LcgRng, MarkupPlanner, MmapStore, ModelConfig06B, QVoiceFile, Sampler, SpanSpec,
 };
 
 fn repo_root() -> PathBuf {
@@ -21,54 +19,91 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-#[test]
-fn test_config_load_06b_and_reject_17b_voicedesign() {
-    let root = repo_root();
-    let cv_dir = root.join("models/qwen3-tts-0.6b");
-    let base_dir = root.join("models/qwen3-tts-0.6b-base");
+/// `config.json` mínimo y válido de Qwen3-TTS 0.6B; `{TYPE}` y `{SPK_ENC}` se sustituyen en cada caso.
+const CONFIG_TEMPLATE: &str = r#"{"model_type":"qwen3_tts","tts_model_size":"0b6","tts_model_type":"{TYPE}",{SPK_ENC}"talker_config":{"hidden_size":1024,"intermediate_size":3072,"num_hidden_layers":28,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"text_hidden_size":2048,"text_vocab_size":151936,"vocab_size":3072,"rms_norm_eps":1e-6,"rope_theta":1000000.0,"code_predictor_config":{"hidden_size":1024,"intermediate_size":3072,"num_hidden_layers":5,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"vocab_size":2048,"num_code_groups":16,"rms_norm_eps":1e-6}}}"#;
+const SPK_ENC: &str = r#""speaker_encoder_config":{"enc_dim":1024,"sample_rate":24000},"#;
 
-    let raw_ok = if cv_dir.exists() && base_dir.exists() {
-        let cfg_cv = ModelConfig06B::load_and_validate(&cv_dir).expect("0.6b CustomVoice valid");
-        assert!(!cfg_cv.is_base_model);
-        assert_eq!(cfg_cv.tts_model_type, "custom_voice");
-        assert_eq!(cfg_cv.spk_ids.get("ryan"), Some(&3061));
+fn synthetic_config(model_type: &str, with_speaker_encoder: bool) -> String {
+    CONFIG_TEMPLATE
+        .replace("{TYPE}", model_type)
+        .replace("{SPK_ENC}", if with_speaker_encoder { SPK_ENC } else { "" })
+}
 
-        let cfg_base = ModelConfig06B::load_and_validate(&base_dir).expect("0.6b Base valid");
-        assert!(cfg_base.is_base_model);
-        assert_eq!(cfg_base.tts_model_type, "base");
-
-        std::fs::read_to_string(cv_dir.join("config.json")).unwrap()
-    } else {
-        r#"{"model_type":"qwen3_tts","tts_model_size":"0b6","tts_model_type":"custom_voice","talker_config":{"hidden_size":1024,"intermediate_size":3072,"num_hidden_layers":28,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"text_hidden_size":2048,"text_vocab_size":151936,"vocab_size":3072,"rms_norm_eps":1e-6,"rope_theta":1000000.0,"code_predictor_config":{"hidden_size":1024,"intermediate_size":3072,"num_hidden_layers":5,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"vocab_size":2048,"num_code_groups":16,"rms_norm_eps":1e-6}}}"#.to_string()
-    };
-
-    // Validación negativa: rechaza 1.7B y VoiceDesign
-    let tmp = std::env::temp_dir().join("qwen_core_cfg_neg_test");
+fn load_synthetic(name: &str, config_json: &str) -> Result<ModelConfig06B, qwen_core::CoreError> {
+    let tmp = std::env::temp_dir().join(format!("qwen_core_cfg_{name}"));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("config.json"), config_json).unwrap();
+    let res = ModelConfig06B::load_and_validate(&tmp);
+    let _ = std::fs::remove_dir_all(&tmp);
+    res
+}
 
-    let bad_17b = raw_ok.replace("\"hidden_size\":1024", "\"hidden_size\":2048").replace("\"hidden_size\": 1024", "\"hidden_size\": 2048");
-    std::fs::write(tmp.join("config.json"), bad_17b).unwrap();
-    let err = ModelConfig06B::load_and_validate(&tmp).unwrap_err();
+#[test]
+fn test_config_only_base_loads_and_rejects_others() {
+    // Base carga (sin distinguir mayúsculas en `tts_model_type`)
+    let cfg = load_synthetic("base_ok", &synthetic_config("base", true)).expect("Base valid");
+    assert_eq!(cfg.tts_model_type, "base");
+    load_synthetic("base_upper", &synthetic_config("BASE", true)).expect("BASE valid");
+
+    // CustomVoice se rechaza con el mensaje exacto
+    let msg = "This engine only loads Qwen3-TTS 0.6B Base; CustomVoice is not supported";
+    let err = load_synthetic("cv", &synthetic_config("custom_voice", false)).unwrap_err();
+    assert_eq!(err.to_string(), msg);
+    // Un checkpoint sin `tts_model_type` tampoco es Base
+    let no_type = synthetic_config("base", true).replace("\"tts_model_type\":\"base\",", "");
+    assert_eq!(load_synthetic("no_type", &no_type).unwrap_err().to_string(), msg);
+    // `base` sin codificador de locutor tampoco
+    let err = load_synthetic("base_no_spk", &synthetic_config("base", false)).unwrap_err();
+    assert_eq!(err.to_string(), msg);
+
+    // Validación negativa: rechaza 1.7B y VoiceDesign
+    let base_ok = synthetic_config("base", true);
+    let bad_17b = base_ok.replace("\"hidden_size\":1024", "\"hidden_size\":2048");
+    let err = load_synthetic("17b", &bad_17b).unwrap_err();
     assert!(err.to_string().contains("1.7B") || err.to_string().contains("2048"));
-
-    let bad_vd = raw_ok.replace("\"custom_voice\"", "\"voice_design\"");
-    std::fs::write(tmp.join("config.json"), bad_vd).unwrap();
-    let err = ModelConfig06B::load_and_validate(&tmp).unwrap_err();
+    let bad_vd = base_ok.replace("\"base\"", "\"voice_design\"");
+    let err = load_synthetic("vd", &bad_vd).unwrap_err();
     assert!(err.to_string().contains("VoiceDesign"));
 
-    let _ = std::fs::remove_dir_all(&tmp);
+    // El checkpoint Base real (si está presente) carga
+    let base_dir = repo_root().join("models/qwen3-tts-0.6b-base");
+    if base_dir.exists() {
+        let cfg_base = ModelConfig06B::load_and_validate(&base_dir).expect("0.6b Base valid");
+        assert_eq!(cfg_base.tts_model_type, "base");
+    } else {
+        eprintln!("Skipping real Base config check (model absent)");
+    }
+}
+
+#[test]
+fn test_language_lookup_without_dialects() {
+    assert_eq!(lookup_language("Spanish"), Some(2054));
+    assert_eq!(lookup_language("Italian"), Some(2070));
+    assert!(lookup_language("sichuan_dialect").is_none());
+    assert!(lookup_language("beijing_dialect").is_none());
+    assert!(lookup_language("Klingon").is_none());
+    for name in [
+        "English", "German", "Spanish", "Chinese", "Japanese", "French", "Korean", "Russian",
+        "Italian", "Portuguese",
+    ] {
+        let id = lookup_language(name).expect(name);
+        assert_eq!(language_name(id), Some(name));
+    }
+    assert_eq!(language_name(2062), None);
+    assert_eq!(language_name(2074), None);
+    assert_eq!(language_name(0), None);
 }
 
 #[test]
 fn test_mmap_store_06b() {
     let root = repo_root();
-    let cv_dir = root.join("models/qwen3-tts-0.6b");
-    if !cv_dir.exists() {
+    let model_dir = root.join("models/qwen3-tts-0.6b-base");
+    if !model_dir.exists() {
         eprintln!("Skipping test_mmap_store_06b (models absent)");
         return;
     }
-    let store = MmapStore::open_model(&cv_dir).expect("open 0.6b model.safetensors");
+    let store = MmapStore::open_model(&model_dir).expect("open 0.6b model.safetensors");
     let tok_emb = store
         .tensor_bf16("talker.model.text_embedding.weight")
         .unwrap();
@@ -76,7 +111,7 @@ fn test_mmap_store_06b() {
     let norm = store.tensor_f32_ref("talker.model.norm.weight").unwrap();
     assert_eq!(norm.len(), HIDDEN_SIZE);
 
-    let sd_store = MmapStore::open_model(&cv_dir.join("speech_tokenizer"))
+    let sd_store = MmapStore::open_model(&model_dir.join("speech_tokenizer"))
         .expect("open speech_tokenizer/model.safetensors");
     assert!(sd_store.contains("decoder.pre_conv.conv.weight"));
 }
@@ -84,12 +119,12 @@ fn test_mmap_store_06b() {
 #[test]
 fn test_bpe_golden_tokens() {
     let root = repo_root();
-    let cv_dir = root.join("models/qwen3-tts-0.6b");
-    if !cv_dir.exists() {
+    let model_dir = root.join("models/qwen3-tts-0.6b-base");
+    if !model_dir.exists() {
         eprintln!("Skipping test_bpe_golden_tokens (models absent)");
         return;
     }
-    let tok = BpeTokenizer::load_from_dir(&cv_dir).unwrap();
+    let tok = BpeTokenizer::load_from_dir(&model_dir).unwrap();
 
     let cases: &[(&str, &[i32])] = &[
         ("Hola, ¿cómo estás?", &[68012, 11, 28286, 66, 71461, 1788, 7061, 30]),
@@ -140,106 +175,186 @@ fn test_bpe_golden_tokens() {
     assert_eq!(tok.decode(cases[2].1), cases[2].0);
 }
 
+fn qvoice_emb() -> Vec<f32> {
+    (0..1024).map(|i| ((i % 37) as f32 - 18.0) * 0.01).collect()
+}
+
+/// Bytes de un `.qvoice` v4 escritos a mano, para probar el lector sin pasar por el escritor.
+fn qvoice_v4_bytes(name: &str, lang_id: u32, ref_text: &str, n_frames: u32) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(b"QVCE");
+    b.extend_from_slice(&4u32.to_le_bytes());
+    b.extend_from_slice(&1024u32.to_le_bytes());
+    for v in qvoice_emb() {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    b.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    b.extend_from_slice(name.as_bytes());
+    b.extend_from_slice(&lang_id.to_le_bytes());
+    b.extend_from_slice(&(ref_text.len() as u32).to_le_bytes());
+    b.extend_from_slice(ref_text.as_bytes());
+    b.extend_from_slice(&n_frames.to_le_bytes());
+    for i in 0..(n_frames as usize * 16) {
+        b.extend_from_slice(&(i as i32).to_le_bytes());
+    }
+    b
+}
+
+fn read_qvoice_bytes(name: &str, bytes: &[u8]) -> Result<QVoiceFile, qwen_core::CoreError> {
+    let path = std::env::temp_dir().join(format!("qwen_core_qv4_{name}.qvoice"));
+    std::fs::write(&path, bytes).unwrap();
+    let res = QVoiceFile::read_from_file(&path);
+    let _ = std::fs::remove_file(&path);
+    res
+}
+
 #[test]
-fn test_qvoice_and_bin_roundtrip() {
-    let emb: Vec<f32> = (0..1024).map(|i| ((i % 37) as f32 - 18.0) * 0.01).collect();
-    let tmp_bin = std::env::temp_dir().join("qwen_core_roundtrip.bin");
-    write_bin_embedding(&tmp_bin, &emb).unwrap();
-    let emb2 = read_bin_embedding(&tmp_bin).unwrap();
-    assert_eq!(emb, emb2);
-    let _ = std::fs::remove_file(&tmp_bin);
-
-    // Roundtrip .qvoice v3 (META + TPAD + WOVR)
-    let qv = QVoiceFile {
-        version: 3,
-        enc_dim: 1024,
-        speaker_embedding: emb.clone(),
-        ref_text: "Hello test".to_string(),
-        ref_codes: vec![12; 16 * 4],
-        meta: Some(qwen_core::QVoiceMeta {
-            lang_id: 2050,
-            lang_name: "English".to_string(),
-            model_size: 1024,
-            enc_dim: 1024,
-            ref_dur: 0.32,
-            voice_name: "test_voice".to_string(),
-            flags: 0,
-        }),
-        tpad: Some(qwen_core::QVoiceTpad {
-            hidden: 1024,
-            tts_pad_embed: vec![0.1; 1024],
-            tts_bos_embed: vec![0.2; 1024],
-            tts_eos_embed: vec![0.3; 1024],
-        }),
-        wovr: Some(qwen_core::QVoiceWovr {
-            wh: 1024,
-            wth: 2048,
-            wcv: 2048,
-            fc1_bf16: vec![0x3F80; 2048 * 2048],
-            fc1_bias: vec![0.01; 2048],
-            fc2_bf16: vec![0x3F80; 1024 * 2048],
-            fc2_bias: vec![0.02; 1024],
-            codec_emb_bf16: vec![0x3F00; 2048 * 1024],
-        }),
-        weights: None,
+fn test_qvoice_v4_roundtrip_without_and_with_icl() {
+    // Sin ICL: tamaño exacto 4124 + len(nombre)
+    let plain = QVoiceFile {
+        speaker_embedding: qvoice_emb(),
+        voice_name: "plain_voice".to_string(),
+        lang_id: 0,
+        ref_text: String::new(),
+        ref_codes: Vec::new(),
     };
-    let tmp_qv = std::env::temp_dir().join("qwen_core_roundtrip.qvoice");
-    qv.write_to_file(&tmp_qv).unwrap();
-    let qv2 = QVoiceFile::read_from_file(&tmp_qv, false).unwrap();
-    assert_eq!(qv, qv2);
-    let _ = std::fs::remove_file(&tmp_qv);
+    let p1 = std::env::temp_dir().join("qwen_core_rt_plain.qvoice");
+    plain.write_to_file(&p1).unwrap();
+    assert_eq!(std::fs::metadata(&p1).unwrap().len() as usize, 4124 + "plain_voice".len());
+    let back = QVoiceFile::read_from_file(&p1).unwrap();
+    assert_eq!(back, plain);
+    assert!(!back.has_icl());
+    let _ = std::fs::remove_file(&p1);
 
-    // Roundtrip WDELTA con compresión LZ4
-    let cv: Vec<u16> = (0..1024).map(|i| 0x3F00u16.wrapping_add((i % 7) as u16)).collect();
-    let base: Vec<u16> = (0..1024).map(|i| 0x3F00u16.wrapping_add((i % 11) as u16)).collect();
-    let wt = encode_wdelta_bf16("talker.model.layers.14.self_attn.q_proj.weight", &base, &cv).unwrap();
-    let decoded = decode_wdelta_bf16(&cv, &wt, 1.0, 14, 27).unwrap();
-    assert_eq!(decoded, base);
-
-    // Rechaza payload raw (dtype_flag == 0) con longitud incompatible
-    let bad_raw = qwen_core::QVoiceWeightTensor {
-        name: "talker.model.norm.weight".to_string(),
-        data_bytes: 4,
-        dtype_flag: 0,
-        payload: vec![0u8; 4],
+    // Con ICL: 4124 + len(nombre) + len(ref_text) + 64 * n_frames
+    let icl = QVoiceFile {
+        speaker_embedding: qvoice_emb(),
+        voice_name: "icl_voz".to_string(),
+        lang_id: 2054,
+        ref_text: "Hello test, ¿qué tal?".to_string(),
+        ref_codes: (0..16 * 4).collect(),
     };
-    assert!(decode_wdelta_bf16(&cv, &bad_raw, 1.0, 14, 27).is_err());
+    let p2 = std::env::temp_dir().join("qwen_core_rt_icl.qvoice");
+    icl.write_to_file(&p2).unwrap();
+    let expected = 4124 + icl.voice_name.len() + icl.ref_text.len() + 64 * 4;
+    assert_eq!(std::fs::metadata(&p2).unwrap().len() as usize, expected);
+    let back = QVoiceFile::read_from_file(&p2).unwrap();
+    assert_eq!(back, icl);
+    assert!(back.has_icl());
+    assert_eq!(back.n_ref_frames(), 4);
+    let _ = std::fs::remove_file(&p2);
 
-    // Rechaza cabecera .qvoice v2 (versión no soportada)
-    let tmp_v2 = std::env::temp_dir().join("qwen_core_legacy_v2.qvoice");
-    let mut v2_bytes = Vec::new();
-    v2_bytes.extend_from_slice(b"QVCE");
-    v2_bytes.extend_from_slice(&2u32.to_le_bytes());
-    v2_bytes.extend_from_slice(&1024u32.to_le_bytes());
-    std::fs::write(&tmp_v2, v2_bytes).unwrap();
-    assert!(QVoiceFile::read_from_file(&tmp_v2, false).is_err());
-    let _ = std::fs::remove_file(&tmp_v2);
+    // El escritor y el lector manual coinciden byte a byte
+    let by_hand = qvoice_v4_bytes("icl_voz", 2054, "Hello test, ¿qué tal?", 4);
+    let p3 = std::env::temp_dir().join("qwen_core_rt_hand.qvoice");
+    icl.write_to_file(&p3).unwrap();
+    assert_eq!(std::fs::read(&p3).unwrap(), by_hand);
+    let _ = std::fs::remove_file(&p3);
+}
+
+#[test]
+fn test_qvoice_v4_rejects_invalid_files() {
+    let good = qvoice_v4_bytes("v", 2050, "text", 2);
+    assert!(read_qvoice_bytes("good", &good).is_ok());
+
+    // v3 (y cualquier versión distinta de 4) se rechaza con un mensaje que pide clonar de nuevo
+    let mut v3 = Vec::new();
+    v3.extend_from_slice(b"QVCE");
+    v3.extend_from_slice(&3u32.to_le_bytes());
+    v3.extend_from_slice(&1024u32.to_le_bytes());
+    let err = read_qvoice_bytes("v3", &v3).unwrap_err().to_string();
+    assert!(err.contains("version 3") && err.contains("version 4 required"), "got: {err}");
+    assert!(err.contains("qwen_core_qv4_v3.qvoice"), "the message must name the path: {err}");
+
+    // magic incorrecto
+    let mut bad_magic = good.clone();
+    bad_magic[0] = b'X';
+    let err = read_qvoice_bytes("magic", &bad_magic).unwrap_err().to_string();
+    assert!(err.contains("bad magic"), "got: {err}");
+
+    // enc_dim incorrecto
+    let mut bad_dim = good.clone();
+    bad_dim[8..12].copy_from_slice(&512u32.to_le_bytes());
+    assert!(read_qvoice_bytes("dim", &bad_dim).is_err());
+
+    // truncado (en cada punto) y bytes sobrantes
+    for cut in [0usize, 3, 11, 100, 4096, good.len() - 1] {
+        let err = read_qvoice_bytes("trunc", &good[..cut]).unwrap_err().to_string();
+        assert!(err.contains("truncated") || err.contains("bad magic"), "cut {cut}: {err}");
+    }
+    let mut extra = good.clone();
+    extra.push(0);
+    let err = read_qvoice_bytes("extra", &extra).unwrap_err().to_string();
+    assert!(err.contains("trailing bytes"), "got: {err}");
+
+    // tamaños excesivos (sin reservar memoria)
+    let mut huge_frames = qvoice_v4_bytes("v", 0, "", 0);
+    let n = huge_frames.len();
+    huge_frames[n - 4..].copy_from_slice(&1_000_001u32.to_le_bytes());
+    assert!(read_qvoice_bytes("huge_frames", &huge_frames).is_err());
+    let mut huge_name = qvoice_v4_bytes("v", 0, "", 0);
+    huge_name[4108..4112].copy_from_slice(&257u32.to_le_bytes());
+    assert!(read_qvoice_bytes("huge_name", &huge_name).is_err());
+
+    // UTF-8 inválido en el nombre
+    let mut bad_utf8 = qvoice_v4_bytes("v", 0, "", 0);
+    bad_utf8[4112] = 0xFF;
+    assert!(read_qvoice_bytes("utf8", &bad_utf8).is_err());
+
+    // lang_id inválido
+    assert!(read_qvoice_bytes("lang", &qvoice_v4_bytes("v", 9999, "", 0)).is_err());
+
+    // ICL incoherente: texto sin códigos, o códigos sin texto
+    assert!(read_qvoice_bytes("text_only", &qvoice_v4_bytes("v", 0, "text", 0)).is_err());
+    assert!(read_qvoice_bytes("codes_only", &qvoice_v4_bytes("v", 0, "", 3)).is_err());
+
+    // El escritor tampoco emite ICL incoherente
+    let incoherent = QVoiceFile {
+        speaker_embedding: qvoice_emb(),
+        voice_name: String::new(),
+        lang_id: 0,
+        ref_text: "text".to_string(),
+        ref_codes: Vec::new(),
+    };
+    let p = std::env::temp_dir().join("qwen_core_incoherent.qvoice");
+    assert!(incoherent.write_to_file(&p).is_err());
+    let _ = std::fs::remove_file(&p);
 }
 
 #[test]
 fn test_markup_sampling_and_lookups() {
-    assert_eq!(lookup_speaker("RYAN").unwrap().id, 3061);
-    assert!(lookup_speaker("nobody").is_none());
     assert_eq!(lookup_language("Italian"), Some(2070));
     assert!(lookup_language("Klingon").is_none());
-    assert_eq!(emotion_name_to_tok("Angry"), Some("ang"));
 
-    let sub = MarkupPlanner::para_substitute("Oh! [laugh] Great!", VoiceClass::PresetOther);
+    let sub = MarkupPlanner::para_substitute("Oh! [laugh] Great!");
     assert!(sub.did_substitute);
     assert_eq!(sub.seed, 2024);
     assert!((sub.temperature - 1.1).abs() < 1e-6);
     assert!(sub.text.contains("哈哈哈"));
 
-    let spans = MarkupPlanner::parse_spans(
-        "Che bella notizia! [pause:400ms] [sad] Devo andare... [neutral] Ciao.",
-    );
-    assert_eq!(spans.len(), 4);
+    let spans = MarkupPlanner::parse_spans("Che bella notizia! [pause:400ms] Devo andare... Ciao.");
+    assert_eq!(spans.len(), 3);
     assert_eq!(
         spans[1],
         SpanSpec::Pause {
             seconds: 0.4
         }
     );
+
+    // Una etiqueta que ya no es de marcado (`[sad]`) queda como texto, igual que `[xyz]`
+    for tag in ["[sad]", "[neutral]", "[xyz]"] {
+        let text = format!("Devo andare {tag} Ciao.");
+        assert!(!MarkupPlanner::has_markup(&text), "{tag} must not count as markup");
+        let spans = MarkupPlanner::parse_spans(&text);
+        assert_eq!(spans.len(), 1);
+        let SpanSpec::Utterance { text: got, .. } = &spans[0] else {
+            panic!("expected an utterance");
+        };
+        assert!(got.contains(tag), "{tag} must stay in the text: {got}");
+    }
+    // `[laugh]` (onomatopeya) y `|` siguen funcionando
+    assert!(MarkupPlanner::has_markup("Oh [laugh] great"));
+    assert!(qwen_core::is_para_event_tag("sigh"));
 
     let mut sampler = Sampler::new();
     let mut rng1 = LcgRng::new(42);
@@ -271,47 +386,7 @@ fn test_markup_sampling_and_lookups() {
 }
 
 #[test]
-fn test_qvoice_rejects_oversized_wovr_and_wdlt() {
-    let tmp_bad = std::env::temp_dir().join("qwen_core_bad_wovr.qvoice");
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"QVCE");
-    bytes.extend_from_slice(&3u32.to_le_bytes());
-    bytes.extend_from_slice(&1024u32.to_le_bytes());
-    for _ in 0..1024 {
-        bytes.extend_from_slice(&0.0f32.to_le_bytes());
-    }
-    bytes.extend_from_slice(&0u32.to_le_bytes()); // ref_text_len
-    bytes.extend_from_slice(&0u32.to_le_bytes()); // n_ref_frames
-    bytes.extend_from_slice(b"WOVR");
-    bytes.extend_from_slice(&1024u32.to_le_bytes());
-    bytes.extend_from_slice(&2048u32.to_le_bytes());
-    bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // wcv corrupto
-    std::fs::write(&tmp_bad, bytes).unwrap();
-    assert!(QVoiceFile::read_from_file(&tmp_bad, false).is_err());
-    let _ = std::fs::remove_file(&tmp_bad);
-
-    // Rechaza n_ref_frames sobredimensionado en archivo truncado sin intentar reservar 64 MB
-    let tmp_trunc = std::env::temp_dir().join("qwen_core_trunc_frames.qvoice");
-    let mut tbytes = Vec::new();
-    tbytes.extend_from_slice(b"QVCE");
-    tbytes.extend_from_slice(&3u32.to_le_bytes());
-    tbytes.extend_from_slice(&1024u32.to_le_bytes());
-    for _ in 0..1024 {
-        tbytes.extend_from_slice(&0.0f32.to_le_bytes());
-    }
-    tbytes.extend_from_slice(&0u32.to_le_bytes());
-    tbytes.extend_from_slice(&1_000_000u32.to_le_bytes());
-    std::fs::write(&tmp_trunc, tbytes).unwrap();
-    assert!(QVoiceFile::read_from_file(&tmp_trunc, false).is_err());
-    let _ = std::fs::remove_file(&tmp_trunc);
-
-    // voice_strength=NaN no propaga NaN en decode_wdelta_bf16
-    let cv: Vec<u16> = vec![0x3F80; 64];
-    let base: Vec<u16> = vec![0x3F00; 64];
-    let wt = encode_wdelta_bf16("talker.model.layers.14.self_attn.q_proj.weight", &base, &cv).unwrap();
-    let decoded = decode_wdelta_bf16(&cv, &wt, f32::NAN, 14, 27).unwrap();
-    assert_eq!(decoded, base);
-
+fn test_markup_pauses_and_pipe_separator() {
     // Pausas negativas o no finitas se sanean a 0.0
     let p_spans = MarkupPlanner::parse_spans("A [pause:-5] [pause:NaN] B");
     assert_eq!(p_spans[1], SpanSpec::Pause { seconds: 0.0 });

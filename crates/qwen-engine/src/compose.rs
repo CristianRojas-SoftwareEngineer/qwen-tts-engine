@@ -4,14 +4,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use qwen_core::config::{DEFAULT_SEED, SAMPLE_RATE};
-use qwen_core::{MarkupPlanner, SpanSpec, VoiceClass};
+use qwen_core::{MarkupPlanner, SpanSpec};
 use qwen_kernels::ComputeRuntime;
 
 use crate::audio::AudioSink;
 use crate::error::EngineError;
-use crate::model::{
-    Model06B, RequestExecution, SessionScratch, VoiceBindings, VoiceIdentity,
-};
+use crate::model::{Model06B, RequestExecution, SessionScratch, VoiceBindings};
 use crate::pipeline::synthesize_to_samples;
 
 pub struct PreparedMarkup {
@@ -22,19 +20,10 @@ pub struct PreparedMarkup {
     pub temperature: f32,
 }
 
-pub fn voice_class_for(voice: &VoiceBindings) -> VoiceClass {
-    match &voice.identity {
-        VoiceIdentity::Preset(3065) => VoiceClass::Vivian,
-        VoiceIdentity::Preset(_) => VoiceClass::PresetOther,
-        VoiceIdentity::XVector(_) | VoiceIdentity::IclGraft { .. } => VoiceClass::Clone,
-    }
-}
-
 /// Aplica sustitución inline de `[laugh]`/`[sigh]`/`[yawn]`/`[wow]`/`[giggle]`/`[scoff]`
 /// para `0.6B` y detecta si el marcado restante requiere composición multi-span.
 pub fn prepare_markup_06b(
     text: &str,
-    voice: &VoiceBindings,
     no_compose: bool,
     user_seed: Option<u32>,
     user_temp: Option<f32>,
@@ -50,8 +39,7 @@ pub fn prepare_markup_06b(
         };
     }
 
-    let vc = voice_class_for(voice);
-    let sub = MarkupPlanner::para_substitute(text, vc);
+    let sub = MarkupPlanner::para_substitute(text);
     let seed = user_seed.unwrap_or(if sub.did_substitute {
         sub.seed
     } else {
@@ -81,7 +69,6 @@ fn synth_one_span_06b(
     scratch: &mut SessionScratch,
     exec: &RequestExecution,
     span_text: &str,
-    mood: Option<&str>,
     rate_override: f32,
     volume_override: f32,
     apply_base_volume: bool,
@@ -89,10 +76,7 @@ fn synth_one_span_06b(
 ) -> Result<Vec<f32>, EngineError> {
     let silent = exec.config.silent;
     if !silent {
-        eprintln!(
-            "Span {idx}: [{}] \"{span_text}\"",
-            mood.unwrap_or("neutral")
-        );
+        eprintln!("Span {idx}: \"{span_text}\"");
     }
     let mut span_cfg = exec.config.clone();
     if rate_override > 0.0 {
@@ -170,7 +154,6 @@ pub fn render_spans_buffer(
             }
             SpanSpec::Utterance {
                 text,
-                mood,
                 is_filler,
                 rate,
                 volume,
@@ -192,7 +175,6 @@ pub fn render_spans_buffer(
                     scratch,
                     exec,
                     text,
-                    mood.as_deref(),
                     *rate,
                     *volume,
                     true,
@@ -269,7 +251,6 @@ pub fn render_spans_stream(
             }
             SpanSpec::Utterance {
                 text,
-                mood,
                 is_filler,
                 rate,
                 volume,
@@ -291,7 +272,6 @@ pub fn render_spans_stream(
                     scratch,
                     exec,
                     text,
-                    mood.as_deref(),
                     *rate,
                     *volume,
                     false,

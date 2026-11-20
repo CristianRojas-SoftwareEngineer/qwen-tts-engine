@@ -690,7 +690,6 @@ fn batch_cp_transformer_step(
 pub fn batch_cp_predict(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    voice: &VoiceBindings,
     bw: &mut BatchWorkspace,
     talker_hidden: &[f32],
     code0: &[i32],
@@ -719,7 +718,7 @@ pub fn batch_cp_predict(
             continue;
         }
         let dst = &mut bw.cp_x[b * CP_HIDDEN_SIZE..(b + 1) * CP_HIDDEN_SIZE];
-        lookup_codec_embed(d, model, voice, code0[b], dst);
+        lookup_codec_embed(d, model, code0[b], dst);
     }
     batch_cp_transformer_step(runtime, model, bw, 1, active);
 
@@ -786,7 +785,6 @@ pub fn batch_self_test(runtime: &ComputeRuntime, model: &Model06B) -> Result<boo
 
     let mut bw = BatchWorkspace::new(b_dim, kv_max)?;
     let mut scratch = SessionScratch::new();
-    let voice = VoiceBindings::preset(3061);
     let mut seed = 0xC0FFEE42u32;
 
     let mut embeds_all = vec![0.0f32; k_steps * HIDDEN_SIZE];
@@ -864,7 +862,6 @@ pub fn batch_self_test(runtime: &ComputeRuntime, model: &Model06B) -> Result<boo
         crate::code_predictor::cp_predict(
             runtime,
             model,
-            &voice,
             &mut scratch,
             &th[b * HIDDEN_SIZE..(b + 1) * HIDDEN_SIZE],
             c0[b],
@@ -874,7 +871,7 @@ pub fn batch_self_test(runtime: &ComputeRuntime, model: &Model06B) -> Result<boo
     }
     bw.force_matvec = true;
     let mut cp_mv = vec![0i32; b_dim * 15];
-    batch_cp_predict(runtime, model, &voice, &mut bw, &th, &c0, &mut cp_mv, None);
+    batch_cp_predict(runtime, model, &mut bw, &th, &c0, &mut cp_mv, None);
     let diff_mv = cp_mv
         .iter()
         .zip(cp_ref.iter())
@@ -883,7 +880,7 @@ pub fn batch_self_test(runtime: &ComputeRuntime, model: &Model06B) -> Result<boo
 
     bw.force_matvec = false;
     let mut cp_mm = vec![0i32; b_dim * 15];
-    batch_cp_predict(runtime, model, &voice, &mut bw, &th, &c0, &mut cp_mm, None);
+    batch_cp_predict(runtime, model, &mut bw, &th, &c0, &mut cp_mm, None);
     let diff_mm = cp_mm
         .iter()
         .zip(cp_ref.iter())
@@ -910,7 +907,6 @@ pub fn batch_bench(runtime: &ComputeRuntime, model: &Model06B) -> Result<(), Eng
     let k_steps = 32usize;
     let mut bw = BatchWorkspace::new(b_dim, k_steps + 4)?;
     let mut scratch = SessionScratch::new();
-    let voice = VoiceBindings::preset(3061);
     let emb_b = vec![0.01f32; b_dim * HIDDEN_SIZE];
     let mut hid = vec![0.0f32; b_dim * HIDDEN_SIZE];
     let c0 = vec![100i32; b_dim];
@@ -919,7 +915,7 @@ pub fn batch_bench(runtime: &ComputeRuntime, model: &Model06B) -> Result<(), Eng
     let t0 = Instant::now();
     for _ in 0..k_steps {
         batch_talker_step(runtime, model, &mut bw, &emb_b, &mut hid)?;
-        batch_cp_predict(runtime, model, &voice, &mut bw, &hid, &c0, &mut codes, None);
+        batch_cp_predict(runtime, model, &mut bw, &hid, &c0, &mut codes, None);
     }
     let bat_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
@@ -939,7 +935,6 @@ pub fn batch_bench(runtime: &ComputeRuntime, model: &Model06B) -> Result<(), Eng
             crate::code_predictor::cp_predict(
                 runtime,
                 model,
-                &voice,
                 &mut scratch,
                 &one_h,
                 100,
@@ -1069,7 +1064,6 @@ pub fn split_text_for_batch(text: &str, target_words: usize, min_words: usize) -
 #[derive(Debug, Clone)]
 pub struct BatchReq {
     pub text: String,
-    pub speaker_id: i32,
     pub language_id: Option<i32>,
     pub temperature: f32,
     pub top_k: i32,
@@ -1091,17 +1085,6 @@ fn prefill_batch_slot(
     max_prompt: Option<usize>,
     seed_hidden_out: &mut [f32],
 ) -> Result<(usize, usize, bool), EngineError> {
-    let preset_override;
-    let voice_ref: &VoiceBindings =
-        if matches!(base_voice.identity, crate::model::VoiceIdentity::Preset(_)) {
-            preset_override = VoiceBindings {
-                identity: crate::model::VoiceIdentity::Preset(req.speaker_id),
-                ..base_voice.clone()
-            };
-            &preset_override
-        } else {
-            base_voice
-        };
     let rc = RequestConfig {
         language_id: req.language_id,
         temperature: req.temperature,
@@ -1114,7 +1097,7 @@ fn prefill_batch_slot(
         ..Default::default()
     };
     let (embeds, pl, tcl, icl_mode) =
-        build_prefill_embeds(runtime, model, voice_ref, scratch, &rc, &req.text)?;
+        build_prefill_embeds(runtime, model, base_voice, scratch, &rc, &req.text)?;
     if let Some(limit) = max_prompt {
         if pl == 0 || pl > limit {
             return Err(EngineError::InvalidArg(format!(
@@ -1211,11 +1194,7 @@ pub fn generate_batch_multi(
         let mut code0 = vec![0i32; b_dim];
         let mut cpcodes = vec![0i32; b_dim * 15];
         let mut sampler = Sampler::new();
-        let tts_pad = if let Some(wovr) = &base_voice.wovr {
-            wovr.tts_pad_embed.as_slice()
-        } else {
-            model.cached_tts_pad_embed.as_slice()
-        };
+        let tts_pad = model.cached_tts_pad_embed.as_slice();
         let mut n_active = b_dim;
 
         let gen_blas = if nt > 1 { nt - 1 } else { 1 };
@@ -1277,7 +1256,6 @@ pub fn generate_batch_multi(
             batch_cp_predict(
                 runtime,
                 model,
-                base_voice,
                 &mut bw,
                 &last_hidden,
                 &code0,
@@ -1296,7 +1274,6 @@ pub fn generate_batch_multi(
                 build_step_embed(
                     d,
                     model,
-                    base_voice,
                     code0[b],
                     &cpcodes[b * 15..(b + 1) * 15],
                     tts_pad,
@@ -1347,13 +1324,11 @@ pub fn generate_batch_longform(
     chunks: &[String],
     chunk_pause_s: f32,
     cfg: &RequestConfig,
-    speaker_id: i32,
 ) -> Result<Vec<f32>, EngineError> {
     let reqs: Vec<BatchReq> = chunks
         .iter()
         .map(|text| BatchReq {
             text: text.clone(),
-            speaker_id,
             language_id: cfg.language_id,
             temperature: cfg.temperature,
             top_k: cfg.top_k,
@@ -1463,11 +1438,7 @@ pub fn run_continuous_batch<T>(
     let d = runtime.dispatch;
     let nt = runtime.pool.n_threads();
     let gen_blas = if nt > 1 { nt - 1 } else { 1 };
-    let tts_pad = if let Some(wovr) = &base_voice.wovr {
-        wovr.tts_pad_embed.as_slice()
-    } else {
-        model.cached_tts_pad_embed.as_slice()
-    };
+    let tts_pad = model.cached_tts_pad_embed.as_slice();
 
     let mut n_active = 0usize;
 
@@ -1690,7 +1661,6 @@ pub fn run_continuous_batch<T>(
         batch_cp_predict(
             runtime,
             model,
-            base_voice,
             &mut bw,
             &last_hidden,
             &code0,
@@ -1710,7 +1680,6 @@ pub fn run_continuous_batch<T>(
             build_step_embed(
                 d,
                 model,
-                base_voice,
                 code0[b],
                 &cpcodes[b * 15..(b + 1) * 15],
                 tts_pad,

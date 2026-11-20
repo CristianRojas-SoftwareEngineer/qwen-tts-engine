@@ -13,7 +13,6 @@ pub struct CliArgs {
     pub model_dir: Option<String>,
     pub text: Option<String>,
     pub output: String,
-    pub speaker_name: Option<String>,
     pub language: Option<String>,
     /// Temperatura de muestreo (por defecto `DEFAULT_TEMPERATURE = 0.325`).
     pub temperature: f32,
@@ -44,20 +43,10 @@ pub struct CliArgs {
     pub xvector_only: bool,
     pub save_voice: Option<String>,
     pub load_voice: Option<String>,
-    pub icl_only: bool,
-    pub graft: bool,
     pub icl_frames: usize,
     pub voice_name: Option<String>,
     pub max_ref_duration: f32,
-    pub target_cv: Option<String>,
-    pub voice_strength: f32,
-    pub vs_l0: i32,
-    pub vs_l1: i32,
 
-    pub emotion: Option<String>,
-    pub emotion_strength: f32,
-    pub emo_ref: Option<String>,
-    pub emo_ref_text: Option<String>,
     pub roughness: f32,
 
     pub compose_spec: Option<String>,
@@ -98,7 +87,6 @@ impl Default for CliArgs {
             model_dir: None,
             text: None,
             output: "output.wav".to_string(),
-            speaker_name: None,
             language: None,
             temperature: DEFAULT_TEMPERATURE,
             temp_set: false,
@@ -124,19 +112,9 @@ impl Default for CliArgs {
             xvector_only: false,
             save_voice: None,
             load_voice: None,
-            icl_only: false,
-            graft: false,
             icl_frames: 0,
             voice_name: None,
             max_ref_duration: 30.0,
-            target_cv: None,
-            voice_strength: 1.0,
-            vs_l0: 14,
-            vs_l1: 27,
-            emotion: None,
-            emotion_strength: 0.25,
-            emo_ref: None,
-            emo_ref_text: None,
             roughness: 0.0,
             compose_spec: None,
             compose_pause: 0.12,
@@ -177,11 +155,10 @@ pub enum ParseOutcome {
 pub fn print_usage(prog: &str) {
     eprintln!("Usage: {prog} -d <model_dir> -t <text> [options]");
     eprintln!("Options (Qwen3-TTS 0.6B):");
-    eprintln!("  -d, --model-dir <path>     Model directory (0.6B CustomVoice or Base)");
+    eprintln!("  -d, --model-dir <path>     Model directory (Qwen3-TTS 0.6B Base)");
     eprintln!("  -t, --text <string>        Text to synthesize");
     eprintln!("  -o, --output <path>        Output WAV file (default: output.wav)");
-    eprintln!("  -s, --speaker <name>       Speaker preset (ryan, vivian, serena, aiden, eric, dylan, uncle_fu, ono_anna, sohee)");
-    eprintln!("  -l, --language <name>      Language (default: English)");
+    eprintln!("  -l, --language <name>      Language (default: the voice language, else English)");
     eprintln!("  -T, --temperature <float>  Sampling temperature (default: 0.325)");
     eprintln!("  -k, --top-k <int>          Top-k sampling (default: 50)");
     eprintln!("  -p, --top-p <float>        Top-p sampling (default: 1.0)");
@@ -202,22 +179,13 @@ pub fn print_usage(prog: &str) {
     eprintln!("  --ref-audio <path>         Reference 24 kHz mono WAV for voice cloning (0.6B-Base)");
     eprintln!("  --ref-text <string>        Transcript of --ref-audio for ICL cloning");
     eprintln!("  --xvector-only             Use speaker embedding only (no ICL)");
-    eprintln!("  --save-voice <path>        Save voice (.qvoice or .bin)");
-    eprintln!("  --load-voice <path>        Load voice (.qvoice or .bin)");
-    eprintln!("  --icl-only                 Skip WDELTA when loading .qvoice");
-    eprintln!("  --graft                    Ignore ref_codes, clone via x-vector (implies --icl-only)");
+    eprintln!("  --save-voice <path>        Save voice (.qvoice)");
+    eprintln!("  --load-voice <path>        Load voice (.qvoice; default: the built-in default voice)");
     eprintln!("  --icl-frames <n>           Cap ICL ref frames (0=all)");
     eprintln!("  --voice-name <name>        Voice metadata name for .qvoice");
     eprintln!("  --max-ref-duration <secs>  Max ref audio seconds (default: 30, 0=all)");
-    eprintln!("  --target-cv <dir>          CustomVoice dir for WDELTA compression in --save-voice");
-    eprintln!("  --voice-strength <a>       .qvoice WDELTA scale (default: 1.0)");
-    eprintln!("  --vs-layers <a-b>          Layer range for --voice-strength (default: 14-27)");
     eprintln!("  --list-voices <dir>        List .qvoice files in directory");
     eprintln!("  --delete-voice <path>      Delete a .qvoice file");
-    eprintln!("  --emotion <name>           Emotion asset/direction (0.6B emovoice)");
-    eprintln!("  --emotion-strength <s>     Dose of dir_<tok>.bin on clone (default: 0.25)");
-    eprintln!("  --emo-ref <path>           Emotion by example (24 kHz mono WAV)");
-    eprintln!("  --emo-ref-text <text>      Transcript of --emo-ref");
     eprintln!("  --roughness <0..1>         Code Predictor Q2_0 down_proj blend");
     eprintln!("  --compose <spec>           Inline markup multi-span synthesis");
     eprintln!("  --compose-pause <s>        Default pause between spoken spans (default: 0.12)");
@@ -328,9 +296,6 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
             "-o" | "--output" => {
                 out.output = take_val(args, &mut i, inline_val, flag)?;
             }
-            "-s" | "--speaker" => {
-                out.speaker_name = Some(take_val(args, &mut i, inline_val, flag)?);
-            }
             "-l" | "--language" => {
                 out.language = Some(take_val(args, &mut i, inline_val, flag)?);
             }
@@ -424,11 +389,6 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
             "--load-voice" => {
                 out.load_voice = Some(take_val(args, &mut i, inline_val, flag)?);
             }
-            "--icl-only" => out.icl_only = true,
-            "--graft" => {
-                out.graft = true;
-                out.icl_only = true;
-            }
             "--icl-frames" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
                 out.icl_frames = s
@@ -441,44 +401,6 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
             "--max-ref-duration" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
                 out.max_ref_duration = parse_finite_f32(&s, "max-ref-duration")?;
-            }
-            "--target-cv" => {
-                out.target_cv = Some(take_val(args, &mut i, inline_val, flag)?);
-            }
-            "--voice-strength" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.voice_strength = parse_finite_f32(&s, "voice-strength")?;
-            }
-            "--vs-layers" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                if let Some((a, b)) = s.split_once('-') {
-                    if let (Ok(l0), Ok(l1)) = (a.parse::<i32>(), b.parse::<i32>()) {
-                        if l0 < 0 || l0 > l1 {
-                            return Err(format!(
-                                "Error: invalid --vs-layers '{s}' (expected 0 <= a <= b)"
-                            ));
-                        }
-                        out.vs_l0 = l0;
-                        out.vs_l1 = l1;
-                    } else {
-                        return Err(format!("Error: invalid --vs-layers '{s}' (expected a-b)"));
-                    }
-                } else {
-                    return Err(format!("Error: invalid --vs-layers '{s}' (expected a-b)"));
-                }
-            }
-            "--emotion" => {
-                out.emotion = Some(take_val(args, &mut i, inline_val, flag)?);
-            }
-            "--emotion-strength" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.emotion_strength = parse_finite_f32(&s, "emotion-strength")?;
-            }
-            "--emo-ref" => {
-                out.emo_ref = Some(take_val(args, &mut i, inline_val, flag)?);
-            }
-            "--emo-ref-text" => {
-                out.emo_ref_text = Some(take_val(args, &mut i, inline_val, flag)?);
             }
             "--roughness" => {
                 out.roughness =
@@ -616,12 +538,22 @@ mod tests {
         ];
         assert!(parse_cli(&d).is_err());
 
-        let e = vec![
-            "qwen_tts".to_string(),
-            "--vs-layers".to_string(),
-            "20-10".to_string(),
-        ];
-        assert!(parse_cli(&e).is_err());
+        for removed in [
+            vec!["qwen_tts", "-s", "ryan"],
+            vec!["qwen_tts", "--speaker", "ryan"],
+            vec!["qwen_tts", "--graft"],
+            vec!["qwen_tts", "--icl-only"],
+            vec!["qwen_tts", "--target-cv", "x"],
+            vec!["qwen_tts", "--voice-strength", "0.5"],
+            vec!["qwen_tts", "--vs-layers", "1-2"],
+            vec!["qwen_tts", "--emotion", "sad"],
+            vec!["qwen_tts", "--emotion-strength", "0.5"],
+            vec!["qwen_tts", "--emo-ref", "x.wav"],
+            vec!["qwen_tts", "--emo-ref-text", "x"],
+        ] {
+            let args: Vec<String> = removed.into_iter().map(str::to_string).collect();
+            assert!(parse_cli(&args).is_err(), "expected error for {args:?}");
+        }
 
         for bad in [
             vec!["qwen_tts", "--temperature", "3.0"],
@@ -633,7 +565,6 @@ mod tests {
             vec!["qwen_tts", "--roughness", "1.2"],
             vec!["qwen_tts", "--seed", "99999999999"],
             vec!["qwen_tts", "--max-tokens", "0"],
-            vec!["qwen_tts", "--vs-layers", "-1-10"],
         ] {
             let args: Vec<String> = bad.into_iter().map(str::to_string).collect();
             assert!(parse_cli(&args).is_err(), "expected error for {args:?}");
@@ -641,10 +572,9 @@ mod tests {
     }
 
     #[test]
-    fn test_graft_implies_icl_only_and_stdout_implies_stream() {
+    fn test_stdout_implies_stream() {
         let a = vec![
             "qwen_tts".to_string(),
-            "--graft".to_string(),
             "--stdout".to_string(),
             "--batch-words".to_string(),
             "2".to_string(),
@@ -652,8 +582,6 @@ mod tests {
         let ParseOutcome::Run(cfg) = parse_cli(&a).unwrap() else {
             panic!("expected Run");
         };
-        assert!(cfg.graft);
-        assert!(cfg.icl_only);
         assert!(cfg.stdout_pcm);
         assert!(cfg.stream);
         assert_eq!(cfg.batch_words, 4);

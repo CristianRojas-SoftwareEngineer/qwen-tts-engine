@@ -143,13 +143,12 @@ pub(crate) fn apply_talker_logit_rules(
 pub(crate) fn build_step_embed(
     dispatch: &KernelDispatch,
     model: &Model06B,
-    voice: &VoiceBindings,
     code0: i32,
     cp_codes: &[i32],
     tts_pad: &[f32],
     out: &mut [f32],
 ) {
-    lookup_codec_embed(dispatch, model, voice, code0, out);
+    lookup_codec_embed(dispatch, model, code0, out);
     for (g, &code_g) in cp_codes.iter().enumerate().take(15) {
         if code_g >= 0 && (code_g as usize) < CODEBOOK_SIZE {
             let off = (code_g as usize) * HIDDEN_SIZE;
@@ -196,24 +195,15 @@ pub(crate) fn resolve_icl_trim_samples(icl_mode: bool) -> usize {
 fn embed_text_cached(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    voice: &VoiceBindings,
     scratch: &mut SessionScratch,
     tid: i32,
     out: &mut [f32],
 ) {
-    let (pad_emb, bos_emb, eos_emb) = if let Some(wovr) = &voice.wovr {
-        (
-            wovr.tts_pad_embed.as_slice(),
-            wovr.tts_bos_embed.as_slice(),
-            wovr.tts_eos_embed.as_slice(),
-        )
-    } else {
-        (
-            model.cached_tts_pad_embed.as_slice(),
-            model.cached_tts_bos_embed.as_slice(),
-            model.cached_tts_eos_embed.as_slice(),
-        )
-    };
+    let (pad_emb, bos_emb, eos_emb) = (
+        model.cached_tts_pad_embed.as_slice(),
+        model.cached_tts_bos_embed.as_slice(),
+        model.cached_tts_eos_embed.as_slice(),
+    );
 
     if tid == TOKEN_TTS_PAD {
         out[..HIDDEN_SIZE].copy_from_slice(pad_emb);
@@ -236,7 +226,6 @@ fn embed_text_cached(
             d,
             pool,
             model,
-            voice,
             t,
             &mut tb.emb_tmp1,
             &mut tb.emb_tmp2,
@@ -261,15 +250,13 @@ pub fn build_prefill_embeds(
     }
 
     let (icl_text, ref_codes_slice): (Option<&str>, Option<&[i32]>) =
-        if let (Some(et), Some(ec)) = (voice.emo_ref_text.as_deref(), voice.emo_ref_codes.as_deref()) {
-            (Some(et), Some(ec))
-        } else if let VoiceIdentity::IclGraft {
+        if let VoiceIdentity::Icl {
             ref_text,
             ref_codes,
             ..
         } = &voice.identity
         {
-            if !voice.graft_mode && !ref_text.is_empty() && !ref_codes.is_empty() {
+            if !ref_text.is_empty() && !ref_codes.is_empty() {
                 (Some(ref_text.as_str()), Some(ref_codes.as_slice()))
             } else {
                 (None, None)
@@ -312,22 +299,13 @@ pub fn build_prefill_embeds(
         codec_tokens.push(CODEC_THINK_BOS);
         codec_tokens.push(CODEC_THINK_EOS);
     }
-    let spk_emb_opt: Option<&[f32]> = match &voice.identity {
-        VoiceIdentity::Preset(spk_id) => {
-            codec_tokens.push(*spk_id);
-            None
-        }
-        VoiceIdentity::XVector(emb) => {
-            codec_tokens.push(-1);
-            Some(emb.as_slice())
-        }
-        VoiceIdentity::IclGraft {
+    let spk_emb: &[f32] = match &voice.identity {
+        VoiceIdentity::XVector(emb) => emb.as_slice(),
+        VoiceIdentity::Icl {
             speaker_embedding, ..
-        } => {
-            codec_tokens.push(-1);
-            Some(speaker_embedding.as_slice())
-        }
+        } => speaker_embedding.as_slice(),
     };
+    codec_tokens.push(-1);
     codec_tokens.push(CODEC_PAD);
     codec_tokens.push(CODEC_BOS);
 
@@ -344,25 +322,17 @@ pub fn build_prefill_embeds(
         )));
     }
 
-    let (tts_pad_embed, tts_bos_embed, tts_eos_embed) = if let Some(wovr) = &voice.wovr {
-        (
-            wovr.tts_pad_embed.as_slice(),
-            wovr.tts_bos_embed.as_slice(),
-            wovr.tts_eos_embed.as_slice(),
-        )
-    } else {
-        (
-            model.cached_tts_pad_embed.as_slice(),
-            model.cached_tts_bos_embed.as_slice(),
-            model.cached_tts_eos_embed.as_slice(),
-        )
-    };
+    let (tts_pad_embed, tts_bos_embed, tts_eos_embed) = (
+        model.cached_tts_pad_embed.as_slice(),
+        model.cached_tts_bos_embed.as_slice(),
+        model.cached_tts_eos_embed.as_slice(),
+    );
 
     let d = runtime.dispatch;
     let mut codec_pad_embed = [0.0f32; HIDDEN_SIZE];
     let mut codec_bos_embed = [0.0f32; HIDDEN_SIZE];
-    lookup_codec_embed(d, model, voice, CODEC_PAD, &mut codec_pad_embed);
-    lookup_codec_embed(d, model, voice, CODEC_BOS, &mut codec_bos_embed);
+    lookup_codec_embed(d, model, CODEC_PAD, &mut codec_pad_embed);
+    lookup_codec_embed(d, model, CODEC_BOS, &mut codec_bos_embed);
 
     let mut input_embeds = vec![0.0f32; prefill_len * HIDDEN_SIZE];
     let mut tmp_embed = [0.0f32; HIDDEN_SIZE];
@@ -373,7 +343,6 @@ pub fn build_prefill_embeds(
         embed_text_cached(
             runtime,
             model,
-            voice,
             scratch,
             tid,
             &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE],
@@ -390,26 +359,24 @@ pub fn build_prefill_embeds(
             dst.copy_from_slice(tts_bos_embed);
         }
         if ctok == -1 {
-            if let Some(spk_emb) = spk_emb_opt {
-                let emb_norm = spk_emb.iter().map(|&v| v * v).sum::<f32>().sqrt();
-                let mut scale = if model.ryan_embed_norm > 0.1 && emb_norm > 0.1 {
-                    model.ryan_embed_norm / emb_norm
-                } else {
-                    1.0
-                };
-                if let Ok(sse) = std::env::var("QWEN_SPK_SCALE") {
-                    if let Ok(f) = sse.trim().parse::<f32>() {
-                        if f.is_finite() {
-                            scale *= f;
-                        }
+            let emb_norm = spk_emb.iter().map(|&v| v * v).sum::<f32>().sqrt();
+            let mut scale = if model.spk_ref_norm > 0.1 && emb_norm > 0.1 {
+                model.spk_ref_norm / emb_norm
+            } else {
+                1.0
+            };
+            if let Ok(sse) = std::env::var("QWEN_SPK_SCALE") {
+                if let Ok(f) = sse.trim().parse::<f32>() {
+                    if f.is_finite() {
+                        scale *= f;
                     }
                 }
-                for j in 0..HIDDEN_SIZE {
-                    dst[j] += spk_emb[j] * scale;
-                }
+            }
+            for j in 0..HIDDEN_SIZE {
+                dst[j] += spk_emb[j] * scale;
             }
         } else {
-            lookup_codec_embed(d, model, voice, ctok, &mut tmp_embed);
+            lookup_codec_embed(d, model, ctok, &mut tmp_embed);
             for j in 0..HIDDEN_SIZE {
                 dst[j] += tmp_embed[j];
             }
@@ -422,10 +389,10 @@ pub fn build_prefill_embeds(
         for i in 0..sec3_len {
             let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
             if i < ref_text_tokens.len() {
-                embed_text_cached(runtime, model, voice, scratch, ref_text_tokens[i], dst);
+                embed_text_cached(runtime, model, scratch, ref_text_tokens[i], dst);
             } else if i < ref_text_tokens.len() + text_content_len {
                 let idx = i - ref_text_tokens.len();
-                embed_text_cached(runtime, model, voice, scratch, text_tokens[idx], dst);
+                embed_text_cached(runtime, model, scratch, text_tokens[idx], dst);
             } else {
                 dst.copy_from_slice(tts_eos_embed);
             }
@@ -445,7 +412,7 @@ pub fn build_prefill_embeds(
             } else {
                 let frame = i - 1;
                 let code0 = ref_codes[frame * NUM_CODEBOOKS];
-                lookup_codec_embed(d, model, voice, code0, &mut tmp_embed);
+                lookup_codec_embed(d, model, code0, &mut tmp_embed);
                 for j in 0..HIDDEN_SIZE {
                     dst[j] += tmp_embed[j];
                 }
@@ -463,7 +430,7 @@ pub fn build_prefill_embeds(
     } else {
         for &tok in &text_tokens {
             let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-            embed_text_cached(runtime, model, voice, scratch, tok, dst);
+            embed_text_cached(runtime, model, scratch, tok, dst);
             for (d_val, &cp_val) in dst.iter_mut().zip(codec_pad_embed.iter()) {
                 *d_val += cp_val;
             }
@@ -710,11 +677,7 @@ pub fn synthesize_to_sink(
             }
         });
 
-        let tts_pad_embed = if let Some(wovr) = &voice.wovr {
-            wovr.tts_pad_embed.as_slice()
-        } else {
-            model.cached_tts_pad_embed.as_slice()
-        };
+        let tts_pad_embed = model.cached_tts_pad_embed.as_slice();
 
         for frame in 0..max_frames {
             if exec.abort.is_cancelled() {
@@ -766,7 +729,6 @@ pub fn synthesize_to_sink(
             cp_predict(
                 runtime,
                 model,
-                voice,
                 scratch,
                 &lh_copy,
                 code0,
@@ -794,7 +756,6 @@ pub fn synthesize_to_sink(
             build_step_embed(
                 d,
                 model,
-                voice,
                 code0,
                 &codes[1..16],
                 tts_pad_embed,
@@ -993,7 +954,7 @@ mod tests {
     /// `talker_codec_logits` da los mismos bits que el `codec_head` completo en las filas que calcula.
     #[test]
     fn codec_logits_match_full_head_bitwise() {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/qwen3-tts-0.6b");
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/qwen3-tts-0.6b-base");
         if !dir.exists() {
             eprintln!("Se omite la prueba: falta el modelo en {}", dir.display());
             return;

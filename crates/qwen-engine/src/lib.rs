@@ -5,14 +5,13 @@
 
 #![forbid(unsafe_code)]
 
-//! Motor de inferencia en CPU para **Qwen3-TTS 0.6B** (`CustomVoice` y `Base`)
+//! Motor de inferencia en CPU para **Qwen3-TTS 0.6B** (`Base`)
 //! con soporte de streaming progresivo, clonación de voz, expresividad `0.6B` y *continuous batching*.
 
 pub mod audio;
 pub mod batch;
 pub mod code_predictor;
 pub mod compose;
-pub mod emotion;
 pub mod error;
 pub mod model;
 pub mod pipeline;
@@ -32,22 +31,18 @@ pub use batch::{
     split_text_for_batch, BatchReq, BatchWorkspace, ContinuousBatchSink, ContinuousSlotJob,
 };
 pub use compose::{
-    prepare_markup_06b, render_spans_buffer, render_spans_stream, voice_class_for, PreparedMarkup,
-};
-pub use emotion::{
-    apply_emotion_direction, attach_emo_ref, emotion_voice_key, resolve_emovoice_06b,
-    EmoVoice06BAction,
+    prepare_markup_06b, render_spans_buffer, render_spans_stream, PreparedMarkup,
 };
 pub use error::EngineError;
 pub use model::{
     AbortHandle, Bf16Weight, CodePredictorWeights, F32Weight, Model06B, ModelLoadOptions,
     RequestConfig, RequestExecution, SessionScratch, SpeechDecoderWeights, SynthesisTiming,
-    TalkerWeights, TextProjOverride, VoiceBindings, VoiceIdentity,
+    TalkerWeights, VoiceBindings, VoiceIdentity, DEFAULT_VOICE_NAME,
 };
 pub use pipeline::{synthesize_to_samples, synthesize_to_sink};
 pub use speech_decoder::{speech_decoder_decode, speech_decoder_decode_streaming};
 pub use speech_encoder::{speech_encoder_encode, SpeechEncoderWeights};
 pub use voice_clone::{
-    build_voice_from_ref_audio, build_wovr_override, load_voice_from_file, mel_spectrogram,
+    build_voice_from_ref_audio, load_voice_from_file, mel_spectrogram,
     speaker_encoder_forward, SaveVoiceOptions, SpeakerEncoderWeights, VoiceLoadOptions,
 };
