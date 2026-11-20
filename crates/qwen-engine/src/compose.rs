@@ -97,7 +97,7 @@ fn synth_span(
     idx: usize,
 ) -> Result<Vec<f32>, EngineError> {
     if !job.req.log.is_silent() {
-        eprintln!("Span {idx}: \"{text}\"");
+        eprintln!("Tramo {idx}: \"{text}\"");
     }
     let mut span_req = job.req.clone();
     // El acabado (`tail_trim`, `onset_fade`) se aplica una sola vez, a la composición entera.
@@ -116,7 +116,7 @@ fn synth_span(
     let (samples, _) = plain_buffer(&span_job, scratch, text)?;
     if samples.is_empty() {
         return Err(EngineError::Runtime(format!(
-            "Compose: synthesis failed for span {idx}"
+            "Composición: falló la síntesis del tramo {idx}"
         )));
     }
     Ok(samples)
@@ -147,7 +147,7 @@ pub(crate) fn compose_spans(
                     out.push_silence(pn)?;
                 }
                 if !silent {
-                    eprintln!("  [pause {:.2}s]", pn as f32 / SAMPLE_RATE as f32);
+                    eprintln!("  [pausa {:.2}s]", pn as f32 / SAMPLE_RATE as f32);
                 }
                 last_spoken = false;
                 prev_filler = false;
@@ -182,13 +182,13 @@ pub(crate) fn compose_spans(
 
     if spoken == 0 {
         return Err(EngineError::InvalidArg(
-            "Compose: nothing to synthesize".to_string(),
+            "Composición: nada que sintetizar".to_string(),
         ));
     }
     let total = out.finish()?;
     if !silent {
         eprintln!(
-            "[composed {spoken} spans, {:.2}s]",
+            "[compuestos {spoken} tramos, {:.2}s]",
             total as f64 / SAMPLE_RATE as f64
         );
     }

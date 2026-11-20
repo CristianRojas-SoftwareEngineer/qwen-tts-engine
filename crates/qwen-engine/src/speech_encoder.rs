@@ -68,7 +68,7 @@ impl SpeechEncoderWeights {
     ) -> Result<Self, EngineError> {
         if !store.contains("encoder.encoder.layers.0.conv.weight") {
             return Err(EngineError::Model(
-                "the checkpoint has no speech encoder (the Base model is required)".to_string(),
+                "el checkpoint no tiene speech encoder (se requiere el modelo Base)".to_string(),
             ));
         }
         let req = |name: &str| -> Result<F32Ref, EngineError> { Ok(store.tensor_f32_ref(name)?) };
@@ -103,12 +103,16 @@ impl SpeechEncoderWeights {
                 bias: opt(&format!("encoder.encoder.layers.{sl}.conv.bias"))?,
             });
         }
-        let resblocks: [EncResBlockWeights; 4] = resblocks_vec
-            .try_into()
-            .map_err(|_| EngineError::Model("SpeechEncoder resblocks init failed".to_string()))?;
-        let stride_convs: [EncConvWeights; 4] = stride_vec
-            .try_into()
-            .map_err(|_| EngineError::Model("SpeechEncoder stride_convs init failed".to_string()))?;
+        let resblocks: [EncResBlockWeights; 4] = resblocks_vec.try_into().map_err(|_| {
+            EngineError::Model(
+                "falló la inicialización de los resblocks del SpeechEncoder".to_string(),
+            )
+        })?;
+        let stride_convs: [EncConvWeights; 4] = stride_vec.try_into().map_err(|_| {
+            EngineError::Model(
+                "falló la inicialización de las stride_convs del SpeechEncoder".to_string(),
+            )
+        })?;
 
         let final_conv = EncConvWeights {
             weight: req("encoder.encoder.layers.14.conv.weight")?,
@@ -170,7 +174,7 @@ impl SpeechEncoderWeights {
         );
 
         if !silent {
-            eprintln!("  Speech encoder: 15/15 components loaded");
+            eprintln!("  Speech encoder: 15/15 componentes cargados");
         }
 
         Ok(Self {
@@ -280,12 +284,12 @@ pub fn speech_encoder_encode(
     let n_samples = audio.len();
     if n_samples == 0 {
         return Err(EngineError::InvalidArg(
-            "Reference audio is empty".to_string(),
+            "El audio de referencia está vacío".to_string(),
         ));
     }
 
     if debug {
-        eprintln!("[ENC] Input: {n_samples} samples");
+        eprintln!("[ENC] Entrada: {n_samples} muestras");
     }
 
     let mut cur_ch = 1usize;
@@ -305,7 +309,7 @@ pub fn speech_encoder_encode(
     cur_len = enc_conv1d_out_len(cur_len, 7, 1);
 
     if debug {
-        eprintln!("[ENC] After initial conv: ch={cur_ch}, len={cur_len}");
+        eprintln!("[ENC] Tras la convolución inicial: ch={cur_ch}, len={cur_len}");
     }
 
     const OUT_CHANNELS: [usize; 4] = [128, 256, 512, 1024];
@@ -361,7 +365,7 @@ pub fn speech_encoder_encode(
         cur_len = out_len;
 
         if debug {
-            eprintln!("[ENC] After stage {stage}: ch={cur_ch}, len={cur_len}");
+            eprintln!("[ENC] Tras la etapa {stage}: ch={cur_ch}, len={cur_len}");
         }
     }
 
@@ -382,7 +386,7 @@ pub fn speech_encoder_encode(
 
     if debug {
         eprintln!(
-            "[ENC] After conv encoder: ch={cur_ch}, len={cur_len} ({:.1} Hz)",
+            "[ENC] Tras el encoder convolucional: ch={cur_ch}, len={cur_len} ({:.1} Hz)",
             (cur_len as f32) / ((n_samples as f32) / 24000.0)
         );
     }
@@ -391,7 +395,7 @@ pub fn speech_encoder_encode(
     let n_seq = cur_len;
     if n_seq > ENC_ROPE_MAX_POS {
         return Err(EngineError::InvalidArg(format!(
-            "Reference audio too long for encoder RoPE cache ({n_seq} > {ENC_ROPE_MAX_POS})"
+            "Audio de referencia demasiado largo para la caché RoPE del encoder ({n_seq} > {ENC_ROPE_MAX_POS})"
         )));
     }
     let mut h_buf = vec![0.0f32; n_seq * ENC_HIDDEN];
@@ -629,7 +633,7 @@ pub fn speech_encoder_encode(
 
         if debug && layer_idx == 0 {
             eprintln!(
-                "[ENC] Transformer L0 out [:5]: [{:.6}, {:.6}, {:.6}, {:.6}, {:.6}]",
+                "[ENC] Salida L0 del Transformer [:5]: [{:.6}, {:.6}, {:.6}, {:.6}, {:.6}]",
                 h_buf[0], h_buf[1], h_buf[2], h_buf[3], h_buf[4]
             );
         }
@@ -647,7 +651,7 @@ pub fn speech_encoder_encode(
     let n_frames = enc_conv1d_out_len(n_seq, 4, 2);
     if n_frames == 0 {
         return Err(EngineError::InvalidArg(
-            "Reference audio is too short for speech encoder".to_string(),
+            "El audio de referencia es demasiado corto para el speech encoder".to_string(),
         ));
     }
     let ds_out = enc_causal_conv1d(
@@ -663,7 +667,7 @@ pub fn speech_encoder_encode(
     );
     if debug {
         eprintln!(
-            "[ENC] After downsample: len={n_frames} ({:.1} Hz)",
+            "[ENC] Tras el submuestreo: len={n_frames} ({:.1} Hz)",
             (n_frames as f32) / ((n_samples as f32) / 24000.0)
         );
     }
@@ -787,11 +791,11 @@ pub fn speech_encoder_encode(
 
     if !silent {
         eprintln!(
-            "  Speech encoder: {n_samples} samples -> {n_frames} frames ({NUM_CODEBOOKS} codebooks)"
+            "  Speech encoder: {n_samples} muestras -> {n_frames} frames ({NUM_CODEBOOKS} codebooks)"
         );
     }
     if debug && n_frames > 0 {
-        eprintln!("[ENC] ref_codes frame 0: {:?}", &codes[..NUM_CODEBOOKS]);
+        eprintln!("[ENC] ref_codes del frame 0: {:?}", &codes[..NUM_CODEBOOKS]);
     }
 
     Ok((codes, n_frames))

@@ -228,7 +228,7 @@ impl TransformerLayerWeights {
             }
             None => {
                 let gu = self.gate_up_fused_bf16.as_deref().ok_or_else(|| {
-                    EngineError::Model("Missing gate_up_fused_bf16 in BF16 layer".to_string())
+                    EngineError::Model("Falta gate_up_fused_bf16 en la capa BF16".to_string())
                 })?;
                 d.matvec_bf16(pool, gate_out, gu, x_norm, 2 * inter, hidden);
             }
@@ -1224,7 +1224,7 @@ fn resolve_precision_scheme(
                 "int4" => Ok(LayerQuantScheme::Int4),
                 "mixed" if allow_mixed => Ok(LayerQuantScheme::Mixed),
                 _ => Err(EngineError::InvalidArg(format!(
-                    "error: {env_var}={v} no es válido; use {}",
+                    "Error: {env_var}={v} no es válido; usa {}",
                     if allow_mixed {
                         "bf16, int8, int4 o mixed"
                     } else {
@@ -1289,15 +1289,18 @@ impl Model06B {
     ) -> Result<Self, EngineError> {
         let t0 = Instant::now();
         let config = ModelConfig06B::load_and_validate(model_dir)?;
-        quant_shape_check("talker hidden_size", HIDDEN_SIZE).map_err(EngineError::Model)?;
-        quant_shape_check("talker q_dim", Q_DIM).map_err(EngineError::Model)?;
-        quant_shape_check("talker intermediate_size", INTERMEDIATE_SIZE)
+        quant_shape_check("`hidden_size` del Talker", HIDDEN_SIZE).map_err(EngineError::Model)?;
+        quant_shape_check("`q_dim` del Talker", Q_DIM).map_err(EngineError::Model)?;
+        quant_shape_check("`intermediate_size` del Talker", INTERMEDIATE_SIZE)
             .map_err(EngineError::Model)?;
-        quant_shape_check("code predictor cp_hidden_size", CP_HIDDEN_SIZE)
+        quant_shape_check("`cp_hidden_size` del Code Predictor", CP_HIDDEN_SIZE)
             .map_err(EngineError::Model)?;
-        quant_shape_check("code predictor cp_q_dim", CP_Q_DIM).map_err(EngineError::Model)?;
-        quant_shape_check("code predictor cp_intermediate_size", CP_INTERMEDIATE_SIZE)
-            .map_err(EngineError::Model)?;
+        quant_shape_check("`cp_q_dim` del Code Predictor", CP_Q_DIM).map_err(EngineError::Model)?;
+        quant_shape_check(
+            "`cp_intermediate_size` del Code Predictor",
+            CP_INTERMEDIATE_SIZE,
+        )
+        .map_err(EngineError::Model)?;
 
         let tokenizer = BpeTokenizer::load_from_dir(model_dir)?;
         let main_store = MmapStore::open_model(model_dir)?;
@@ -1309,7 +1312,7 @@ impl Model06B {
 
         if !opts.silent {
             eprintln!(
-                "Config: hidden={} text_hidden={} layers={} heads={}/{} head_dim={} inter={}",
+                "Configuración: hidden={} text_hidden={} layers={} heads={}/{} head_dim={} inter={}",
                 HIDDEN_SIZE,
                 TEXT_HIDDEN_SIZE,
                 NUM_LAYERS,
@@ -1318,7 +1321,7 @@ impl Model06B {
                 HEAD_DIM,
                 INTERMEDIATE_SIZE
             );
-            eprintln!("Threads: {}", runtime.pool.n_threads());
+            eprintln!("Hilos: {}", runtime.pool.n_threads());
         }
 
         let talker = Self::load_talker(&main_store, tk_prec, opts.silent)?;
@@ -1343,7 +1346,10 @@ impl Model06B {
         let spk_ref_norm = spk_ref_tmp.iter().map(|&v| v * v).sum::<f32>().sqrt();
 
         if !opts.silent {
-            eprintln!("Model loaded in {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0);
+            eprintln!(
+                "Modelo cargado en {:.0} ms",
+                t0.elapsed().as_secs_f64() * 1000.0
+            );
         }
 
         Ok(Self {
@@ -1368,7 +1374,7 @@ impl Model06B {
     ) -> Result<TalkerWeights, EngineError> {
         if !silent {
             eprintln!(
-                "Loading Talker weights (hidden={}, head_dim={}, layers={})...",
+                "Cargando pesos del Talker (hidden={}, head_dim={}, layers={})...",
                 HIDDEN_SIZE, HEAD_DIM, NUM_LAYERS
             );
         }
@@ -1405,7 +1411,7 @@ impl Model06B {
 
         if !silent {
             eprintln!(
-                "  Talker: {} layers loaded, KV cache {} slots",
+                "  Talker: {} capas cargadas, caché KV de {} slots",
                 NUM_LAYERS, KV_INITIAL_POSITIONS
             );
         }
@@ -1432,7 +1438,7 @@ impl Model06B {
     ) -> Result<CodePredictorWeights, EngineError> {
         if !silent {
             eprintln!(
-                "Loading Code Predictor weights (hidden={}, layers={})...",
+                "Cargando pesos del Code Predictor (hidden={}, layers={})...",
                 CP_HIDDEN_SIZE, CP_NUM_LAYERS
             );
         }
@@ -1495,7 +1501,7 @@ impl Model06B {
 
         if !silent {
             eprintln!(
-                "  Code Predictor: {} layers loaded, q_dim={} kv_dim={} [{}]",
+                "  Code Predictor: {} capas cargadas, q_dim={} kv_dim={} [{}]",
                 CP_NUM_LAYERS,
                 CP_Q_DIM,
                 CP_KV_DIM,
@@ -1508,7 +1514,7 @@ impl Model06B {
 
     fn load_decoder(store: &MmapStore, silent: bool) -> Result<SpeechDecoderWeights, EngineError> {
         if !silent {
-            eprintln!("Loading Speech Decoder weights...");
+            eprintln!("Cargando pesos del Speech Decoder...");
         }
         let mut codebooks: [AlignedBuf<f32>; NUM_CODEBOOKS] =
             std::array::from_fn(|_| AlignedBuf::new_zeroed(CODEBOOK_SIZE * CODEBOOK_DIM));
@@ -1706,7 +1712,7 @@ impl Model06B {
         let final_conv_bias = opt_f32(store, "decoder.decoder.6.conv.bias")?;
 
         if !silent {
-            eprintln!("  Codebooks: 16/16 (dequantized from EMA)");
+            eprintln!("  Codebooks: 16/16 (descuantizados desde EMA)");
         }
 
         Ok(SpeechDecoderWeights {

@@ -22,11 +22,11 @@ impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EngineError::Core(e) => write!(f, "{e}"),
-            EngineError::Io(e) => write!(f, "I/O error: {e}"),
+            EngineError::Io(e) => write!(f, "Error de E/S: {e}"),
             EngineError::InvalidArg(s) => write!(f, "{s}"),
             EngineError::Model(s) => write!(f, "{s}"),
             EngineError::Runtime(s) => write!(f, "{s}"),
-            EngineError::Aborted => write!(f, "Generation aborted"),
+            EngineError::Aborted => write!(f, "Generación abortada"),
         }
     }
 }

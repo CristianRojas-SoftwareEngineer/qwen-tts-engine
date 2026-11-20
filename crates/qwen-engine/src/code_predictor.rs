@@ -68,7 +68,7 @@ fn cp_step2(runtime: &ComputeRuntime, model: &Model06B, scratch: &mut SessionScr
 
         cp_mm2(
             runtime,
-            l.wq_q.as_ref().expect("quantized CP wq"),
+            l.wq_q.as_ref().expect("wq cuantizado del Code Predictor"),
             &cb.p2_x2,
             &mut cb.p2_q2,
             CP_Q_DIM,
@@ -76,7 +76,7 @@ fn cp_step2(runtime: &ComputeRuntime, model: &Model06B, scratch: &mut SessionScr
         );
         cp_mm2(
             runtime,
-            l.wk_q.as_ref().expect("quantized CP wk"),
+            l.wk_q.as_ref().expect("wk cuantizado del Code Predictor"),
             &cb.p2_x2,
             &mut cb.p2_k2,
             CP_KV_DIM,
@@ -84,7 +84,7 @@ fn cp_step2(runtime: &ComputeRuntime, model: &Model06B, scratch: &mut SessionScr
         );
         cp_mm2(
             runtime,
-            l.wv_q.as_ref().expect("quantized CP wv"),
+            l.wv_q.as_ref().expect("wv cuantizado del Code Predictor"),
             &cb.p2_x2,
             &mut cb.p2_v2,
             CP_KV_DIM,
@@ -146,7 +146,7 @@ fn cp_step2(runtime: &ComputeRuntime, model: &Model06B, scratch: &mut SessionScr
         cp_ilv2(&mut cb.p2_a2, &cb.p2_attn0, &cb.dec_attn_out, CP_Q_DIM);
         cp_mm2(
             runtime,
-            l.wo_q.as_ref().expect("quantized CP wo"),
+            l.wo_q.as_ref().expect("wo cuantizado del Code Predictor"),
             &cb.p2_a2,
             &mut cb.p2_p2,
             CP_HIDDEN_SIZE,
@@ -177,7 +177,9 @@ fn cp_step2(runtime: &ComputeRuntime, model: &Model06B, scratch: &mut SessionScr
 
         cp_mm2(
             runtime,
-            l.gate_up_q.as_ref().expect("quantized CP gate_up"),
+            l.gate_up_q
+                .as_ref()
+                .expect("gate_up cuantizado del Code Predictor"),
             &cb.p2_x2,
             &mut cb.p2_g2,
             2 * CP_INTERMEDIATE_SIZE,
@@ -196,7 +198,9 @@ fn cp_step2(runtime: &ComputeRuntime, model: &Model06B, scratch: &mut SessionScr
 
         cp_mm2(
             runtime,
-            l.down_q.as_ref().expect("quantized CP down"),
+            l.down_q
+                .as_ref()
+                .expect("down cuantizado del Code Predictor"),
             &cb.p2_gi2,
             &mut cb.p2_d2,
             CP_HIDDEN_SIZE,
@@ -336,7 +340,7 @@ fn cp_transformer_step(
         )
         .is_err()
         {
-            unreachable!("CP gate_up_fused_bf16 must exist in BF16 mode");
+            unreachable!("gate_up_fused_bf16 del Code Predictor debe existir en modo BF16");
         }
         d.swiglu_inplace(&mut cb.dec_gate, swiglu_tmp, CP_INTERMEDIATE_SIZE);
 
@@ -596,7 +600,7 @@ mod tests {
                     assert_eq!(
                         u,
                         w,
-                        "{name} difiere: capa {layer}, posicion {}, indice {} (bits {u:#06x} vs {w:#06x})",
+                        "{name} difiere: capa {layer}, posición {}, índice {} (bits {u:#06x} vs {w:#06x})",
                         i / CP_KV_DIM,
                         i % CP_KV_DIM
                     );
@@ -610,7 +614,7 @@ mod tests {
             assert_eq!(
                 u.to_bits(),
                 w.to_bits(),
-                "{name} difiere en el indice {i} (bits {:#010x} vs {:#010x})",
+                "{name} difiere en el índice {i} (bits {:#010x} vs {:#010x})",
                 u.to_bits(),
                 w.to_bits()
             );
@@ -758,7 +762,7 @@ mod tests {
                 0.0,
                 &mut got,
             );
-            assert_eq!(got, expected, "par {pair}: codigos distintos");
+            assert_eq!(got, expected, "par {pair}: códigos distintos");
         }
         eprintln!("K1TEST aciertos posibles: {total_hits} de {total_guesses} adivinanzas");
     }

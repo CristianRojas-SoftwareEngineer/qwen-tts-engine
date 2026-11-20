@@ -90,32 +90,32 @@ impl QVoiceFile {
 
     pub fn read_from_file(path: &Path) -> Result<Self, CoreError> {
         let bytes = std::fs::read(path)
-            .map_err(|e| CoreError::QVoice(format!("Cannot read {}: {e}", path.display())))?;
+            .map_err(|e| CoreError::QVoice(format!("No se puede leer {}: {e}", path.display())))?;
         Self::parse(&bytes, path)
     }
 
     fn parse(bytes: &[u8], path: &Path) -> Result<Self, CoreError> {
         let p = path.display();
-        let trunc = || CoreError::QVoice(format!("{p} is truncated"));
+        let trunc = || CoreError::QVoice(format!("{p} está truncado"));
         let corrupt = |what: &str| CoreError::QVoice(format!("{p}: {what}"));
         let mut r = Reader { buf: bytes, pos: 0 };
 
         let magic = r.take(4).ok_or_else(trunc)?;
         if magic != QVCE_MAGIC {
             return Err(CoreError::QVoice(format!(
-                "{p} is not a valid .qvoice file (bad magic)"
+                "{p} no es un archivo .qvoice válido (magic incorrecto)"
             )));
         }
         let version = r.u32().ok_or_else(trunc)?;
         if version != QVOICE_VERSION {
             return Err(CoreError::QVoice(format!(
-                "{p}: unsupported .qvoice version {version}; version {QVOICE_VERSION} required: clone the voice again"
+                "{p}: .qvoice no soportado (version {version}; se requiere version {QVOICE_VERSION}): clona la voz de nuevo"
             )));
         }
         let enc_dim = r.u32().ok_or_else(trunc)? as usize;
         if enc_dim != ENC_DIM {
             return Err(CoreError::QVoice(format!(
-                "{p}: incompatible .qvoice enc_dim={enc_dim} (expected {ENC_DIM})"
+                "{p}: .qvoice incompatible, enc_dim={enc_dim} (se esperaba {ENC_DIM})"
             )));
         }
         let emb_raw = r.take(enc_dim * 4).ok_or_else(trunc)?;
@@ -126,30 +126,30 @@ impl QVoiceFile {
 
         let name_len = r.u32().ok_or_else(trunc)? as usize;
         if name_len > MAX_VOICE_NAME_LEN {
-            return Err(corrupt("voice_name_len too large"));
+            return Err(corrupt("voice_name_len demasiado grande"));
         }
         let name_raw = r.take(name_len).ok_or_else(trunc)?;
         let voice_name = std::str::from_utf8(name_raw)
-            .map_err(|_| corrupt("voice_name is not valid UTF-8"))?
+            .map_err(|_| corrupt("voice_name no es UTF-8 válido"))?
             .to_string();
 
         let lang_id = r.u32().ok_or_else(trunc)?;
         if !valid_lang_id(lang_id) {
-            return Err(corrupt(&format!("invalid lang_id {lang_id}")));
+            return Err(corrupt(&format!("lang_id {lang_id} inválido")));
         }
 
         let text_len = r.u32().ok_or_else(trunc)? as usize;
         if text_len > MAX_REF_TEXT_LEN {
-            return Err(corrupt("ref_text_len too large"));
+            return Err(corrupt("ref_text_len demasiado grande"));
         }
         let text_raw = r.take(text_len).ok_or_else(trunc)?;
         let ref_text = std::str::from_utf8(text_raw)
-            .map_err(|_| corrupt("ref_text is not valid UTF-8"))?
+            .map_err(|_| corrupt("ref_text no es UTF-8 válido"))?
             .to_string();
 
         let n_frames = r.u32().ok_or_else(trunc)? as usize;
         if n_frames > MAX_REF_FRAMES {
-            return Err(corrupt("n_ref_frames too large"));
+            return Err(corrupt("n_ref_frames demasiado grande"));
         }
         let codes_raw = r.take(n_frames * NUM_CODEBOOKS * 4).ok_or_else(trunc)?;
         let ref_codes: Vec<i32> = codes_raw
@@ -158,7 +158,7 @@ impl QVoiceFile {
             .collect();
 
         if r.pos != bytes.len() {
-            return Err(corrupt("trailing bytes after the last field"));
+            return Err(corrupt("sobran bytes tras el último campo"));
         }
         if ref_text.is_empty() != (n_frames == 0) {
             return Err(corrupt(
@@ -184,20 +184,20 @@ impl QVoiceFile {
             )));
         }
         if self.voice_name.len() > MAX_VOICE_NAME_LEN {
-            return Err(err("voice name exceeds 256 bytes"));
+            return Err(err("el nombre de la voz excede 256 bytes"));
         }
         if !valid_lang_id(self.lang_id) {
-            return Err(err(&format!("invalid lang_id {}", self.lang_id)));
+            return Err(err(&format!("lang_id {} inválido", self.lang_id)));
         }
         if self.ref_text.len() > MAX_REF_TEXT_LEN {
-            return Err(err("ref_text exceeds 1000000 bytes"));
+            return Err(err("ref_text excede 1000000 bytes"));
         }
         if self.n_ref_frames() * NUM_CODEBOOKS != self.ref_codes.len() {
-            return Err(err("ref_codes length is not a multiple of 16"));
+            return Err(err("la longitud de ref_codes no es múltiplo de 16"));
         }
         let n_frames = self.n_ref_frames();
         if n_frames > MAX_REF_FRAMES {
-            return Err(err("too many reference frames"));
+            return Err(err("demasiados frames de referencia"));
         }
         if self.ref_text.is_empty() != (n_frames == 0) {
             return Err(err(

@@ -67,7 +67,7 @@ impl Synthesizer<'_> {
     ) -> Result<SynthesisOutput, EngineError> {
         if matches!(delivery, Delivery::Stream(_)) && (req.rate - 1.0).abs() > 1e-4 {
             return Err(EngineError::InvalidArg(
-                "rate != 1.0 cannot be combined with streaming delivery".to_string(),
+                "rate != 1.0 no se puede combinar con la entrega en streaming".to_string(),
             ));
         }
         let job = Run {

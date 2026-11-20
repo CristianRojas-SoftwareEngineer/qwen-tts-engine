@@ -175,17 +175,14 @@ impl ModelConfig06B {
     pub fn load_and_validate(model_dir: &Path) -> Result<Self, CoreError> {
         let cfg_path = model_dir.join("config.json");
         let raw_str = std::fs::read_to_string(&cfg_path).map_err(|e| {
-            CoreError::InvalidConfig(format!(
-                "Cannot read {}: {e}",
-                cfg_path.display()
-            ))
+            CoreError::InvalidConfig(format!("No se puede leer {}: {e}", cfg_path.display()))
         })?;
         let raw: RawConfig = serde_json::from_str(&raw_str)?;
 
         if let Some(mt) = raw.model_type.as_deref() {
             if mt != "qwen3_tts" {
                 return Err(CoreError::InvalidConfig(format!(
-                    "Unsupported model_type '{mt}' (expected 'qwen3_tts')"
+                    "model_type '{mt}' no soportado (se esperaba 'qwen3_tts')"
                 )));
             }
         }
@@ -194,14 +191,14 @@ impl ModelConfig06B {
 
         if tts_model_type.eq_ignore_ascii_case("voice_design") {
             return Err(CoreError::InvalidConfig(
-                "VoiceDesign (1.7B) models are not supported by this 0.6B-only engine".to_string(),
+                "Los modelos VoiceDesign (1.7B) no están soportados por este motor, que solo carga 0.6B".to_string(),
             ));
         }
 
         if let Some(sz) = raw.tts_model_size.as_deref() {
             if sz != "0b6" {
                 return Err(CoreError::InvalidConfig(format!(
-                    "Unsupported tts_model_size '{sz}' (only 0.6B / '0b6' is supported)"
+                    "tts_model_size '{sz}' no soportado (solo se admite 0.6B / '0b6')"
                 )));
             }
         }
@@ -209,7 +206,7 @@ impl ModelConfig06B {
         let tc = &raw.talker_config;
         if tc.hidden_size != HIDDEN_SIZE || tc.intermediate_size != INTERMEDIATE_SIZE {
             return Err(CoreError::InvalidConfig(format!(
-                "Unsupported Talker geometry hidden_size={} intermediate_size={} (expected 0.6B: {HIDDEN_SIZE}/{INTERMEDIATE_SIZE}; 1.7B is not supported)",
+                "Geometría del Talker no soportada: hidden_size={} intermediate_size={} (se esperaba 0.6B: {HIDDEN_SIZE}/{INTERMEDIATE_SIZE}; 1.7B no está soportado)",
                 tc.hidden_size, tc.intermediate_size
             )));
         }
@@ -219,28 +216,28 @@ impl ModelConfig06B {
             || tc.head_dim != HEAD_DIM
         {
             return Err(CoreError::InvalidConfig(format!(
-                "Unsupported Talker attention/layer geometry: layers={} heads={} kv={} head_dim={}",
+                "Geometría de atención y capas del Talker no soportada: layers={} heads={} kv={} head_dim={}",
                 tc.num_hidden_layers, tc.num_attention_heads, tc.num_key_value_heads, tc.head_dim
             )));
         }
         if let Some(th) = tc.text_hidden_size {
             if th != TEXT_HIDDEN_SIZE {
                 return Err(CoreError::InvalidConfig(format!(
-                    "Unsupported text_hidden_size={th} (expected {TEXT_HIDDEN_SIZE})"
+                    "text_hidden_size={th} no soportado (se esperaba {TEXT_HIDDEN_SIZE})"
                 )));
             }
         }
         if let Some(tv) = tc.text_vocab_size {
             if tv != TEXT_VOCAB_SIZE {
                 return Err(CoreError::InvalidConfig(format!(
-                    "Unsupported text_vocab_size={tv} (expected {TEXT_VOCAB_SIZE})"
+                    "text_vocab_size={tv} no soportado (se esperaba {TEXT_VOCAB_SIZE})"
                 )));
             }
         }
         if let Some(cv) = tc.vocab_size {
             if cv != CODEC_VOCAB_SIZE {
                 return Err(CoreError::InvalidConfig(format!(
-                    "Unsupported codec vocab_size={cv} (expected {CODEC_VOCAB_SIZE})"
+                    "vocab_size={cv} del códec no soportado (se esperaba {CODEC_VOCAB_SIZE})"
                 )));
             }
         }
@@ -254,7 +251,7 @@ impl ModelConfig06B {
             || cp.head_dim != CP_HEAD_DIM
         {
             return Err(CoreError::InvalidConfig(format!(
-                "Unsupported CodePredictor geometry: h={} inter={} layers={} heads={} kv={} hd={}",
+                "Geometría del Code Predictor no soportada: h={} inter={} layers={} heads={} kv={} hd={}",
                 cp.hidden_size,
                 cp.intermediate_size,
                 cp.num_hidden_layers,
@@ -266,24 +263,25 @@ impl ModelConfig06B {
 
         if !tts_model_type.eq_ignore_ascii_case("base") || raw.speaker_encoder_config.is_none() {
             return Err(CoreError::InvalidConfig(
-                "This engine only loads Qwen3-TTS 0.6B Base; CustomVoice is not supported"
+                "Este motor solo carga Qwen3-TTS 0.6B Base; CustomVoice no está soportado"
                     .to_string(),
             ));
         }
-        let sec = raw.speaker_encoder_config.as_ref().ok_or_else(|| {
-            CoreError::InvalidConfig("Missing speaker_encoder_config".to_string())
-        })?;
+        let sec = raw
+            .speaker_encoder_config
+            .as_ref()
+            .ok_or_else(|| CoreError::InvalidConfig("Falta speaker_encoder_config".to_string()))?;
         if let Some(ed) = sec.enc_dim {
             if ed != ENC_DIM {
                 return Err(CoreError::InvalidConfig(format!(
-                    "Unsupported speaker_encoder enc_dim={ed} (expected {ENC_DIM})"
+                    "enc_dim={ed} del speaker_encoder no soportado (se esperaba {ENC_DIM})"
                 )));
             }
         }
         if let Some(sr) = sec.sample_rate {
             if sr != SAMPLE_RATE {
                 return Err(CoreError::InvalidConfig(format!(
-                    "Unsupported speaker_encoder sample_rate={sr} (expected {SAMPLE_RATE})"
+                    "sample_rate={sr} del speaker_encoder no soportado (se esperaba {SAMPLE_RATE})"
                 )));
             }
         }

@@ -50,7 +50,7 @@ fn test_config_only_base_loads_and_rejects_others() {
     load_synthetic("base_upper", &synthetic_config("BASE", true)).expect("BASE valid");
 
     // CustomVoice se rechaza con el mensaje exacto
-    let msg = "This engine only loads Qwen3-TTS 0.6B Base; CustomVoice is not supported";
+    let msg = "Este motor solo carga Qwen3-TTS 0.6B Base; CustomVoice no está soportado";
     let err = load_synthetic("cv", &synthetic_config("custom_voice", false)).unwrap_err();
     assert_eq!(err.to_string(), msg);
     // Un checkpoint sin `tts_model_type` tampoco es Base
@@ -274,14 +274,20 @@ fn test_qvoice_v4_rejects_invalid_files() {
     v3.extend_from_slice(&3u32.to_le_bytes());
     v3.extend_from_slice(&1024u32.to_le_bytes());
     let err = read_qvoice_bytes("v3", &v3).unwrap_err().to_string();
-    assert!(err.contains("version 3") && err.contains("version 4 required"), "got: {err}");
-    assert!(err.contains("qwen_core_qv4_v3.qvoice"), "the message must name the path: {err}");
+    assert!(
+        err.contains("version 3") && err.contains("version 4"),
+        "se obtuvo: {err}"
+    );
+    assert!(
+        err.contains("qwen_core_qv4_v3.qvoice"),
+        "el mensaje debe nombrar la ruta: {err}"
+    );
 
     // magic incorrecto
     let mut bad_magic = good.clone();
     bad_magic[0] = b'X';
     let err = read_qvoice_bytes("magic", &bad_magic).unwrap_err().to_string();
-    assert!(err.contains("bad magic"), "got: {err}");
+    assert!(err.contains("magic incorrecto"), "se obtuvo: {err}");
 
     // enc_dim incorrecto
     let mut bad_dim = good.clone();
@@ -291,12 +297,15 @@ fn test_qvoice_v4_rejects_invalid_files() {
     // truncado (en cada punto) y bytes sobrantes
     for cut in [0usize, 3, 11, 100, 4096, good.len() - 1] {
         let err = read_qvoice_bytes("trunc", &good[..cut]).unwrap_err().to_string();
-        assert!(err.contains("truncated") || err.contains("bad magic"), "cut {cut}: {err}");
+        assert!(
+            err.contains("truncado") || err.contains("magic incorrecto"),
+            "cut {cut}: {err}"
+        );
     }
     let mut extra = good.clone();
     extra.push(0);
     let err = read_qvoice_bytes("extra", &extra).unwrap_err().to_string();
-    assert!(err.contains("trailing bytes"), "got: {err}");
+    assert!(err.contains("sobran bytes"), "se obtuvo: {err}");
 
     // tamaños excesivos (sin reservar memoria)
     let mut huge_frames = qvoice_v4_bytes("v", 0, "", 0);

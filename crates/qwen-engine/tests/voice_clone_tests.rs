@@ -162,7 +162,10 @@ fn test_voice_file_extension_and_version_errors() {
         .to_string();
     assert_eq!(
         err,
-        format!("voice files must be .qvoice (got {})", bin.display())
+        format!(
+            "los archivos de voz deben ser .qvoice (se obtuvo {})",
+            bin.display()
+        )
     );
 
     // Un .qvoice v3 se rechaza nombrando la ruta
@@ -396,7 +399,10 @@ fn test_clone_from_default_voice_e2e() {
         .err()
         .unwrap()
         .to_string();
-    assert!(err.contains("voice files must be .qvoice"), "got: {err}");
+    assert!(
+        err.contains("los archivos de voz deben ser .qvoice"),
+        "se obtuvo: {err}"
+    );
 
     // 6. Marcado multi-span con roughness y streaming de spans, con la voz `default`
     let plan = plan_script(

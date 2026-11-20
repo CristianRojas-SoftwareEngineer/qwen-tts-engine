@@ -82,7 +82,7 @@ pub fn ensure_qvoice_path(path: &Path) -> Result<(), EngineError> {
         Ok(())
     } else {
         Err(EngineError::InvalidArg(format!(
-            "voice files must be .qvoice (got {})",
+            "los archivos de voz deben ser .qvoice (se obtuvo {})",
             path.display()
         )))
     }
@@ -144,10 +144,10 @@ impl Voice {
         let voice = Self::from_qvoice(qv, opts);
         if !opts.log.is_silent() {
             eprintln!(
-                "Voice clone: loaded .qvoice v4 from {}{}",
+                "Clonación de voz: .qvoice v4 cargado desde {}{}",
                 path.display(),
                 match file_icl_frames {
-                    Some(n) => format!(" ({n} ICL frames)"),
+                    Some(n) => format!(" ({n} frames ICL)"),
                     None => String::new(),
                 }
             );
@@ -199,7 +199,7 @@ pub fn clone_voice(
     let audio = load_and_trim_ref_audio(ref_wav, opts.max_ref_seconds, opts.log.is_silent())?;
     let (mel, n_frames) = mel_spectrogram(&audio, SAMPLE_RATE)?;
     if !opts.log.is_silent() {
-        eprintln!("Mel spectrogram: {n_frames} frames x {MEL_DIM} mels");
+        eprintln!("Espectrograma mel: {n_frames} frames x {MEL_DIM} mels");
     }
     let speaker_embedding =
         speaker_encoder_forward(runtime, &model.speaker_encoder, &mel, n_frames);
@@ -216,7 +216,7 @@ pub fn clone_voice(
         )?;
         ref_codes = codes;
         if !opts.log.is_silent() {
-            eprintln!("Encoded ref audio: {frames} ICL frames");
+            eprintln!("Audio de referencia codificado: {frames} frames ICL");
         }
     }
 

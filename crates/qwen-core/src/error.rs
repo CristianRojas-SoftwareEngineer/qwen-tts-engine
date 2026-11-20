@@ -19,11 +19,11 @@ pub enum CoreError {
 impl fmt::Display for CoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CoreError::Io(e) => write!(f, "I/O error: {e}"),
-            CoreError::Json(e) => write!(f, "JSON error: {e}"),
+            CoreError::Io(e) => write!(f, "Error de E/S: {e}"),
+            CoreError::Json(e) => write!(f, "Error de JSON: {e}"),
             CoreError::InvalidConfig(s) => write!(f, "{s}"),
-            CoreError::Safetensors(s) => write!(f, "Safetensors error: {s}"),
-            CoreError::Tokenizer(s) => write!(f, "Tokenizer error: {s}"),
+            CoreError::Safetensors(s) => write!(f, "Error de safetensors: {s}"),
+            CoreError::Tokenizer(s) => write!(f, "Error del tokenizer: {s}"),
             CoreError::QVoice(s) => write!(f, "{s}"),
         }
     }

@@ -217,13 +217,11 @@ pub(crate) fn generate_to_sink(
 
     if !silent {
         eprintln!(
-            "Text: \"{}\" (prompt: {} positions, text_content: {})",
-            text,
-            prefill_len,
-            text_content_len
+            "Texto: \"{}\" (prompt: {} posiciones, text_content: {})",
+            text, prefill_len, text_content_len
         );
         eprintln!(
-            "Prefill: {} positions (text_content={})",
+            "Prefill: {} posiciones (text_content={})",
             prefill_len, text_content_len
         );
     }
@@ -422,7 +420,7 @@ pub(crate) fn generate_to_sink(
 
             if code0 == CODEC_EOS {
                 if !silent {
-                    eprintln!("  EOS at frame {}", frame);
+                    eprintln!("  EOS en el frame {}", frame);
                 }
                 break;
             }
@@ -572,13 +570,13 @@ pub(crate) fn generate_to_sink(
 
 fn log_synthesis_summary(t: &SynthesisTiming, chunk_frames: usize) {
     eprintln!(
-        "\n  Generated {} frames ({:.1}s audio)",
+        "\n  Generados {} frames ({:.1}s de audio)",
         t.frames,
         (t.frames as f64) / (FRAME_RATE as f64)
     );
     if t.frames > 0 {
         eprintln!(
-            "  Talker step: {:.0} ms ({:.1} ms/f), Code Predictor: {:.0} ms ({:.1} ms/f)",
+            "  Paso del Talker: {:.0} ms ({:.1} ms/f), Code Predictor: {:.0} ms ({:.1} ms/f)",
             t.talker_ms,
             t.talker_ms / (t.frames as f64),
             t.cp_ms,
@@ -586,14 +584,14 @@ fn log_synthesis_summary(t: &SynthesisTiming, chunk_frames: usize) {
         );
     }
     eprintln!(
-        "  Speech decoder: {:.0} ms total ({:.0} ms drain after gen)",
+        "  Speech decoder: {:.0} ms en total ({:.0} ms de vaciado tras generar)",
         t.decoder_ms, t.drain_ms
     );
     let audio_dur = (t.samples_produced as f64) / (SAMPLE_RATE as f64);
     let proc_s = t.total_ms / 1000.0;
     if audio_dur > 0.0 {
         eprintln!(
-            "Audio: {:.1}s generated in {:.1}s (RTF {:.2})",
+            "Audio: {:.1}s generados en {:.1}s (RTF {:.2})",
             audio_dur,
             proc_s,
             proc_s / audio_dur
@@ -601,7 +599,7 @@ fn log_synthesis_summary(t: &SynthesisTiming, chunk_frames: usize) {
     }
     if let Some(ttfa) = t.ttfa_ms {
         eprintln!(
-            "  TTFA: {:.0} ms (first audio chunk, {}-frame chunk)",
+            "  TTFA: {:.0} ms (primer chunk de audio, chunk de {} frames)",
             ttfa, chunk_frames
         );
     }
@@ -616,7 +614,7 @@ pub fn finish_full_delivery(samples: &mut Vec<f32>, req: &SynthesisRequest) {
         let cut = tail_trim(samples, SAMPLE_RATE, 0.30);
         if cut > 0 && !silent {
             eprintln!(
-                "Tail-trim: cut {:.2}s degenerate tail ({cut} samples)",
+                "Recorte de cola: cortados {:.2}s de cola degenerada ({cut} muestras)",
                 cut as f64 / SAMPLE_RATE as f64
             );
         }
@@ -624,7 +622,10 @@ pub fn finish_full_delivery(samples: &mut Vec<f32>, req: &SynthesisRequest) {
     if req.onset_fade_ms > 0.0 {
         onset_fade(samples, SAMPLE_RATE, req.onset_fade_ms as usize);
         if !silent {
-            eprintln!("Onset-fade: {} ms over the real attack", req.onset_fade_ms);
+            eprintln!(
+                "Fundido de ataque: {} ms sobre el ataque real",
+                req.onset_fade_ms
+            );
         }
     }
 }

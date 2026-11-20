@@ -271,14 +271,16 @@ impl BpeTokenizer {
 
     pub fn load_files(vocab_path: &Path, merges_path: &Path) -> Result<Self, CoreError> {
         let vocab_str = std::fs::read_to_string(vocab_path).map_err(|e| {
-            CoreError::Tokenizer(format!("Cannot read {}: {e}", vocab_path.display()))
+            CoreError::Tokenizer(format!("No se puede leer {}: {e}", vocab_path.display()))
         })?;
         let vocab: HashMap<String, i32> = serde_json::from_str(&vocab_str)?;
         let max_id = vocab.values().copied().max().unwrap_or(0).max(0);
         let table_len = (max_id as usize)
             .checked_add(1)
             .filter(|&n| n <= 16_777_216)
-            .ok_or_else(|| CoreError::Tokenizer(format!("Vocab max_id={max_id} out of bounds")))?;
+            .ok_or_else(|| {
+                CoreError::Tokenizer(format!("max_id={max_id} del vocabulario fuera de rango"))
+            })?;
         let mut id_to_token = vec![None; table_len];
         for (k, &id) in &vocab {
             if id >= 0 && (id as usize) < id_to_token.len() {
@@ -287,7 +289,7 @@ impl BpeTokenizer {
         }
 
         let merges_str = std::fs::read_to_string(merges_path).map_err(|e| {
-            CoreError::Tokenizer(format!("Cannot read {}: {e}", merges_path.display()))
+            CoreError::Tokenizer(format!("No se puede leer {}: {e}", merges_path.display()))
         })?;
         let mut merges = HashMap::new();
         let mut rank = 0i32;

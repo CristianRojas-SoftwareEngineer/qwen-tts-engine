@@ -520,7 +520,7 @@ const NON_WAV_EXTS: &[&str] = &[
 
 fn ffmpeg_convert_hint(path: &Path) -> String {
     format!(
-        "Voice cloning requires 24 kHz WAV (PCM, 16-bit, mono).\nConvert first:\n  ffmpeg -i \"{}\" -ar 24000 -ac 1 output.wav",
+        "La clonación de voz requiere un WAV de 24 kHz (PCM, 16 bits, mono).\nConvierte primero:\n  ffmpeg -i \"{}\" -ar 24000 -ac 1 output.wav",
         path.display()
     )
 }
@@ -531,7 +531,7 @@ pub fn validate_wav_path_or_header(path: &Path) -> Result<(), EngineError> {
         let lower = ext.to_ascii_lowercase();
         if NON_WAV_EXTS.contains(&lower.as_str()) {
             return Err(EngineError::InvalidArg(format!(
-                "Error: {} is not a WAV file (detected .{lower} format)\n{}",
+                "Error: {} no es un archivo WAV (formato .{lower} detectado)\n{}",
                 path.display(),
                 ffmpeg_convert_hint(path)
             )));
@@ -539,61 +539,64 @@ pub fn validate_wav_path_or_header(path: &Path) -> Result<(), EngineError> {
     }
 
     let mut f = File::open(path).map_err(|e| {
-        EngineError::InvalidArg(format!("Error: cannot open file {}: {e}", path.display()))
+        EngineError::InvalidArg(format!(
+            "Error: no se puede abrir el archivo {}: {e}",
+            path.display()
+        ))
     })?;
     let mut hdr = [0u8; 12];
     let n = f.read(&mut hdr)?;
     if n < 4 {
         return Err(EngineError::InvalidArg(format!(
-            "Error: file too small to be audio: {}",
+            "Error: archivo demasiado pequeño para ser audio: {}",
             path.display()
         )));
     }
     if (n >= 4 && hdr[..3] == [0, 0, 0]) || (n >= 8 && &hdr[4..8] == b"ftyp") {
         return Err(EngineError::InvalidArg(format!(
-            "Error: {} is an MP4/M4A file, not a WAV file\n{}",
+            "Error: {} es un archivo MP4/M4A, no un archivo WAV\n{}",
             path.display(),
             ffmpeg_convert_hint(path)
         )));
     }
     if n >= 3 && hdr[0] == 0xFF && (hdr[1] & 0xE0) == 0xE0 {
         return Err(EngineError::InvalidArg(format!(
-            "Error: {} is an MP3 file, not a WAV file\n{}",
+            "Error: {} es un archivo MP3, no un archivo WAV\n{}",
             path.display(),
             ffmpeg_convert_hint(path)
         )));
     }
     if n >= 4 && &hdr[..4] == b"OggS" {
         return Err(EngineError::InvalidArg(format!(
-            "Error: {} is an OGG/Opus file, not a WAV file\n{}",
+            "Error: {} es un archivo OGG/Opus, no un archivo WAV\n{}",
             path.display(),
             ffmpeg_convert_hint(path)
         )));
     }
     if n >= 4 && &hdr[..4] == b"fLaC" {
         return Err(EngineError::InvalidArg(format!(
-            "Error: {} is a FLAC file, not a WAV file\n{}",
+            "Error: {} es un archivo FLAC, no un archivo WAV\n{}",
             path.display(),
             ffmpeg_convert_hint(path)
         )));
     }
     if n >= 3 && &hdr[..3] == b"ID3" {
         return Err(EngineError::InvalidArg(format!(
-            "Error: {} is an MP3 file (ID3 tagged), not a WAV file\n{}",
+            "Error: {} es un archivo MP3 (con etiquetas ID3), no un archivo WAV\n{}",
             path.display(),
             ffmpeg_convert_hint(path)
         )));
     }
     if &hdr[..4] != b"RIFF" {
         return Err(EngineError::InvalidArg(format!(
-            "Error: {} is not a WAV file (unrecognized format)\n{}",
+            "Error: {} no es un archivo WAV (formato no reconocido)\n{}",
             path.display(),
             ffmpeg_convert_hint(path)
         )));
     }
     if n < 12 || &hdr[8..12] != b"WAVE" {
         return Err(EngineError::InvalidArg(format!(
-            "Error: {} has RIFF header but is not a WAV file (no WAVE marker)\n{}",
+            "Error: {} tiene cabecera RIFF pero no es un archivo WAV (sin marca WAVE)\n{}",
             path.display(),
             ffmpeg_convert_hint(path)
         )));
@@ -630,13 +633,13 @@ pub fn read_wav_pcm(path: &Path) -> Result<(Vec<f32>, u32), EngineError> {
         if &chunk_id == b"fmt " {
             if chunk_size < 16 {
                 return Err(EngineError::InvalidArg(format!(
-                    "Error: truncated fmt chunk in {}",
+                    "Error: chunk fmt truncado en {}",
                     path.display()
                 )));
             }
             let mut fmt_buf = [0u8; 16];
             r.read_exact(&mut fmt_buf).map_err(|_| {
-                EngineError::InvalidArg(format!("Error: truncated fmt chunk in {}", path.display()))
+                EngineError::InvalidArg(format!("Error: chunk fmt truncado en {}", path.display()))
             })?;
             audio_format = u16::from_le_bytes([fmt_buf[0], fmt_buf[1]]);
             num_channels = u16::from_le_bytes([fmt_buf[2], fmt_buf[3]]);
@@ -662,29 +665,32 @@ pub fn read_wav_pcm(path: &Path) -> Result<(Vec<f32>, u32), EngineError> {
     }
 
     let raw = raw_data.ok_or_else(|| {
-        EngineError::InvalidArg(format!("Error: no data chunk in WAV file: {}", path.display()))
+        EngineError::InvalidArg(format!(
+            "Error: el archivo WAV no tiene chunk data: {}",
+            path.display()
+        ))
     })?;
     if raw.is_empty() {
         return Err(EngineError::InvalidArg(format!(
-            "Error: empty data chunk in WAV file: {}",
+            "Error: chunk data vacío en el archivo WAV: {}",
             path.display()
         )));
     }
     if !got_fmt || num_channels == 0 || sample_rate == 0 {
         return Err(EngineError::InvalidArg(format!(
-            "Error: missing or invalid fmt chunk in WAV file: {}",
+            "Error: chunk fmt ausente o inválido en el archivo WAV: {}",
             path.display()
         )));
     }
     if audio_format != 1 {
         return Err(EngineError::InvalidArg(format!(
-            "Error: unsupported WAV format {audio_format} (only PCM=1 supported): {}",
+            "Error: formato WAV {audio_format} no soportado (solo se admite PCM=1): {}",
             path.display()
         )));
     }
     if bits_per_sample != 16 && bits_per_sample != 32 {
         return Err(EngineError::InvalidArg(format!(
-            "Error: unsupported bits per sample {bits_per_sample} (only 16/32 supported): {}",
+            "Error: bits por muestra {bits_per_sample} no soportados (solo 16/32): {}",
             path.display()
         )));
     }
@@ -728,7 +734,7 @@ pub fn read_wav_24khz(path: &Path) -> Result<Vec<f32>, EngineError> {
     let (samples, sr) = read_wav_pcm(path)?;
     if sr as usize != SAMPLE_RATE {
         return Err(EngineError::InvalidArg(format!(
-            "Error: reference audio must be {SAMPLE_RATE} Hz (got {sr} Hz)\nConvert with: ffmpeg -i \"{}\" -ar 24000 -ac 1 output.wav",
+            "Error: el audio de referencia debe ser de {SAMPLE_RATE} Hz (se obtuvo {sr} Hz)\nConvierte con: ffmpeg -i \"{}\" -ar 24000 -ac 1 output.wav",
             path.display()
         )));
     }
@@ -780,7 +786,7 @@ pub fn trim_trailing_silence(audio: &mut Vec<f32>, sample_rate: usize, silent: b
     if new_n < n {
         if !silent {
             eprintln!(
-                "  Voice clone: trimmed {:.2}s trailing silence/fade ({:.1}s -> {:.1}s)",
+                "  Clonación de voz: recortados {:.2}s de silencio o fundido final ({:.1}s -> {:.1}s)",
                 (n - new_n) as f32 / (sample_rate as f32),
                 n as f32 / (sample_rate as f32),
                 new_n as f32 / (sample_rate as f32)

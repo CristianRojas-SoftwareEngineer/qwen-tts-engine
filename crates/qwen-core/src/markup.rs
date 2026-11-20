@@ -391,20 +391,20 @@ mod tests {
             plan_script("Hola. [laugh] Adiós.", MarkupMode::Auto).text
         );
         let Script::Spans(spans) = comp.script else {
-            panic!("expected Spans");
+            panic!("se esperaba Spans");
         };
         assert_eq!(spans.len(), 1);
         let SpanSpec::Utterance { text, is_filler, .. } = &spans[0] else {
-            panic!("expected Utterance");
+            panic!("se esperaba Utterance");
         };
         assert!(!is_filler);
-        assert!(text.contains('\u{54c8}'), "got: {text}");
+        assert!(text.contains('\u{54c8}'), "se obtuvo: {text}");
 
         // `[hmm]` sigue siendo muletilla; `[yawn]` se sustituye; `[pause]` es una pausa.
         let mix = plan_script("Uno [hmm] dos [yawn] tres [pause:0.2]", MarkupMode::Compose);
         assert_eq!(mix.paralinguistic, Some((42, 1.1)));
         let Script::Spans(spans) = mix.script else {
-            panic!("expected Spans");
+            panic!("se esperaba Spans");
         };
         assert!(spans
             .iter()

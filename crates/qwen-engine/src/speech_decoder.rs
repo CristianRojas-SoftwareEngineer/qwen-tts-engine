@@ -536,7 +536,7 @@ pub fn speech_decoder_decode(
     }
     if codes.len() < n_frames * NUM_CODEBOOKS {
         return Err(EngineError::InvalidArg(format!(
-            "speech_decoder_decode: codes length {} < {} ({} frames * {})",
+            "speech_decoder_decode: longitud de codes {} < {} ({} frames * {})",
             codes.len(),
             n_frames * NUM_CODEBOOKS,
             n_frames,
@@ -1473,7 +1473,7 @@ pub fn speech_decoder_decode_streaming(
     }
     if new_codes.len() < new_frames * NUM_CODEBOOKS {
         return Err(EngineError::InvalidArg(format!(
-            "speech_decoder_decode_streaming: codes length {} < {} ({} frames * {})",
+            "speech_decoder_decode_streaming: longitud de codes {} < {} ({} frames * {})",
             new_codes.len(),
             new_frames * NUM_CODEBOOKS,
             new_frames,

@@ -125,7 +125,7 @@ impl MmapStore {
             return Self::open_files(&paths);
         }
         Err(CoreError::Safetensors(format!(
-            "No model.safetensors or model.safetensors.index.json in {}",
+            "No hay model.safetensors ni model.safetensors.index.json en {}",
             dir.display()
         )))
     }
@@ -136,14 +136,14 @@ impl MmapStore {
 
         for (shard_id, p) in paths.iter().enumerate() {
             let file = File::open(p.as_ref()).map_err(|e| {
-                CoreError::Safetensors(format!("Cannot open {}: {e}", p.as_ref().display()))
+                CoreError::Safetensors(format!("No se puede abrir {}: {e}", p.as_ref().display()))
             })?;
             let mmap = Arc::new(unsafe { Mmap::map(&file) }.map_err(|e| {
-                CoreError::Safetensors(format!("Mmap failed for {}: {e}", p.as_ref().display()))
+                CoreError::Safetensors(format!("Falló el mmap de {}: {e}", p.as_ref().display()))
             })?);
             let st = SafeTensors::deserialize(&mmap).map_err(|e| {
                 CoreError::Safetensors(format!(
-                    "Invalid safetensors {}: {e}",
+                    "safetensors inválido en {}: {e}",
                     p.as_ref().display()
                 ))
             })?;
@@ -156,12 +156,14 @@ impl MmapStore {
                     (data.as_ptr() as usize)
                         .checked_sub(base_ptr)
                         .ok_or_else(|| {
-                            CoreError::Safetensors(format!("Tensor '{name}' pointer outside shard"))
+                            CoreError::Safetensors(format!(
+                                "El puntero del tensor '{name}' queda fuera del shard"
+                            ))
                         })?
                 };
                 if byte_offset.saturating_add(data.len()) > mmap.len() {
                     return Err(CoreError::Safetensors(format!(
-                        "Tensor '{name}' range exceeds shard length"
+                        "El rango del tensor '{name}' excede la longitud del shard"
                     )));
                 }
                 index.insert(
@@ -188,10 +190,10 @@ impl MmapStore {
         let loc = self
             .index
             .get(name)
-            .ok_or_else(|| CoreError::Safetensors(format!("Missing tensor '{name}'")))?;
+            .ok_or_else(|| CoreError::Safetensors(format!("Falta el tensor '{name}'")))?;
         if loc.dtype != Dtype::BF16 {
             return Err(CoreError::Safetensors(format!(
-                "Tensor '{name}' dtype is {:?}, expected BF16",
+                "El dtype del tensor '{name}' es {:?}, se esperaba BF16",
                 loc.dtype
             )));
         }
@@ -227,7 +229,7 @@ impl MmapStore {
         let loc = self
             .index
             .get(name)
-            .ok_or_else(|| CoreError::Safetensors(format!("Missing tensor '{name}'")))?;
+            .ok_or_else(|| CoreError::Safetensors(format!("Falta el tensor '{name}'")))?;
         let shard = &self.shards[loc.shard_id].mmap;
         let data = &shard[loc.byte_offset..loc.byte_offset + loc.byte_len];
         match loc.dtype {

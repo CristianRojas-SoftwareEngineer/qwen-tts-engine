@@ -45,7 +45,7 @@ impl SpeakerEncoderWeights {
     pub fn load(store: &MmapStore, silent: bool) -> Result<Self, EngineError> {
         if !store.contains("speaker_encoder.blocks.0.conv.weight") {
             return Err(EngineError::Model(
-                "the checkpoint has no speaker encoder (the Base model is required)".to_string(),
+                "el checkpoint no tiene speaker encoder (se requiere el modelo Base)".to_string(),
             ));
         }
         let req = |name: &str| -> Result<F32Ref, EngineError> { Ok(store.tensor_f32_ref(name)?) };
@@ -66,12 +66,12 @@ impl SpeakerEncoderWeights {
                     "speaker_encoder.blocks.{idx}.res2net_block.blocks.{r}.conv.bias"
                 ))?);
             }
-            let res2net_conv_w: [F32Ref; 7] = r2w
-                .try_into()
-                .map_err(|_| EngineError::Model("res2net_conv_w init failed".to_string()))?;
-            let res2net_conv_b: [F32Ref; 7] = r2b
-                .try_into()
-                .map_err(|_| EngineError::Model("res2net_conv_b init failed".to_string()))?;
+            let res2net_conv_w: [F32Ref; 7] = r2w.try_into().map_err(|_| {
+                EngineError::Model("falló la inicialización de res2net_conv_w".to_string())
+            })?;
+            let res2net_conv_b: [F32Ref; 7] = r2b.try_into().map_err(|_| {
+                EngineError::Model("falló la inicialización de res2net_conv_b".to_string())
+            })?;
             blocks_vec.push(SeRes2NetWeights {
                 tdnn1_conv_w: req(&format!("speaker_encoder.blocks.{idx}.tdnn1.conv.weight"))?,
                 tdnn1_conv_b: req(&format!("speaker_encoder.blocks.{idx}.tdnn1.conv.bias"))?,
@@ -92,7 +92,7 @@ impl SpeakerEncoderWeights {
         }
         let se_blocks: [SeRes2NetWeights; 3] = blocks_vec
             .try_into()
-            .map_err(|_| EngineError::Model("se_blocks init failed".to_string()))?;
+            .map_err(|_| EngineError::Model("falló la inicialización de se_blocks".to_string()))?;
 
         let mfa_conv_w = req("speaker_encoder.mfa.conv.weight")?;
         let mfa_conv_b = req("speaker_encoder.mfa.conv.bias")?;
@@ -104,7 +104,9 @@ impl SpeakerEncoderWeights {
         let fc_b = req("speaker_encoder.fc.bias")?;
 
         if !silent {
-            eprintln!("  Speaker encoder (ECAPA-TDNN): loaded (enc_dim={ENC_DIM}, mel_dim={MEL_DIM})");
+            eprintln!(
+                "  Speaker encoder (ECAPA-TDNN): cargado (enc_dim={ENC_DIM}, mel_dim={MEL_DIM})"
+            );
         }
 
         Ok(Self {
@@ -221,7 +223,7 @@ fn build_mel_filterbank(sr: usize, n_fft: usize, n_mels: usize, fmin: f32, fmax:
 pub fn mel_spectrogram(audio: &[f32], sample_rate: usize) -> Result<(Vec<f32>, usize), EngineError> {
     if sample_rate != SAMPLE_RATE {
         return Err(EngineError::InvalidArg(format!(
-            "mel_spectrogram requires {SAMPLE_RATE} Hz audio (got {sample_rate} Hz)"
+            "mel_spectrogram requiere audio de {SAMPLE_RATE} Hz (se obtuvo {sample_rate} Hz)"
         )));
     }
     const N_FFT: usize = 1024;
@@ -235,7 +237,7 @@ pub fn mel_spectrogram(audio: &[f32], sample_rate: usize) -> Result<(Vec<f32>, u
     let padding = (N_FFT - HOP_SIZE) / 2; // 384
     if n_samples <= padding {
         return Err(EngineError::InvalidArg(
-            "Audio too short for mel spectrogram".to_string(),
+            "Audio demasiado corto para el espectrograma mel".to_string(),
         ));
     }
     let padded_len = n_samples + 2 * padding;
@@ -251,7 +253,7 @@ pub fn mel_spectrogram(audio: &[f32], sample_rate: usize) -> Result<(Vec<f32>, u
 
     if padded_len < N_FFT {
         return Err(EngineError::InvalidArg(
-            "Audio too short for mel spectrogram".to_string(),
+            "Audio demasiado corto para el espectrograma mel".to_string(),
         ));
     }
     let n_frames = (padded_len - N_FFT) / HOP_SIZE + 1;
@@ -727,7 +729,7 @@ pub(crate) fn load_and_trim_ref_audio(
     let mut audio = read_wav_24khz(ref_audio_path)?;
     if !silent {
         eprintln!(
-            "Reference audio: {} ({} samples, {} Hz, {:.2}s)",
+            "Audio de referencia: {} ({} muestras, {} Hz, {:.2}s)",
             ref_audio_path.display(),
             audio.len(),
             SAMPLE_RATE,
@@ -739,7 +741,7 @@ pub(crate) fn load_and_trim_ref_audio(
         if audio.len() > max_samples {
             if !silent {
                 eprintln!(
-                    "  Truncating to {:.0}s (was {:.1}s)",
+                    "  Truncado a {:.0}s (eran {:.1}s)",
                     max_ref_seconds,
                     audio.len() as f32 / SAMPLE_RATE as f32
                 );

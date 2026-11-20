@@ -98,7 +98,7 @@ pub(crate) fn build_prompt(
     let text_tokens = model.tokenizer.encode_para(text);
     if text_tokens.is_empty() {
         return Err(EngineError::InvalidArg(
-            "Text tokenization produced 0 tokens".to_string(),
+            "La tokenización del texto produjo 0 tokens".to_string(),
         ));
     }
 
@@ -140,7 +140,7 @@ pub(crate) fn build_prompt(
     let prefill_len = role_prefix.len() + sec2_len + sec3_len + sec4_len;
     if prefill_len > ROPE_MAX_POS {
         return Err(EngineError::InvalidArg(format!(
-            "Prompt too long ({prefill_len} tokens > RoPE cache {ROPE_MAX_POS}); shorten the text."
+            "Prompt demasiado largo ({prefill_len} tokens > caché RoPE {ROPE_MAX_POS}); acorta el texto."
         )));
     }
 
@@ -207,7 +207,7 @@ pub(crate) fn build_prompt(
     }
 
     if icl_mode {
-        let ref_codes = ref_codes_slice.expect("icl_mode implies ref_codes");
+        let ref_codes = ref_codes_slice.expect("icl_mode implica ref_codes");
         for i in 0..sec3_len {
             let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
             if i < ref_text_tokens.len() {

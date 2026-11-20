@@ -21,8 +21,8 @@ measure_one() {
     "$bin" -d models/qwen3-tts-0.6b-base -l English --quant-mixed -j "$threads" --seed 4 -t "${!text_var}" -o "$wav" > "$log" 2>&1
     local rtf frames tk cp dec ttfa
     rtf=$(grep -o 'RTF [0-9.]*' "$log" | tail -1 | cut -d' ' -f2)
-    frames=$(grep -o 'Generated [0-9]* frames' "$log" | cut -d' ' -f2)
-    tk=$(grep -o 'Talker step: [0-9]* ms ([0-9.]* ms/f)' "$log" | grep -o '([0-9.]*' | tr -d '(')
+    frames=$(grep -o 'Generados [0-9]* frames' "$log" | cut -d' ' -f2)
+    tk=$(grep -o 'Paso del Talker: [0-9]* ms ([0-9.]* ms/f)' "$log" | grep -o '([0-9.]*' | tr -d '(')
     cp=$(grep -o 'Code Predictor: [0-9]* ms ([0-9.]* ms/f)' "$log" | grep -o '([0-9.]*' | tr -d '(')
     dec=$(grep -o 'Speech decoder: *[0-9]* ms' "$log" | grep -o '[0-9]*' | head -1)
     ttfa=$(grep -o 'TTFA: [0-9]* ms' "$log" | grep -o '[0-9]*' | head -1)

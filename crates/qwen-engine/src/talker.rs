@@ -46,7 +46,10 @@ fn prefill_matmul_bf16(
 ) {
     // Par, para que cada bloque de `GateUp` lleve parejas completas.
     let block_rows = (stage.len() / k) & !1;
-    assert!(block_rows > 0, "prefill_matmul_bf16: stage too small for k={k}");
+    assert!(
+        block_rows > 0,
+        "prefill_matmul_bf16: etapa demasiado pequeña para k={k}"
+    );
     let mut r0 = 0;
     while r0 < rows {
         let r1 = (r0 + block_rows).min(rows);
@@ -99,11 +102,11 @@ pub fn talker_prefill(
     let d = runtime.dispatch;
 
     if !log.is_silent() {
-        eprintln!("  Prefill:{} tokens, hidden={}", seq_len, HIDDEN_SIZE);
+        eprintln!("  Prefill: {} tokens, hidden={}", seq_len, HIDDEN_SIZE);
     }
     if seq_len > model.talker.rope_cos.len() / (HEAD_DIM / 2) {
         return Err(EngineError::Runtime(format!(
-            "Prompt too long ({seq_len} tokens > RoPE cache)"
+            "Prompt demasiado largo ({seq_len} tokens > caché RoPE)"
         )));
     }
 
@@ -244,7 +247,7 @@ pub fn talker_prefill(
 
         if log.is_debug() {
             eprintln!(
-                "  Layer {}/{} done res[:4]=[{:.4},{:.4},{:.4},{:.4}]",
+                "  Capa {}/{} terminada res[:4]=[{:.4},{:.4},{:.4},{:.4}]",
                 layer_idx + 1,
                 NUM_LAYERS,
                 residual[0],
@@ -268,7 +271,7 @@ pub fn talker_prefill(
     }
 
     if !log.is_silent() {
-        eprintln!("  Prefill complete ({seq_len} tokens in KV cache)");
+        eprintln!("  Prefill completo ({seq_len} tokens en la caché KV)");
     }
     Ok(())
 }
