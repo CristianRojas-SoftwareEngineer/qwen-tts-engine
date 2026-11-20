@@ -10,7 +10,7 @@ use crate::aligned::AlignedBuf;
 use crate::dispatch::{env_batch_b, ComputeRuntime};
 use crate::quant::{f32_to_bf16_round, quantize_bf16_to_int8, quantize_bf16_to_q4_0};
 
-/// Ejecuta el microbenchmark `matmat` vs `B * matvec` (`--matmat-bench`) con `QWEN_BATCH_B` (default `8`).
+/// Ejecuta el microbenchmark `matmat` frente a `B * matvec` (`--matmat-bench`) con `QWEN_BATCH_B` (por defecto `8`).
 pub fn run_matmat_bench(rt: &ComputeRuntime) -> String {
     let mut out = String::new();
     let b_dim = env_batch_b(8, 64);
@@ -29,13 +29,13 @@ pub fn run_matmat_bench(rt: &ComputeRuntime) -> String {
 
     let _ = writeln!(
         out,
-        "matmat-bench: B={}, threads={}  (B*matvec [seq] vs matmat [batched])",
+        "matmat-bench: B={}, hilos={}  (B*matvec [seq] frente a matmat [por lotes])",
         b_dim,
         pool.n_threads()
     );
     let _ = writeln!(
         out,
-        "  speedup>1 => batching (weight read+unpack once) beats re-reading per stream\n"
+        "  speedup>1 => el procesamiento por lotes (lee y desempaqueta los pesos una vez) supera a releerlos por cada flujo\n"
     );
 
     for &(rows, cols) in &shapes {
@@ -103,7 +103,7 @@ pub fn run_matmat_bench(rt: &ComputeRuntime) -> String {
 
             let _ = writeln!(
                 out,
-                "     {:<5}  seq {:7.2} ms   batch {:7.2} ms   SPEEDUP {:.2}x",
+                "     {:<5}  seq {:7.2} ms   lote {:7.2} ms   SPEEDUP {:.2}x",
                 pn,
                 t_seq,
                 t_batch,

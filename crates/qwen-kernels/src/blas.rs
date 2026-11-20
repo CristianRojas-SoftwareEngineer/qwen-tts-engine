@@ -115,12 +115,12 @@ fn validate_sgemm_bounds(
                 && lda <= c_int::MAX as usize
                 && ldb <= c_int::MAX as usize
                 && ldc <= c_int::MAX as usize,
-            "sgemm dimensions exceed c_int::MAX"
+            "sgemm: las dimensiones superan c_int::MAX"
         );
     } else {
         assert!(
             lda <= isize::MAX as usize && ldb <= isize::MAX as usize && ldc <= isize::MAX as usize,
-            "sgemm leading dimensions exceed isize::MAX"
+            "sgemm: las dimensiones principales superan isize::MAX"
         );
     }
 
@@ -128,21 +128,21 @@ fn validate_sgemm_bounds(
         Transpose::NoTrans => (m, k),
         Transpose::Trans => (k, m),
     };
-    assert!(lda >= a_cols.max(1), "sgemm invalid lda={lda} < {a_cols}");
-    let a_req = (a_rows - 1).checked_mul(lda).and_then(|v| v.checked_add(a_cols)).expect("sgemm a size overflow");
-    assert!(a_len >= a_req, "sgemm buffer a too small: {} < {}", a_len, a_req);
+    assert!(lda >= a_cols.max(1), "sgemm: lda={lda} no válido, menor que {a_cols}");
+    let a_req = (a_rows - 1).checked_mul(lda).and_then(|v| v.checked_add(a_cols)).expect("sgemm: desbordamiento del tamaño de a");
+    assert!(a_len >= a_req, "sgemm: el buffer a es demasiado pequeño: {} < {}", a_len, a_req);
 
     let (b_rows, b_cols) = match transb {
         Transpose::NoTrans => (k, n),
         Transpose::Trans => (n, k),
     };
-    assert!(ldb >= b_cols.max(1), "sgemm invalid ldb={ldb} < {b_cols}");
-    let b_req = (b_rows - 1).checked_mul(ldb).and_then(|v| v.checked_add(b_cols)).expect("sgemm b size overflow");
-    assert!(b_len >= b_req, "sgemm buffer b too small: {} < {}", b_len, b_req);
+    assert!(ldb >= b_cols.max(1), "sgemm: ldb={ldb} no válido, menor que {b_cols}");
+    let b_req = (b_rows - 1).checked_mul(ldb).and_then(|v| v.checked_add(b_cols)).expect("sgemm: desbordamiento del tamaño de b");
+    assert!(b_len >= b_req, "sgemm: el buffer b es demasiado pequeño: {} < {}", b_len, b_req);
 
-    assert!(ldc >= n.max(1), "sgemm invalid ldc={ldc} < {n}");
-    let c_req = (m - 1).checked_mul(ldc).and_then(|v| v.checked_add(n)).expect("sgemm c size overflow");
-    assert!(c_len >= c_req, "sgemm buffer c too small: {} < {}", c_len, c_req);
+    assert!(ldc >= n.max(1), "sgemm: ldc={ldc} no válido, menor que {n}");
+    let c_req = (m - 1).checked_mul(ldc).and_then(|v| v.checked_add(n)).expect("sgemm: desbordamiento del tamaño de c");
+    assert!(c_len >= c_req, "sgemm: el buffer c es demasiado pequeño: {} < {}", c_len, c_req);
 }
 
 #[inline]
@@ -151,8 +151,8 @@ fn handle_zero_k_sgemm(m: usize, n: usize, beta: f32, c: &mut [f32], ldc: usize)
         let req = (m - 1)
             .checked_mul(ldc)
             .and_then(|v| v.checked_add(n))
-            .expect("sgemm zero-k c overflow");
-        assert!(ldc >= n && c.len() >= req, "sgemm zero-k c bounds");
+            .expect("sgemm: desbordamiento del tamaño de c con k = 0");
+        assert!(ldc >= n && c.len() >= req, "sgemm: límites de c no válidos con k = 0");
         for row in 0..m {
             let slice = &mut c[row * ldc..row * ldc + n];
             if beta == 0.0 {
@@ -259,7 +259,7 @@ impl BlasBackend for FfiBlas {
                 return None;
             }
             let core = unsafe { std::ffi::CStr::from_ptr(p) };
-            Some(format!("core {}", core.to_string_lossy()))
+            Some(format!("núcleo {}", core.to_string_lossy()))
         }
         #[cfg(target_os = "macos")]
         {
@@ -365,7 +365,7 @@ impl Default for PureRustBlas {
 #[cfg(feature = "faer-blas")]
 impl BlasBackend for PureRustBlas {
     fn name(&self) -> &'static str {
-        "faer (pure Rust)"
+        "faer (Rust puro)"
     }
 
     fn set_threads(&self, n: usize) {

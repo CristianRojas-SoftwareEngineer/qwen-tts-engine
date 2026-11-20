@@ -28,7 +28,7 @@ fn test_aligned_buf_64() {
 fn test_selftest_zero_failures() {
     let rt = ComputeRuntime::new(Some(4));
     let (failures, report) = run_kernel_selftest(&rt);
-    assert_eq!(failures, 0, "kernel self-test failed:\n{report}");
+    assert_eq!(failures, 0, "la autoprueba de kernels falló:\n{report}");
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn test_compute_pool_panic_safety() {
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         pool.parallel(4, |tid, _| {
             if tid == 0 {
-                panic!("intentional test panic");
+                panic!("pánico intencional de la prueba");
             }
             completed.fetch_add(1, Ordering::SeqCst);
         });
@@ -155,7 +155,7 @@ fn test_compute_pool_worker_panic_propagates() {
     let pool = ComputePool::new(4);
     for _ in 0..20 {
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            pool.parallel(4, |_, _| panic!("intentional test panic"));
+            pool.parallel(4, |_, _| panic!("pánico intencional de la prueba"));
         }));
         assert!(res.is_err());
     }

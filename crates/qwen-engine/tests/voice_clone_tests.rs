@@ -48,11 +48,11 @@ fn test_wav_validation_and_ffmpeg_hints() {
         let err = validate_wav_path_or_header(&p).unwrap_err().to_string();
         assert!(
             err.contains("ffmpeg -i"),
-            "Expected ffmpeg hint for .{ext}: {err}"
+            "Se esperaba la pista de ffmpeg para .{ext}: {err}"
         );
         assert!(
             err.contains("24000"),
-            "Expected 24000 Hz hint for .{ext}: {err}"
+            "Se esperaba la pista de 24000 Hz para .{ext}: {err}"
         );
     }
 
@@ -62,7 +62,7 @@ fn test_wav_validation_and_ffmpeg_hints() {
     let err = read_wav_24khz(&bad_mp3).unwrap_err().to_string();
     assert!(
         err.contains("MP3") && err.contains("ffmpeg -i"),
-        "got: {err}"
+        "se obtuvo: {err}"
     );
 
     let bad_ogg = dir.join("disguised_ogg.wav");
@@ -70,7 +70,7 @@ fn test_wav_validation_and_ffmpeg_hints() {
     let err = read_wav_24khz(&bad_ogg).unwrap_err().to_string();
     assert!(
         err.contains("OGG") && err.contains("ffmpeg -i"),
-        "got: {err}"
+        "se obtuvo: {err}"
     );
 
     // 3. Un WAV válido con frecuencia distinta (16000 Hz) debe fallar explícitamente
@@ -80,7 +80,7 @@ fn test_wav_validation_and_ffmpeg_hints() {
     let err = read_wav_24khz(&wav_16k).unwrap_err().to_string();
     assert!(
         err.contains("24000 Hz") && err.contains("16000 Hz") && err.contains("ffmpeg -i"),
-        "Expected explicit 24kHz error, got: {err}"
+        "Se esperaba un error explícito de 24 kHz, se obtuvo: {err}"
     );
 
     // 4. Un WAV válido a 24 kHz tiene éxito
@@ -122,7 +122,7 @@ const DEFAULT_VOICE_BITS: [(usize, u32); 3] =
 fn test_default_voice_is_embedded() {
     let voice = Voice::builtin_default();
     assert_eq!(voice.name, "default");
-    assert!(voice.icl.is_none(), "the default voice must be a plain x-vector");
+    assert!(voice.icl.is_none(), "la voz por defecto debe ser un x-vector simple");
     assert_eq!(voice.language_id, Some(2054));
     let emb = &voice.xvector;
     assert_eq!(emb.len(), ENC_DIM);
@@ -132,9 +132,9 @@ fn test_default_voice_is_embedded() {
         .map(|&v| (v as f64) * (v as f64))
         .sum::<f64>()
         .sqrt();
-    assert!((norm - 10.8499).abs() < 1e-3, "norm {norm}");
+    assert!((norm - 10.8499).abs() < 1e-3, "norma {norm}");
     for (idx, bits) in DEFAULT_VOICE_BITS {
-        assert_eq!(emb[idx].to_bits(), bits, "value {idx}");
+        assert_eq!(emb[idx].to_bits(), bits, "valor {idx}");
     }
     // El archivo embebido es el mismo que el del repositorio
     let raw = fs::read(repo_root().join("crates/qwen-engine/assets/default_voice.xvec")).unwrap();
@@ -181,7 +181,7 @@ fn test_voice_file_extension_and_version_errors() {
         .to_string();
     assert!(
         err.contains("version 3") && err.contains("old.qvoice"),
-        "got: {err}"
+        "se obtuvo: {err}"
     );
 }
 
@@ -191,7 +191,7 @@ fn test_markup_with_default_voice_texts() {
     let plan = plan_script("Devo andare [sad] Ciao.", MarkupMode::Auto);
     assert!(plan.paralinguistic.is_none());
     let Script::Plain(text) = &plan.script else {
-        panic!("expected Plain");
+        panic!("se esperaba Plain");
     };
     assert!(text.contains("[sad]"));
 
@@ -199,7 +199,7 @@ fn test_markup_with_default_voice_texts() {
     let plan = plan_script("Oh! [laugh] [pause:0.5] Great!", MarkupMode::Auto);
     assert!(plan.paralinguistic.is_some());
     let Script::Spans(spans) = &plan.script else {
-        panic!("expected Spans");
+        panic!("se esperaba Spans");
     };
     assert!(spans.iter().any(
         |s| matches!(s, qwen_core::SpanSpec::Pause { seconds } if (*seconds - 0.5).abs() < 1e-6)
@@ -211,7 +211,7 @@ fn test_clone_from_default_voice_e2e() {
     let root = repo_root();
     let base_dir = root.join("models/qwen3-tts-0.6b-base");
     if !base_dir.exists() {
-        eprintln!("Skipping test_clone_from_default_voice_e2e (Base model absent)");
+        eprintln!("Se omite test_clone_from_default_voice_e2e (falta el modelo Base)");
         return;
     }
 
@@ -311,7 +311,7 @@ fn test_clone_from_default_voice_e2e() {
     assert!(!xvec_file.has_icl());
     assert_eq!(
         xvec_file.lang_id, 0,
-        "cloning without -l stores no language"
+        "clonar sin -l no guarda idioma"
     );
     assert_eq!(xvec_file.voice_name, "");
 
@@ -329,7 +329,7 @@ fn test_clone_from_default_voice_e2e() {
     assert!(xvec_voice.icl.is_none());
     assert_eq!(
         xvec_voice.name, "xvec",
-        "an empty stored name falls back to the file name"
+        "un nombre guardado vacío recurre al nombre del archivo"
     );
     assert_eq!(xvec_voice.language_id, None);
 
@@ -411,7 +411,7 @@ fn test_clone_from_default_voice_e2e() {
     );
     assert!(plan.paralinguistic.is_some());
     let Script::Spans(spans) = &plan.script else {
-        panic!("expected Spans");
+        panic!("se esperaba Spans");
     };
     let sampling = resolve_sampling(
         SamplingParams::default(),

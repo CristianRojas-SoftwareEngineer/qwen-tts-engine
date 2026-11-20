@@ -189,7 +189,7 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
     let runtime = ComputeRuntime::new(Some(4));
     let Some(model) = load_model(&runtime) else {
         eprintln!(
-            "Skipping test_buffer_and_stream_deliver_same_pcm_and_clone_bytes (model absent)"
+            "Se omite test_buffer_and_stream_deliver_same_pcm_and_clone_bytes (falta el modelo)"
         );
         return;
     };

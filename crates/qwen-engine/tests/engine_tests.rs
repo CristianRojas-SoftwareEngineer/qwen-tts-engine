@@ -48,7 +48,7 @@ fn test_decoder_streaming_equivalence() {
     let root = repo_root();
     let model_dir = root.join("models/qwen3-tts-0.6b-base");
     if !model_dir.exists() {
-        eprintln!("Skipping test_decoder_streaming_equivalence (model absent)");
+        eprintln!("Se omite test_decoder_streaming_equivalence (falta el modelo)");
         return;
     }
 
@@ -107,7 +107,7 @@ fn test_decoder_streaming_equivalence() {
     let snr_stream = snr_db_f32(&full_samples, &stream_samples);
     assert!(
         snr_stream >= 100.0,
-        "Expected streaming vs non-streaming SNR >= 100 dB, got {snr_stream:.2} dB"
+        "Se esperaba una SNR >= 100 dB entre streaming y no streaming, se obtuvo {snr_stream:.2} dB"
     );
 }
 
@@ -116,7 +116,7 @@ fn test_e2e_determinism_and_abort() {
     let root = repo_root();
     let model_dir = root.join("models/qwen3-tts-0.6b-base");
     if !model_dir.exists() {
-        eprintln!("Skipping test_e2e_determinism_and_abort (model absent)");
+        eprintln!("Se omite test_e2e_determinism_and_abort (falta el modelo)");
         return;
     }
 
@@ -167,7 +167,7 @@ fn test_e2e_determinism_and_abort() {
     assert_eq!(
         encode_wav_bytes(&s1, SAMPLE_RATE as u32),
         encode_wav_bytes(&s2, SAMPLE_RATE as u32),
-        "Two identical Rust runs must produce bit-identical WAV bytes"
+        "Dos ejecuciones idénticas de Rust deben producir bytes WAV idénticos bit a bit"
     );
 
     // Comprobación de cancelación mediante AbortHandle

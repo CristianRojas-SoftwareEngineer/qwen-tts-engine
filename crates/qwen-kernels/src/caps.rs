@@ -53,7 +53,7 @@ impl CpuCaps {
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
             Self {
-                arch: "(other)",
+                arch: "(otra)",
                 ..Default::default()
             }
         }
@@ -74,21 +74,21 @@ impl CpuCaps {
         kernels: &str,
     ) -> String {
         let mut s = String::new();
-        let _ = writeln!(s, "qwen-tts-engine runtime capabilities:");
-        let _ = writeln!(s, "  arch:             {}", self.arch);
+        let _ = writeln!(s, "Capacidades de qwen-tts-engine en tiempo de ejecución:");
+        let _ = writeln!(s, "  arquitectura:     {}", self.arch);
         if choice == KernelChoice::Scalar {
-            let _ = writeln!(s, "  kernels:          scalar (forced by QWEN_KERNELS=scalar)");
+            let _ = writeln!(s, "  kernels:          scalar (forzado por QWEN_KERNELS=scalar)");
         } else {
             let _ = writeln!(s, "  kernels:          {kernels}");
         }
         match kernels {
             "avx2" => {
-                let _ = writeln!(s, "  matvec + attn:    AVX2 (2-row fused, FMA)");
+                let _ = writeln!(s, "  matvec + attn:    AVX2 (2 filas fusionadas, FMA)");
                 let _ = writeln!(
                     s,
-                    "  int8 dot:         AVX2 _mm256_maddubs_epi16 (integer, runtime dispatch)"
+                    "  int8 dot:         AVX2 _mm256_maddubs_epi16 (enteros, despacho en tiempo de ejecución)"
                 );
-                let _ = writeln!(s, "  bf16 dot:         bf16->f32 conversion + FMA");
+                let _ = writeln!(s, "  bf16 dot:         conversión bf16->f32 + FMA");
                 let _ = writeln!(s, "  rms/bf16-conv:    AVX2");
             }
             "neon" | "neon-dotprod" => {
@@ -97,16 +97,16 @@ impl CpuCaps {
                 } else {
                     "NEON SMULL widening"
                 };
-                let _ = writeln!(s, "  q4_0 + int8 dot:  {dot}, AVX2 summation order");
-                let _ = writeln!(s, "  bf16 + attn:      NEON (FMA, AVX2 summation order)");
+                let _ = writeln!(s, "  q4_0 + int8 dot:  {dot}, orden de suma de AVX2");
+                let _ = writeln!(s, "  bf16 + attn:      NEON (FMA, orden de suma de AVX2)");
                 let _ = writeln!(s, "  rms/bf16-conv:    NEON");
-                let _ = writeln!(s, "  snake (decoder):  NEON polynomial sin");
+                let _ = writeln!(s, "  snake (decoder):  sin polinómico en NEON");
             }
             _ => {
                 let _ = writeln!(s, "  matvec + attn:    scalar");
                 let _ = writeln!(
                     s,
-                    "  int8 dot:         scalar (integer loop, int32 accumulation)"
+                    "  int8 dot:         scalar (bucle entero, acumulación en int32)"
                 );
                 let _ = writeln!(s, "  rms/bf16-conv:    scalar");
             }
@@ -117,7 +117,7 @@ impl CpuCaps {
         } else {
             "Rust ComputePool"
         };
-        let _ = writeln!(s, "  matvec threads:   {} ({} threads)", pool_kind, threads);
+        let _ = writeln!(s, "  hilos de matvec:  {} ({} hilos)", pool_kind, threads);
         let _ = writeln!(s, "  BLAS (prefill):   {}", blas_name);
 
         if self.arch == "x86-64" {
@@ -133,11 +133,11 @@ impl CpuCaps {
             let _ = writeln!(s, "  runtime cpu:      {}", feats.join(" "));
             let _ = writeln!(
                 s,
-                "  lever (x86):      {}",
+                "  palanca (x86):    {}",
                 if kernels == "avx2" {
-                    "AVX2 maddubs integer dot for int8 and q4_0"
+                    "dot entero AVX2 maddubs para int8 y q4_0"
                 } else {
-                    "scalar integer dot"
+                    "dot entero scalar"
                 }
             );
         } else if self.arch == "arm64" {

@@ -141,8 +141,8 @@ impl<T: Copy + Default, const ALIGN: usize> AlignedBuf<T, ALIGN> {
     fn layout_for(cap: usize) -> Layout {
         let bytes = cap
             .checked_mul(std::mem::size_of::<T>())
-            .expect("AlignedBuf byte size overflow");
-        Layout::from_size_align(bytes.max(1), ALIGN).expect("invalid AlignedBuf layout")
+            .expect("desbordamiento del tamaño en bytes de AlignedBuf");
+        Layout::from_size_align(bytes.max(1), ALIGN).expect("layout de AlignedBuf no válido")
     }
 
     fn dealloc_current(&mut self) {
@@ -166,9 +166,9 @@ impl<T, const ALIGN: usize> Drop for AlignedBuf<T, ALIGN> {
             let bytes = self
                 .cap
                 .checked_mul(std::mem::size_of::<T>())
-                .expect("AlignedBuf byte size overflow");
-            let layout =
-                Layout::from_size_align(bytes.max(1), ALIGN).expect("invalid AlignedBuf layout");
+                .expect("desbordamiento del tamaño en bytes de AlignedBuf");
+            let layout = Layout::from_size_align(bytes.max(1), ALIGN)
+                .expect("layout de AlignedBuf no válido");
             unsafe { dealloc(self.ptr.as_ptr() as *mut u8, layout) };
         }
     }

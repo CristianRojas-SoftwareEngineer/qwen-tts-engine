@@ -424,7 +424,7 @@ impl KernelChoice {
         static CHOICE: std::sync::OnceLock<KernelChoice> = std::sync::OnceLock::new();
         *CHOICE.get_or_init(|| {
             Self::parse(std::env::var("QWEN_KERNELS").ok().as_deref()).unwrap_or_else(|e| {
-                eprintln!("aviso: {e}; se usa auto");
+                eprintln!("Aviso: {e}; se usa auto");
                 Self::Auto
             })
         })
@@ -475,7 +475,10 @@ impl KernelDispatch {
 
     #[inline]
     pub fn quantize_act_int8(&self, qx: &mut [i8], x: &[f32]) -> f32 {
-        assert!(qx.len() >= x.len(), "quantize_act_int8 qx buffer too small");
+        assert!(
+            qx.len() >= x.len(),
+            "quantize_act_int8: el buffer qx es demasiado pequeño"
+        );
         (self.quantize_act_int8_fn)(qx, x)
     }
 
@@ -487,10 +490,19 @@ impl KernelDispatch {
         cols: usize,
         b_dim: usize,
     ) {
-        assert!(cols <= QWEN_QACT_MAX, "cols={cols} > QWEN_QACT_MAX={QWEN_QACT_MAX}");
-        assert!(qxt.len() >= b_dim * cols, "quantize_act_int8_cols qxt overflow");
-        assert!(sx.len() >= b_dim, "quantize_act_int8_cols sx overflow");
-        assert!(x.len() >= cols * b_dim, "quantize_act_int8_cols x overflow");
+        assert!(cols <= QWEN_QACT_MAX, "cols={cols} supera QWEN_QACT_MAX={QWEN_QACT_MAX}");
+        assert!(
+            qxt.len() >= b_dim * cols,
+            "quantize_act_int8_cols: el buffer qxt es demasiado pequeño"
+        );
+        assert!(
+            sx.len() >= b_dim,
+            "quantize_act_int8_cols: el buffer sx es demasiado pequeño"
+        );
+        assert!(
+            x.len() >= cols * b_dim,
+            "quantize_act_int8_cols: el buffer x es demasiado pequeño"
+        );
         let mut col_uninit = [std::mem::MaybeUninit::<f32>::uninit(); QWEN_QACT_MAX];
         for b in 0..b_dim {
             for (k, slot) in col_uninit[..cols].iter_mut().enumerate() {
@@ -518,7 +530,7 @@ impl KernelDispatch {
         }
         assert!(
             out.len() >= seq * dim && x.len() >= seq * dim && weight.len() >= dim,
-            "rms_norm slice bounds mismatch"
+            "rms_norm: los límites de los slices no coinciden"
         );
         (self.rms_norm_fn)(out, x, weight, seq, dim, eps);
     }
@@ -538,7 +550,7 @@ impl KernelDispatch {
         }
         assert!(
             out.len() >= dim && x.len() >= dim && residual.len() >= dim && weight.len() >= dim,
-            "rms_norm_residual slice bounds mismatch"
+            "rms_norm_residual: los límites de los slices no coinciden"
         );
         (self.rms_norm_residual_fn)(out, x, residual, weight, dim, eps);
     }
@@ -558,7 +570,7 @@ impl KernelDispatch {
         }
         assert!(
             x.len() >= seq * n_heads * head_dim && weight.len() >= head_dim,
-            "rms_norm_per_head slice bounds mismatch"
+            "rms_norm_per_head: los límites de los slices no coinciden"
         );
         (self.rms_norm_per_head_fn)(x, weight, seq, n_heads, head_dim, eps);
     }
@@ -736,7 +748,7 @@ impl KernelDispatch {
         if b_dim == 0 || rows == 0 {
             return;
         }
-        assert!(b_dim <= 64, "matmat_bf16 b_dim={b_dim} > 64");
+        assert!(b_dim <= 64, "matmat_bf16: b_dim={b_dim} supera 64");
         assert!(y.len() >= rows * b_dim && x.len() >= cols * b_dim && w.len() >= rows * cols);
         let f = self.bf16_matmat_slice_fn;
         Self::parallel_rows(pool, y, rows, b_dim, |y_slice, r0, r1| {
@@ -804,7 +816,7 @@ impl KernelDispatch {
         ftz_on();
         assert!(
             cols > 0 && cols <= QWEN_QACT_MAX && cols.is_multiple_of(Q4_0_BLOCK_SIZE),
-            "matvec_int8 invalid cols={cols}"
+            "matvec_int8: cols={cols} no válido"
         );
         assert!(
             y.len() >= rows && x.len() >= cols && w.len() >= rows * cols && scale.len() >= rows
@@ -845,9 +857,9 @@ impl KernelDispatch {
         ftz_on();
         assert!(
             cols > 0 && cols <= QWEN_QACT_MAX && cols.is_multiple_of(Q4_0_BLOCK_SIZE),
-            "matmat_int8 invalid cols={cols}"
+            "matmat_int8: cols={cols} no válido"
         );
-        assert!(b_dim <= 64, "matmat_int8 b_dim={b_dim} > 64");
+        assert!(b_dim <= 64, "matmat_int8: b_dim={b_dim} supera 64");
         assert!(
             y.len() >= rows * b_dim
                 && x.len() >= cols * b_dim
@@ -893,7 +905,7 @@ impl KernelDispatch {
         ftz_on();
         assert!(
             in_dim > 0 && in_dim <= QWEN_QACT_MAX && in_dim.is_multiple_of(Q4_0_BLOCK_SIZE),
-            "matvec_int8_qkv invalid in_dim={in_dim}"
+            "matvec_int8_qkv: in_dim={in_dim} no válido"
         );
         assert!(
             q.len() >= q_dim
@@ -959,7 +971,7 @@ impl KernelDispatch {
         ftz_on();
         assert!(
             cols > 0 && cols <= QWEN_QACT_MAX && cols.is_multiple_of(Q4_0_BLOCK_SIZE),
-            "matvec_q4_0 invalid cols={cols}"
+            "matvec_q4_0: cols={cols} no válido"
         );
         let nb = cols / Q4_0_BLOCK_SIZE;
         assert!(y.len() >= rows && x.len() >= cols && w.len() >= rows * nb);
@@ -990,9 +1002,9 @@ impl KernelDispatch {
         ftz_on();
         assert!(
             cols > 0 && cols <= QWEN_QACT_MAX && cols.is_multiple_of(Q4_0_BLOCK_SIZE),
-            "matmat_q4_0 invalid cols={cols}"
+            "matmat_q4_0: cols={cols} no válido"
         );
-        assert!(b_dim <= 64, "matmat_q4_0 b_dim={b_dim} > 64");
+        assert!(b_dim <= 64, "matmat_q4_0: b_dim={b_dim} supera 64");
         let nb = cols / Q4_0_BLOCK_SIZE;
         assert!(y.len() >= rows * b_dim && x.len() >= cols * b_dim && w.len() >= rows * nb);
         let f = self.q4_0_matmat_slice_fn;
@@ -1030,7 +1042,7 @@ impl KernelDispatch {
         ftz_on();
         assert!(
             in_dim > 0 && in_dim <= QWEN_QACT_MAX && in_dim.is_multiple_of(Q4_0_BLOCK_SIZE),
-            "matvec_q4_0_qkv invalid in_dim={in_dim}"
+            "matvec_q4_0_qkv: in_dim={in_dim} no válido"
         );
         let nb = in_dim / Q4_0_BLOCK_SIZE;
         assert!(
@@ -1077,12 +1089,12 @@ impl KernelDispatch {
         }
         assert!(
             cols > 0 && cols.is_multiple_of(Q2_0_BLOCK_SIZE),
-            "matvec_q2_0 invalid cols={cols}"
+            "matvec_q2_0: cols={cols} no válido"
         );
         let bpr = cols / Q2_0_BLOCK_SIZE;
         assert!(
             y.len() >= rows && w.len() >= rows * bpr && x.len() >= cols,
-            "matvec_q2_0 slice bounds mismatch"
+            "matvec_q2_0: los límites de los slices no coinciden"
         );
         scalar::q2_0_matvec(y, w, x, rows, cols);
     }
@@ -1100,7 +1112,7 @@ impl KernelDispatch {
         }
         assert!(
             x.len() >= in_dim && w_bf16.len() >= out_dim * in_dim,
-            "argmax_matvec_bf16 slice bounds mismatch"
+            "argmax_matvec_bf16: los límites de los slices no coinciden"
         );
         (self.argmax_bf16_fn)(x, w_bf16, in_dim, out_dim)
     }
@@ -1148,14 +1160,14 @@ impl KernelDispatch {
         }
         assert!(
             n_kv_heads > 0 && n_heads.is_multiple_of(n_kv_heads),
-            "causal_attention invalid head counts {n_heads}/{n_kv_heads}"
+            "causal_attention: número de heads no válido {n_heads}/{n_kv_heads}"
         );
         assert!(
             out.len() >= seq_q * n_heads * head_dim
                 && q.len() >= seq_q * n_heads * head_dim
                 && k.len() >= seq_k * n_kv_heads * head_dim
                 && v.len() >= seq_k * n_kv_heads * head_dim,
-            "causal_attention slice bounds mismatch"
+            "causal_attention: los límites de los slices no coinciden"
         );
         (self.attn_f32_fn)(
             out, q, k, v, seq_q, seq_k, n_heads, n_kv_heads, head_dim, scale, q_offset, window,
@@ -1183,14 +1195,14 @@ impl KernelDispatch {
         }
         assert!(
             n_kv_heads > 0 && n_heads.is_multiple_of(n_kv_heads),
-            "causal_attention_bf16kv invalid head counts {n_heads}/{n_kv_heads}"
+            "causal_attention_bf16kv: número de heads no válido {n_heads}/{n_kv_heads}"
         );
         assert!(
             out.len() >= seq_q * n_heads * head_dim
                 && q.len() >= seq_q * n_heads * head_dim
                 && k_bf16.len() >= seq_k * n_kv_heads * head_dim
                 && v_bf16.len() >= seq_k * n_kv_heads * head_dim,
-            "causal_attention_bf16kv slice bounds mismatch"
+            "causal_attention_bf16kv: los límites de los slices no coinciden"
         );
         (self.attn_bf16kv_fn)(
             out, q, k_bf16, v_bf16, seq_q, seq_k, n_heads, n_kv_heads, head_dim, scale, q_offset,
@@ -1220,14 +1232,14 @@ impl KernelDispatch {
         }
         assert!(
             n_kv_heads > 0 && n_heads.is_multiple_of(n_kv_heads),
-            "causal_attention_bf16kv_heads_parallel invalid head counts {n_heads}/{n_kv_heads}"
+            "causal_attention_bf16kv_heads_parallel: número de heads no válido {n_heads}/{n_kv_heads}"
         );
         assert!(
             out.len() >= seq_q * n_heads * head_dim
                 && q.len() >= seq_q * n_heads * head_dim
                 && k_bf16.len() >= seq_k * n_kv_heads * head_dim
                 && v_bf16.len() >= seq_k * n_kv_heads * head_dim,
-            "causal_attention_bf16kv_heads_parallel slice bounds mismatch"
+            "causal_attention_bf16kv_heads_parallel: los límites de los slices no coinciden"
         );
         let nt = pool.n_threads();
         if seq_q != 1 || seq_k < ATTN_PARALLEL_MIN_SEQ_K || nt <= 1 {
@@ -1279,13 +1291,13 @@ impl KernelDispatch {
         if n_heads == 0 || head_dim == 0 {
             return;
         }
-        assert!(head_dim.is_multiple_of(2), "RoPE head_dim={head_dim} must be even");
+        assert!(head_dim.is_multiple_of(2), "RoPE: head_dim={head_dim} debe ser par");
         let half = head_dim / 2;
         assert!(
             x.len() >= n_heads * head_dim
                 && cos_cache.len() >= (pos + 1) * half
                 && sin_cache.len() >= (pos + 1) * half,
-            "apply_rope_neox_inplace slice bounds mismatch"
+            "apply_rope_neox_inplace: los límites de los slices no coinciden"
         );
         (self.rope_neox_fn)(x, n_heads, head_dim, cos_cache, sin_cache, pos);
     }
@@ -1324,7 +1336,7 @@ impl KernelDispatch {
     pub fn swiglu_inplace(&self, gate_up: &mut [f32], tmp: &mut [f32], n: usize) {
         assert!(
             gate_up.len() >= 2 * n && tmp.len() >= n,
-            "swiglu_inplace slice bounds mismatch"
+            "swiglu_inplace: los límites de los slices no coinciden"
         );
         for i in 0..n {
             tmp[i] = (-gate_up[2 * i]).exp();
@@ -1372,7 +1384,7 @@ impl KernelDispatch {
         }
         assert!(
             y.len() >= rows && w.len() >= rows * cols && x.len() >= cols,
-            "f32_matvec_accum slice bounds mismatch"
+            "f32_matvec_accum: los límites de los slices no coinciden"
         );
         (self.f32_matvec_accum_fn)(y, w, x, rows, cols);
     }
@@ -1381,7 +1393,10 @@ impl KernelDispatch {
     /// Convierte `src` (BF16) a `dst` (F32) repartiendo el trabajo entre los hilos de `pool`.
     pub fn bf16_to_f32_par(&self, pool: &ComputePool, dst: &mut [f32], src: &[u16]) {
         let total = dst.len();
-        assert!(src.len() >= total, "bf16_to_f32_par slice bounds mismatch");
+        assert!(
+            src.len() >= total,
+            "bf16_to_f32_par: los límites de los slices no coinciden"
+        );
         let nt = pool.n_threads();
         if nt <= 1 {
             self.bf16_to_f32_vec(dst, &src[..total]);
@@ -1412,7 +1427,7 @@ impl KernelDispatch {
     ) {
         assert!(
             dst.len() >= 2 * rows * cols && gate.len() >= rows * cols && up.len() >= rows * cols,
-            "gate_up_to_f32_par slice bounds mismatch"
+            "gate_up_to_f32_par: los límites de los slices no coinciden"
         );
         let nt = pool.n_threads();
         if nt <= 1 {

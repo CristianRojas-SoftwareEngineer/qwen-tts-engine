@@ -45,9 +45,9 @@ fn load_synthetic(name: &str, config_json: &str) -> Result<ModelConfig06B, qwen_
 #[test]
 fn test_config_only_base_loads_and_rejects_others() {
     // Base carga (sin distinguir mayúsculas en `tts_model_type`)
-    let cfg = load_synthetic("base_ok", &synthetic_config("base", true)).expect("Base valid");
+    let cfg = load_synthetic("base_ok", &synthetic_config("base", true)).expect("Base válida");
     assert_eq!(cfg.rms_norm_eps, qwen_core::config::RMS_NORM_EPS);
-    load_synthetic("base_upper", &synthetic_config("BASE", true)).expect("BASE valid");
+    load_synthetic("base_upper", &synthetic_config("BASE", true)).expect("BASE válida");
 
     // CustomVoice se rechaza con el mensaje exacto
     let msg = "Este motor solo carga Qwen3-TTS 0.6B Base; CustomVoice no está soportado";
@@ -72,10 +72,10 @@ fn test_config_only_base_loads_and_rejects_others() {
     // El checkpoint Base real (si está presente) carga
     let base_dir = repo_root().join("models/qwen3-tts-0.6b-base");
     if base_dir.exists() {
-        let cfg_base = ModelConfig06B::load_and_validate(&base_dir).expect("0.6b Base valid");
+        let cfg_base = ModelConfig06B::load_and_validate(&base_dir).expect("0.6b Base válida");
         assert_eq!(cfg_base.rms_norm_eps, qwen_core::config::RMS_NORM_EPS);
     } else {
-        eprintln!("Skipping real Base config check (model absent)");
+        eprintln!("Se omite la comprobación de la configuración Base real (falta el modelo)");
     }
 }
 
@@ -111,10 +111,10 @@ fn test_mmap_store_06b() {
     let root = repo_root();
     let model_dir = root.join("models/qwen3-tts-0.6b-base");
     if !model_dir.exists() {
-        eprintln!("Skipping test_mmap_store_06b (models absent)");
+        eprintln!("Se omite test_mmap_store_06b (faltan los modelos)");
         return;
     }
-    let store = MmapStore::open_model(&model_dir).expect("open 0.6b model.safetensors");
+    let store = MmapStore::open_model(&model_dir).expect("abrir 0.6b model.safetensors");
     let tok_emb = store
         .tensor_bf16("talker.model.text_embedding.weight")
         .unwrap();
@@ -123,7 +123,7 @@ fn test_mmap_store_06b() {
     assert_eq!(norm.len(), HIDDEN_SIZE);
 
     let sd_store = MmapStore::open_model(&model_dir.join("speech_tokenizer"))
-        .expect("open speech_tokenizer/model.safetensors");
+        .expect("abrir speech_tokenizer/model.safetensors");
     assert!(sd_store.contains("decoder.pre_conv.conv.weight"));
 }
 
@@ -132,7 +132,7 @@ fn test_bpe_golden_tokens() {
     let root = repo_root();
     let model_dir = root.join("models/qwen3-tts-0.6b-base");
     if !model_dir.exists() {
-        eprintln!("Skipping test_bpe_golden_tokens (models absent)");
+        eprintln!("Se omite test_bpe_golden_tokens (faltan los modelos)");
         return;
     }
     let tok = BpeTokenizer::load_from_dir(&model_dir).unwrap();
@@ -180,7 +180,7 @@ fn test_bpe_golden_tokens() {
 
     for (idx, &(text, expected)) in cases.iter().enumerate() {
         let got = tok.encode(text);
-        assert_eq!(got.as_slice(), expected, "BPE mismatch on case {idx}: {text}");
+        assert_eq!(got.as_slice(), expected, "BPE no coincide en el caso {idx}: {text}");
     }
     assert_eq!(tok.decode(cases[0].1), cases[0].0);
     assert_eq!(tok.decode(cases[2].1), cases[2].0);
@@ -299,7 +299,7 @@ fn test_qvoice_v4_rejects_invalid_files() {
         let err = read_qvoice_bytes("trunc", &good[..cut]).unwrap_err().to_string();
         assert!(
             err.contains("truncado") || err.contains("magic incorrecto"),
-            "cut {cut}: {err}"
+            "corte {cut}: {err}"
         );
     }
     let mut extra = good.clone();
@@ -364,13 +364,13 @@ fn test_markup_sampling_and_lookups() {
     // Una etiqueta que ya no es de marcado (`[sad]`) queda como texto, igual que `[xyz]`
     for tag in ["[sad]", "[neutral]", "[xyz]"] {
         let text = format!("Devo andare {tag} Ciao.");
-        assert!(!MarkupPlanner::has_markup(&text), "{tag} must not count as markup");
+        assert!(!MarkupPlanner::has_markup(&text), "{tag} no debe contar como marcado");
         let spans = MarkupPlanner::parse_spans(&text);
         assert_eq!(spans.len(), 1);
         let SpanSpec::Utterance { text: got, .. } = &spans[0] else {
-            panic!("expected an utterance");
+            panic!("se esperaba una Utterance");
         };
-        assert!(got.contains(tag), "{tag} must stay in the text: {got}");
+        assert!(got.contains(tag), "{tag} debe quedarse en el texto: {got}");
     }
     // `[laugh]` (onomatopeya) y `|` siguen funcionando
     assert!(MarkupPlanner::has_markup("Oh [laugh] great"));

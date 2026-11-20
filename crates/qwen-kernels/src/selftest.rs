@@ -132,12 +132,12 @@ fn selftest_shape_case(
     let ok = l2rel_bf16 < 1e-4;
     let _ = writeln!(
         out,
-        "  [{:4}x{:4}] matmat(B={}) vs B*matvec: L2_rel={:.2e}  {}",
+        "  [{:4}x{:4}] matmat(B={}) frente a B*matvec: L2_rel={:.2e}  {}",
         rows,
         cols,
         B,
         l2rel_bf16,
-        if ok { "PASS" } else { "FAIL" }
+        if ok { "OK" } else { "FALLO" }
     );
     if !ok {
         failures += 1;
@@ -175,14 +175,14 @@ fn selftest_shape_case(
     }
     let _ = writeln!(
         out,
-        "  [{:4}x{:<4}] bf16 max_rel={:.2e} {} | int8 rel_L2={:.2e} {} | argmax {} (ref={} got={})",
+        "  [{:4}x{:<4}] bf16 max_rel={:.2e} {} | int8 rel_L2={:.2e} {} | argmax {} (ref={} obtenido={})",
         rows,
         cols,
         max_rel_bf16,
-        if bf16_ok { "OK" } else { "FAIL" },
+        if bf16_ok { "OK" } else { "FALLO" },
         rel_l2_i8,
-        if i8_ok { "OK" } else { "FAIL" },
-        if argmax_ok { "OK" } else { "FAIL" },
+        if i8_ok { "OK" } else { "FALLO" },
+        if argmax_ok { "OK" } else { "FALLO" },
         amax_ref,
         amax_got
     );
@@ -199,12 +199,12 @@ fn selftest_shape_case(
     let ok = l2rel_i8 == 0.0;
     let _ = writeln!(
         out,
-        "  [{:4}x{:4}] matmat_int8(B={}) vs B*matvec_int8: L2_rel={:.2e}  {}",
+        "  [{:4}x{:4}] matmat_int8(B={}) frente a B*matvec_int8: L2_rel={:.2e}  {}",
         rows,
         cols,
         B,
         l2rel_i8,
-        if ok { "PASS" } else { "FAIL" }
+        if ok { "OK" } else { "FALLO" }
     );
     if !ok {
         failures += 1;
@@ -233,11 +233,11 @@ fn selftest_shape_case(
         let ok = l2rel < 3e-2;
         let _ = writeln!(
             out,
-            "  [{:4}x{:4}] matvec_q4_0 vs dequant ref: rel_L2={:.2e}  {}",
+            "  [{:4}x{:4}] matvec_q4_0 frente a la referencia descuantizada: rel_L2={:.2e}  {}",
             rows,
             cols,
             l2rel,
-            if ok { "PASS" } else { "FAIL" }
+            if ok { "OK" } else { "FALLO" }
         );
         if !ok {
             failures += 1;
@@ -254,12 +254,12 @@ fn selftest_shape_case(
         let ok = l2rel_q4 <= 1e-6;
         let _ = writeln!(
             out,
-            "  [{:4}x{:4}] matmat_q4_0(B={}) vs B*matvec_q4_0: L2_rel={:.2e}  {}",
+            "  [{:4}x{:4}] matmat_q4_0(B={}) frente a B*matvec_q4_0: L2_rel={:.2e}  {}",
             rows,
             cols,
             B,
             l2rel_q4,
-            if ok { "PASS" } else { "FAIL" }
+            if ok { "OK" } else { "FALLO" }
         );
         if !ok {
             failures += 1;
@@ -291,10 +291,10 @@ fn selftest_shape_case(
         let ok_qkv = (0..qd + 2 * kvd).all(|i| y[i].to_bits() == yc_col[i].to_bits());
         let _ = writeln!(
             out,
-            "  [{:4}x{:4}] qkv_q4_0 vs 3*matvec_q4_0: {}",
+            "  [{:4}x{:4}] qkv_q4_0 frente a 3*matvec_q4_0: {}",
             rows,
             cols,
-            if ok_qkv { "PASS (exacto)" } else { "FAIL" }
+            if ok_qkv { "OK (exacto)" } else { "FALLO" }
         );
         if !ok_qkv {
             failures += 1;
@@ -307,10 +307,10 @@ fn selftest_shape_case(
         let ok_row0 = y0[0].to_bits() == yc_col[0].to_bits();
         let _ = writeln!(
             out,
-            "  [{:4}x{:4}] matvec_q4_0 fila sola vs en bloque: {}",
+            "  [{:4}x{:4}] matvec_q4_0 fila sola frente a en bloque: {}",
             rows,
             cols,
-            if ok_row0 { "PASS (exacto)" } else { "FAIL" }
+            if ok_row0 { "OK (exacto)" } else { "FALLO" }
         );
         if !ok_row0 {
             failures += 1;
@@ -342,9 +342,9 @@ fn selftest_quantize_case(rt: &ComputeRuntime, rng: &mut Lcg, n: usize, out: &mu
     let bad = qa != qr || sa.to_bits() != sr.to_bits();
     let _ = writeln!(
         out,
-        "  [quantize n={:4}] vector vs referencia escalar (bit a bit): {}",
+        "  [quantize n={:4}] vector frente a referencia escalar (bit a bit): {}",
         n,
-        if bad { "FAIL" } else { "PASS" }
+        if bad { "FALLO" } else { "OK" }
     );
     if bad {
         failures += 1;
@@ -356,9 +356,9 @@ fn selftest_quantize_case(rt: &ComputeRuntime, rng: &mut Lcg, n: usize, out: &mu
     let bad = qa != qr || sa.to_bits() != sr.to_bits();
     let _ = writeln!(
         out,
-        "  [quantize n={:4}] ceros vs referencia escalar (bit a bit): {}",
+        "  [quantize n={:4}] ceros frente a referencia escalar (bit a bit): {}",
         n,
-        if bad { "FAIL" } else { "PASS" }
+        if bad { "FALLO" } else { "OK" }
     );
     if bad {
         failures += 1;
@@ -392,10 +392,10 @@ fn selftest_quantize_case(rt: &ComputeRuntime, rng: &mut Lcg, n: usize, out: &mu
     }
     let _ = writeln!(
         out,
-        "  [quantize n={:4}] columnas (B={}) vs referencia escalar (bit a bit): {}",
+        "  [quantize n={:4}] columnas (B={}) frente a referencia escalar (bit a bit): {}",
         n,
         QB,
-        if bad_cols { "FAIL" } else { "PASS" }
+        if bad_cols { "FALLO" } else { "OK" }
     );
     if bad_cols {
         failures += 1;
@@ -484,8 +484,8 @@ fn selftest_simd_vs_scalar_case(
     for (what, ok, detail) in results {
         let _ = writeln!(
             out,
-            "  [{name} {rows:4}x{cols:4}] {what} vs scalar: {detail}  {}",
-            if ok { "PASS" } else { "FAIL" }
+            "  [{name} {rows:4}x{cols:4}] {what} frente a escalar: {detail}  {}",
+            if ok { "OK" } else { "FALLO" }
         );
         if !ok {
             failures += 1;
@@ -562,7 +562,7 @@ fn selftest_simd_float_vs_scalar(
     let ia = simd.argmax_matvec_bf16(&x, &wb, cols, rows);
     let ib = sc.argmax_matvec_bf16(&x, &wb, cols, rows);
     let tie = (yb[ia] - yb[ib]).abs() <= 1e-6 * yb[ib].abs();
-    results.push(("argmax_bf16".into(), ia == ib || tie, format!("simd={ia} scalar={ib}")));
+    results.push(("argmax_bf16".into(), ia == ib || tie, format!("simd={ia} escalar={ib}")));
 
     // Atención: f32 con y sin ventana, y caché BF16 en serie y repartida entre hilos.
     let (n_heads, n_kv, seq_q, seq_k) = (16usize, 8usize, 5usize, 64usize);
@@ -644,8 +644,8 @@ fn selftest_simd_float_vs_scalar(
     for (what, ok, detail) in results {
         let _ = writeln!(
             out,
-            "  [{name}] {what} vs scalar: {detail}  {}",
-            if ok { "PASS" } else { "FAIL" }
+            "  [{name}] {what} frente a escalar: {detail}  {}",
+            if ok { "OK" } else { "FALLO" }
         );
         if !ok {
             failures += 1;
@@ -668,7 +668,7 @@ pub fn run_kernel_selftest(rt: &ComputeRuntime) -> (usize, String) {
 
     let _ = writeln!(
         out,
-        "qwen-tts-engine kernel self-test (matvec correctness vs f32 reference)"
+        "Autoprueba de kernels de qwen-tts-engine (corrección de matvec frente a la referencia f32)"
     );
     out.push_str(&rt.caps_report());
     let _ = writeln!(out);
@@ -690,14 +690,14 @@ pub fn run_kernel_selftest(rt: &ComputeRuntime) -> (usize, String) {
 
     let _ = writeln!(
         out,
-        "\n{} ({} case{} failed)",
+        "\n{} ({} {} con fallo)",
         if failures > 0 {
-            "SELF-TEST FAILED"
+            "AUTOPRUEBA FALLIDA"
         } else {
-            "SELF-TEST PASSED"
+            "AUTOPRUEBA SUPERADA"
         },
         failures,
-        if failures == 1 { "" } else { "s" }
+        if failures == 1 { "caso" } else { "casos" }
     );
     (failures, out)
 }
