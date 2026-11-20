@@ -4,6 +4,6 @@ Copyright (c) 2026 Cristian Rojas and qwen-tts-engine contributors
 This project is licensed under the Mozilla Public License Version 2.0 (MPL-2.0).
 See LICENSE for the full license text.
 
-Upstream attribution:
-This project is a standalone Rust CPU implementation inspired by and ported
-from the C engine `gabriele-mastrapasqua/qwen3-tts` (MIT License).
+Atribución del proyecto original:
+Este proyecto es una implementación independiente en Rust para CPU, inspirada
+en el motor en C `gabriele-mastrapasqua/qwen3-tts` (licencia MIT) y portada a partir de él.

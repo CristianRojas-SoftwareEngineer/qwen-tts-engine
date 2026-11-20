@@ -3,21 +3,21 @@
 /.cargo/config.toml
 **/*.rs.bk
 
-# Audio & local test outputs
+# Audio y salidas de pruebas locales
 *.wav
 *.raw
 *.pcm
 
-# Models, voices & large local assets (shared, never committed)
+# Modelos, voces y recursos locales grandes (compartidos, nunca se commitean)
 /models/
 /voices/
 *.qvoice
 *.safetensors
 
-# OS / Editor / Temp
+# SO / editor / temporales
 .DS_Store
 Thumbs.db
 server_stderr.log
 
-# Local operational workbooks & baseline artifacts
+# Cuadernos operativos locales y artefactos de línea base
 /.work/
