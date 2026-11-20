@@ -350,7 +350,16 @@ pub fn synthesize_to_sink(
                             if ttfa_ms.is_none() {
                                 ttfa_ms = Some(t_start.elapsed().as_secs_f64() * 1000.0);
                             }
-                            if let Err(e) = sink.write_samples(emit) {
+                            // La ganancia va justo antes del destino (elemento a elemento, mismos
+                            // bits que aplicarla dentro de las rampas de borde).
+                            let emit = if (req.volume - 1.0).abs() < f32::EPSILON {
+                                std::borrow::Cow::Borrowed(emit)
+                            } else {
+                                let mut g = emit.to_vec();
+                                apply_gain(&mut g, req.volume);
+                                std::borrow::Cow::Owned(g)
+                            };
+                            if let Err(e) = sink.write_samples(&emit) {
                                 queue.aborted.store(true, Ordering::Release);
                                 decoder_err = Some(e);
                             } else {
@@ -622,8 +631,8 @@ pub fn synthesize_to_samples(
 ) -> Result<(Vec<f32>, SynthesisTiming), EngineError> {
     let mut sink = MemorySink::new(req.max_frames.min(1024) * HOP_SAMPLES);
     let mut timing = synthesize_to_sink(runtime, model, voice, scratch, req, abort, text, &mut sink)?;
+    // `synthesize_to_sink` ya aplicó la ganancia, antes de `time_stretch`.
     let mut samples = sink.samples;
-    apply_gain(&mut samples, req.volume);
     if (req.rate - 1.0).abs() > 1e-4 {
         samples = time_stretch(&samples, req.rate);
     }

@@ -20,8 +20,8 @@ use qwen_core::{QVoiceFile, Script};
 use qwen_engine::{
     clone_voice, ensure_qvoice_path, finish_full_delivery, render_spans_buffer, synthesize_to_samples,
     synthesize_to_sink, tail_glitch_score, validate_wav_path_or_header, write_wav, AbortHandle,
-    CloneOptions, Model06B, ModelLoadOptions, SessionScratch, StdoutRawSink, SynthesisRequest,
-    Voice, VoiceLoadOptions, WavStreamSink,
+    CloneOptions, EdgeRampSink, Model06B, ModelLoadOptions, SessionScratch, StdoutWriter,
+    SynthesisRequest, Voice, VoiceLoadOptions, WavFileWriter,
 };
 use qwen_kernels::bench::run_matmat_bench;
 use qwen_kernels::selftest::run_kernel_selftest;
@@ -479,7 +479,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
             );
         }
         if cfg.stdout_pcm {
-            let mut sink = StdoutRawSink::new(cfg.volume);
+            let mut sink = EdgeRampSink::new(StdoutWriter, SAMPLE_RATE as u32);
             synthesize_to_sink(
                 &runtime,
                 &model,
@@ -492,12 +492,9 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
             )
             .map_err(|e| e.to_string())?;
         } else {
-            let mut sink = WavStreamSink::create(
-                Path::new(&cfg.output),
-                SAMPLE_RATE as u32,
-                cfg.volume,
-            )
-            .map_err(|e| e.to_string())?;
+            let writer = WavFileWriter::create(Path::new(&cfg.output), SAMPLE_RATE as u32)
+                .map_err(|e| e.to_string())?;
+            let mut sink = EdgeRampSink::new(writer, SAMPLE_RATE as u32);
             let timing = synthesize_to_sink(
                 &runtime,
                 &model,

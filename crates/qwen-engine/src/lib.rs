@@ -25,7 +25,7 @@ pub mod voice_clone;
 pub use audio::{
     apply_gain, encode_wav_bytes, f32_to_s16le_clamped, onset_fade, read_wav_24khz, read_wav_pcm,
     tail_glitch_score, tail_trim, time_stretch, trim_trailing_silence,
-    validate_wav_path_or_header, write_wav, AudioSink, MemorySink, StdoutRawSink, StreamEdgeRamp, WavStreamSink,
+    validate_wav_path_or_header, write_wav, AudioSink, EdgeRampSink, MemorySink, PcmWrite, StdoutWriter, WavFileWriter,
 };
 pub use compose::{render_spans_buffer, render_spans_stream};
 pub use error::EngineError;

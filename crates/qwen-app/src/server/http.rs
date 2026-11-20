@@ -12,8 +12,8 @@ use qwen_core::config::{language_name, SAMPLE_RATE};
 use qwen_core::Script;
 use qwen_engine::{
     encode_wav_bytes, render_spans_buffer, render_spans_stream, synthesize_to_samples,
-    synthesize_to_sink, AbortHandle, AudioSink, EngineError, MemorySink, Model06B,
-    SessionScratch, StreamEdgeRamp, SynthesisTiming, Voice,
+    synthesize_to_sink, AbortHandle, EdgeRampSink, EngineError, MemorySink, Model06B, PcmWrite,
+    SessionScratch, SynthesisTiming, Voice,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -244,7 +244,7 @@ pub fn send_chunked_header(stream: &mut TcpStream) -> std::io::Result<()> {
 }
 
 /// Envía un fragmento *chunked* con PCM s16le ya procesado (ganancia y rampas de borde aplicadas
-/// por `StreamEdgeRamp`). Un fragmento vacío no se envía: cerraría la respuesta.
+/// por `EdgeRampSink`). Un fragmento vacío no se envía: cerraría la respuesta.
 pub fn send_pcm_chunk(stream: &mut TcpStream, pcm: &[u8]) -> std::io::Result<()> {
     if pcm.is_empty() {
         return Ok(());
@@ -320,42 +320,27 @@ pub fn log_timing_breakdown(t: &SynthesisTiming) {
     );
 }
 
-pub struct HttpAudioChunkSink<'a> {
+/// Escritor HTTP *chunked* de PCM s16le para `EdgeRampSink`. Un fallo de envío (cliente
+/// desconectado) se señala como `ConnectionAborted`.
+pub struct HttpChunkWriter<'a> {
     stream: &'a mut TcpStream,
-    ramp: StreamEdgeRamp,
-    total_samples: usize,
 }
 
-impl<'a> HttpAudioChunkSink<'a> {
-    pub fn new(stream: &'a mut TcpStream, volume: f32) -> Self {
-        Self {
-            stream,
-            ramp: StreamEdgeRamp::new(SAMPLE_RATE as u32, volume),
-            total_samples: 0,
-        }
-    }
-
-    fn send(&mut self, pcm: &[u8]) -> Result<(), EngineError> {
-        send_pcm_chunk(self.stream, pcm).map_err(|_| EngineError::Aborted)
+impl<'a> HttpChunkWriter<'a> {
+    pub fn new(stream: &'a mut TcpStream) -> Self {
+        Self { stream }
     }
 }
 
-impl AudioSink for HttpAudioChunkSink<'_> {
-    fn write_samples(&mut self, samples: &[f32]) -> Result<(), EngineError> {
-        if samples.is_empty() {
-            return Ok(());
-        }
-        let mut pcm = Vec::new();
-        self.ramp.push(samples, &mut pcm);
-        self.send(&pcm)?;
-        self.total_samples += samples.len();
+impl PcmWrite for HttpChunkWriter<'_> {
+    fn write_pcm(&mut self, pcm: &[u8]) -> std::io::Result<()> {
+        send_pcm_chunk(self.stream, pcm).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e.to_string())
+        })
+    }
+
+    fn finish(&mut self) -> std::io::Result<()> {
         Ok(())
-    }
-
-    fn finish(&mut self) -> Result<(), EngineError> {
-        let mut pcm = Vec::new();
-        self.ramp.finish(&mut pcm);
-        self.send(&pcm)
     }
 }
 
@@ -515,7 +500,7 @@ pub fn handle_tts_stream(
 
     let t0 = Instant::now();
 
-    let mut chunk_sink = HttpAudioChunkSink::new(stream, vreq.volume);
+    let mut chunk_sink = EdgeRampSink::new(HttpChunkWriter::new(stream), SAMPLE_RATE as u32);
 
     let mut timing_opt: Option<SynthesisTiming> = None;
     let gen_res: Result<(), EngineError> = match &planned.script {
@@ -559,9 +544,10 @@ pub fn handle_tts_stream(
         }
     };
 
-    let total_samples = chunk_sink.total_samples;
+    let total_samples = chunk_sink.total_samples();
     if gen_res.is_err() || total_samples == 0 {
-        if socket_disconnected(stream) || matches!(gen_res, Err(EngineError::Aborted)) {
+        if socket_disconnected(stream) || matches!(gen_res, Err(EngineError::Aborted))
+            || matches!(&gen_res, Err(EngineError::Io(e)) if e.kind() == std::io::ErrorKind::ConnectionAborted) {
             eprintln!(
                 "[HTTP] TTS stream cancelado: el cliente se desconectó tras {:.1} s",
                 t0.elapsed().as_secs_f64()

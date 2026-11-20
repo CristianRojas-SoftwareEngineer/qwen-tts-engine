@@ -7,7 +7,7 @@ use qwen_core::config::SAMPLE_RATE;
 use qwen_core::SpanSpec;
 use qwen_kernels::ComputeRuntime;
 
-use crate::audio::AudioSink;
+use crate::audio::{apply_gain, AudioSink};
 use crate::error::EngineError;
 use crate::model::{AbortHandle, Model06B, SessionScratch};
 use crate::pipeline::{finish_full_delivery, synthesize_to_samples};
@@ -44,7 +44,7 @@ fn synth_one_span_06b(
             span_req.volume *= volume_override;
         }
     } else {
-        // En `render_spans_stream`, el `AudioSink` del llamador aplica `req.volume`.
+        // En `render_spans_stream`, `req.volume` se aplica a cada tramo justo antes del sink.
         span_req.volume = if volume_override > 0.0 {
             volume_override
         } else {
@@ -233,6 +233,8 @@ pub fn render_spans_stream(
                     spoken,
                 )?;
                 if !seg.is_empty() {
+                    let mut seg = seg;
+                    apply_gain(&mut seg, req.volume);
                     sink.write_samples(&seg)?;
                 }
                 spoken += 1;

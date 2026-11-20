@@ -163,24 +163,22 @@ fn edge_fade_out(s: f32, i: usize, n_samples: usize, fade_out: usize) -> f32 {
     }
 }
 
-/// Ganancia y rampas de borde para salidas en *streaming*, con el mismo resultado bit a bit que
-/// `apply_gain` seguido de `encode_wav_bytes` sobre el audio completo.
+/// Rampas de borde para salidas en *streaming*, con el mismo resultado bit a bit que
+/// `encode_wav_bytes` sobre el audio completo (la ganancia se aplica antes, fuera de aquí).
 ///
 /// La rampa de salida necesita saber dónde acaba el audio: se retienen los últimos 40 ms (y todo
 /// hasta acumular 80 ms, para que las longitudes de rampa sean las definitivas) y se emiten con la
 /// llamada siguiente o en `finish`.
-pub struct StreamEdgeRamp {
+struct StreamEdgeRamp {
     sample_rate: u32,
-    volume: f32,
     pending: Vec<f32>,
     emitted: usize,
 }
 
 impl StreamEdgeRamp {
-    pub fn new(sample_rate: u32, volume: f32) -> Self {
+    fn new(sample_rate: u32) -> Self {
         Self {
             sample_rate,
-            volume,
             pending: Vec::new(),
             emitted: 0,
         }
@@ -188,10 +186,8 @@ impl StreamEdgeRamp {
 
     /// Añade `samples` y escribe en `out` (PCM s16le) las muestras que ya no pueden caer en la
     /// rampa de salida.
-    pub fn push(&mut self, samples: &[f32], out: &mut Vec<u8>) {
-        let start = self.pending.len();
+    fn push(&mut self, samples: &[f32], out: &mut Vec<u8>) {
         self.pending.extend_from_slice(samples);
-        apply_gain(&mut self.pending[start..], self.volume);
         let (fade_in_max, hold) = edge_fade_lens(self.sample_rate, usize::MAX);
         // Con al menos 2 × `hold` muestras en total, las rampas definitivas son las máximas y
         // ninguna muestra fuera de las últimas `hold` cae en la de salida.
@@ -209,7 +205,7 @@ impl StreamEdgeRamp {
     }
 
     /// Escribe en `out` las muestras retenidas con la rampa de salida definitiva.
-    pub fn finish(&mut self, out: &mut Vec<u8>) {
+    fn finish(&mut self, out: &mut Vec<u8>) {
         let n_samples = self.emitted + self.pending.len();
         let (fade_in, fade_out) = edge_fade_lens(self.sample_rate, n_samples);
         out.reserve(self.pending.len() * 2);
@@ -278,26 +274,98 @@ impl AudioSink for MemorySink {
     }
 }
 
-pub struct WavStreamSink {
-    file: BufWriter<File>,
+/// Destino de bytes PCM s16le ya procesados (ganancia y rampas de borde aplicadas).
+pub trait PcmWrite {
+    fn write_pcm(&mut self, b: &[u8]) -> std::io::Result<()>;
+    /// Cierra el destino tras el último `write_pcm`.
+    fn finish(&mut self) -> std::io::Result<()>;
+}
+
+/// Único destino de audio del camino de síntesis en *streaming*: aplica las rampas de borde
+/// (entrada de 5 ms, salida de 40 ms, con retención de la cola) y entrega el PCM a `W`.
+/// No aplica ganancia: el llamador la aplica justo antes (`apply_gain`).
+pub struct EdgeRampSink<W: PcmWrite> {
     ramp: StreamEdgeRamp,
+    writer: W,
+    total_samples: usize,
+}
+
+impl<W: PcmWrite> EdgeRampSink<W> {
+    pub fn new(writer: W, sample_rate: u32) -> Self {
+        Self {
+            ramp: StreamEdgeRamp::new(sample_rate),
+            writer,
+            total_samples: 0,
+        }
+    }
+
+    /// Muestras recibidas hasta ahora (antes de retener la cola).
+    pub fn total_samples(&self) -> usize {
+        self.total_samples
+    }
+
+    pub fn into_writer(self) -> W {
+        self.writer
+    }
+}
+
+impl<W: PcmWrite + Send> AudioSink for EdgeRampSink<W> {
+    fn write_samples(&mut self, samples: &[f32]) -> Result<(), EngineError> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+        let mut buf = Vec::new();
+        self.ramp.push(samples, &mut buf);
+        self.total_samples += samples.len();
+        if !buf.is_empty() {
+            self.writer.write_pcm(&buf)?;
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), EngineError> {
+        let mut buf = Vec::new();
+        self.ramp.finish(&mut buf);
+        if !buf.is_empty() {
+            self.writer.write_pcm(&buf)?;
+        }
+        self.writer.finish()?;
+        Ok(())
+    }
+}
+
+impl PcmWrite for Vec<u8> {
+    fn write_pcm(&mut self, b: &[u8]) -> std::io::Result<()> {
+        self.extend_from_slice(b);
+        Ok(())
+    }
+
+    fn finish(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Escritor de WAV en *streaming*: cabecera provisional y tamaños corregidos al cerrar.
+pub struct WavFileWriter {
+    file: BufWriter<File>,
     data_bytes: u32,
 }
 
-impl WavStreamSink {
-    pub fn create(path: &Path, sample_rate: u32, volume: f32) -> Result<Self, EngineError> {
+impl WavFileWriter {
+    pub fn create(path: &Path, sample_rate: u32) -> Result<Self, EngineError> {
         let f = File::create(path)?;
         let mut bw = BufWriter::new(f);
         write_wav_header(&mut bw, sample_rate, 0)?;
         bw.flush()?;
         Ok(Self {
             file: bw,
-            ramp: StreamEdgeRamp::new(sample_rate, volume),
             data_bytes: 0,
         })
     }
+}
 
-    fn write_pcm(&mut self, buf: &[u8]) -> Result<(), EngineError> {
+impl PcmWrite for WavFileWriter {
+    fn write_pcm(&mut self, buf: &[u8]) -> std::io::Result<()> {
         if buf.is_empty() {
             return Ok(());
         }
@@ -306,19 +374,8 @@ impl WavStreamSink {
         self.data_bytes = self.data_bytes.saturating_add(buf.len() as u32);
         Ok(())
     }
-}
 
-impl AudioSink for WavStreamSink {
-    fn write_samples(&mut self, samples: &[f32]) -> Result<(), EngineError> {
-        let mut buf = Vec::new();
-        self.ramp.push(samples, &mut buf);
-        self.write_pcm(&buf)
-    }
-
-    fn finish(&mut self) -> Result<(), EngineError> {
-        let mut buf = Vec::new();
-        self.ramp.finish(&mut buf);
-        self.write_pcm(&buf)?;
+    fn finish(&mut self) -> std::io::Result<()> {
         self.file.flush()?;
         let inner = self.file.get_mut();
         let file_size = 36u32.saturating_add(self.data_bytes);
@@ -326,41 +383,22 @@ impl AudioSink for WavStreamSink {
         inner.write_all(&file_size.to_le_bytes())?;
         inner.seek(SeekFrom::Start(40))?;
         inner.write_all(&self.data_bytes.to_le_bytes())?;
-        inner.flush()?;
+        inner.flush()
+    }
+}
+
+/// Escritor de PCM s16le en bruto por la salida estándar.
+pub struct StdoutWriter;
+
+impl PcmWrite for StdoutWriter {
+    fn write_pcm(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        let mut out = std::io::stdout().lock();
+        out.write_all(buf)?;
+        out.flush()
+    }
+
+    fn finish(&mut self) -> std::io::Result<()> {
         Ok(())
-    }
-}
-
-pub struct StdoutRawSink {
-    ramp: StreamEdgeRamp,
-}
-
-impl StdoutRawSink {
-    pub fn new(volume: f32) -> Self {
-        Self {
-            ramp: StreamEdgeRamp::new(SAMPLE_RATE as u32, volume),
-        }
-    }
-}
-
-fn write_stdout(buf: &[u8]) -> Result<(), EngineError> {
-    let mut out = std::io::stdout().lock();
-    out.write_all(buf)?;
-    out.flush()?;
-    Ok(())
-}
-
-impl AudioSink for StdoutRawSink {
-    fn write_samples(&mut self, samples: &[f32]) -> Result<(), EngineError> {
-        let mut buf = Vec::new();
-        self.ramp.push(samples, &mut buf);
-        write_stdout(&buf)
-    }
-
-    fn finish(&mut self) -> Result<(), EngineError> {
-        let mut buf = Vec::new();
-        self.ramp.finish(&mut buf);
-        write_stdout(&buf)
     }
 }
 
@@ -764,13 +802,14 @@ mod tests {
     }
 
     fn streamed_pcm(samples: &[f32], volume: f32, chunk: usize) -> Vec<u8> {
-        let mut ramp = StreamEdgeRamp::new(SAMPLE_RATE as u32, volume);
-        let mut out = Vec::new();
+        let mut sink = EdgeRampSink::new(Vec::<u8>::new(), SAMPLE_RATE as u32);
         for c in samples.chunks(chunk) {
-            ramp.push(c, &mut out);
+            let mut g = c.to_vec();
+            apply_gain(&mut g, volume);
+            sink.write_samples(&g).unwrap();
         }
-        ramp.finish(&mut out);
-        out
+        sink.finish().unwrap();
+        sink.into_writer()
     }
 
     #[test]
@@ -798,11 +837,11 @@ mod tests {
 
     #[test]
     fn stream_edge_ramp_holds_back_only_the_fade_out() {
-        let mut ramp = StreamEdgeRamp::new(SAMPLE_RATE as u32, 1.0);
-        let mut out = Vec::new();
-        ramp.push(&vec![0.5f32; 1000], &mut out);
-        assert!(out.is_empty(), "con menos de 80 ms no se emite nada");
-        ramp.push(&vec![0.5f32; 2840], &mut out);
+        let mut sink = EdgeRampSink::new(Vec::<u8>::new(), SAMPLE_RATE as u32);
+        sink.write_samples(&vec![0.5f32; 1000]).unwrap();
+        assert!(sink.writer.is_empty(), "con menos de 80 ms no se emite nada");
+        sink.write_samples(&vec![0.5f32; 2840]).unwrap();
+        let out = &sink.writer;
         // 3 840 muestras recibidas (2 fotogramas): se emiten todas salvo las 960 de la rampa de salida.
         assert_eq!(out.len(), (3840 - 960) * 2);
     }
