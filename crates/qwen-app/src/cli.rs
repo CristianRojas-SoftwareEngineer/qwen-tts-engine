@@ -238,7 +238,7 @@ pub fn print_usage(prog: &str) {
     eprintln!("  --serve <port>             Inicia el servidor HTTP en el puerto indicado");
     eprintln!("  --host <ipv4>              Dirección IPv4 de enlace (por defecto: 127.0.0.1)");
     eprintln!("  --watch-stdin              Termina de inmediato cuando stdin llega a EOF");
-    eprintln!("  --onset-fade <ms>          Duración del fade-in inicial (ms)");
+    eprintln!("  --onset-fade <ms>          Duración de la rampa de entrada inicial (ms)");
     eprintln!("  --tail-trim                Recorta la cola metálica degenerada");
     eprintln!(
         "  --seed-audition <N>        Audición secuencial de las N mejores semillas (hasta 64)"

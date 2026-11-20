@@ -27,11 +27,11 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 ## Alcance y capacidades
 
 - **Síntesis local en CPU**: ejecuta **Qwen3-TTS `0.6B`** con cuantización recomendada `--quant-mixed` (`Q4_0` + `INT8`), despacho en runtime de kernels `AVX2 + FMA` en x86-64 y NEON en ARM64 (con `SDOT` si la CPU tiene `dotprod`; ver [requisitos mínimos](#requisitos-mínimos-recomendados-síntesis-en-tiempo-real)) y *streaming* progresivo.
-- **Una sola forma de voz: la clonada**: el motor trae incorporada la voz `default` y cualquier otra la creas clonándola desde un audio de referencia (x-vector `ECAPA-TDNN` y, con `--ref-text`, contexto ICL con códigos RVQ). Las voces se guardan como perfiles `.qvoice` v4 de unos pocos KB. Además: `--roughness` (`Q2_0`) y marcado inline (`[laugh]`, `[sigh]`, pausas).
+- **Una sola forma de voz: la clonada**: el motor trae incorporada la voz `default` y cualquier otra la creas clonándola desde un audio de referencia (x-vector `ECAPA-TDNN` y, con `--ref-text`, contexto ICL con códigos RVQ). Las voces se guardan como perfiles `.qvoice` v4 de unos pocos KB. Además: `--roughness` (`Q2_0`) y marcado en línea (`[laugh]`, `[sigh]`, pausas).
 - **Tres interfaces de integración**:
   - **CLI (`qwen_tts`)**: síntesis directa a WAV, *streaming* a WAV o `stdout` PCM crudo y creación de voces.
   - **Servidor HTTP (`--serve`)**: rutas `/v1/audio/speech` (compatible con OpenAI), `/v1/tts` y `/v1/tts/stream`, una síntesis a la vez.
-  - **Librería Rust (`qwen-engine`)**: API segura (`#![forbid(unsafe_code)]`) para incrustar el motor compartiendo `Arc<Model06B>` entre hilos.
+  - **Biblioteca Rust (`qwen-engine`)**: API segura (`#![forbid(unsafe_code)]`) para incrustar el motor compartiendo `Arc<Model06B>` entre hilos.
 
 > **Modelo soportado (`Qwen3-TTS 0.6B Base`)**: este motor ejecuta exclusivamente el checkpoint **Qwen3-TTS `0.6B` Base**; cualquier otro se rechaza al cargar. Al cargar un modelo, `config.json` valida automáticamente esta geometría (`HIDDEN_SIZE=1024`, `28` capas Talker, `5` capas Code Predictor).
 
@@ -138,7 +138,7 @@ El servidor sin `--load-voice` usa la voz `default`; con `--load-voice mi_voz.qv
 Envía peticiones síncronas (WAV completo) o en *streaming* (PCM `s16le` 24 kHz mono):
 
 ```bash
-# WAV completo (OpenAI-compatible)
+# WAV completo (compatible con OpenAI)
 curl -X POST http://127.0.0.1:8080/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"input":"Hello from Qwen TTS Engine!","voice":"default","language":"English"}' \
@@ -151,7 +151,7 @@ curl -X POST http://127.0.0.1:8080/v1/tts/stream \
   --output stream.pcm
 ```
 
-### 4. Librería embebida en Rust (`qwen-engine`)
+### 4. Biblioteca embebida en Rust (`qwen-engine`)
 
 Agrega las dependencias del workspace en tu `Cargo.toml`:
 
@@ -231,7 +231,7 @@ La documentación sigue el modelo **Diátaxis** para separar guías prácticas, 
 | Documento | Rol Diátaxis | Audiencia principal | Qué contiene |
 |---|---|---|---|
 | [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md) | Referencia | Usuarios avanzados, integradores HTTP y Rust | Flags CLI (`qwen_tts`), endpoints HTTP (`--serve`), API Rust embebida, variables de entorno y logs contractuales. |
-| [`docs/SPEC_06B.md`](docs/SPEC_06B.md) | Referencia | Ingenieros del motor y mantenedores | Geometría fija `0.6B`, mapa de tensores `safetensors`, formato `.qvoice` v4, vocabularios, *prefill* y marcado inline. |
+| [`docs/SPEC_06B.md`](docs/SPEC_06B.md) | Referencia | Ingenieros del motor y mantenedores | Geometría fija `0.6B`, mapa de tensores `safetensors`, formato `.qvoice` v4, vocabularios, *prefill* y marcado en línea. |
 | [`docs/NUMERIC_CONTRACT.md`](docs/NUMERIC_CONTRACT.md) | Referencia | Ingenieros de kernels y optimización | Cuantización `INT8`/`Q4_0`/`Q2_0`, `FTZ`/`DAZ`, reglas IEEE-754/`FMA`, determinismo de *streaming* y tolerancias. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Explicación | Desarrolladores y contribuidores | Grafo de *crates* (DAG), política `unsafe`, tiempos de vida del estado, `ComputeRuntime`, camino único de síntesis y servidor. |
 | [`docs/VERIFICATION_PLAN.md`](docs/VERIFICATION_PLAN.md) | Guía operativa | QA, contribuidores y mantenimiento de CI | Suites `cargo test`, verificación numérica de kernels, CI en CircleCI (`.circleci/config.yml`) y protocolo de medición de rendimiento. |
@@ -247,7 +247,7 @@ La documentación sigue el modelo **Diátaxis** para separar guías prácticas, 
 ## Contribución y atribuciones
 
 - **Issues y Pull Requests**: reporta errores o propón cambios mediante GitHub Issues y Pull Requests verificando previamente `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --release` y la alineación con los contratos de `docs/`.
-- **Atribución upstream**: implementación independiente en Rust inspirada y portada a partir del motor en C `gabriele-mastrapasqua/qwen3-tts` (licencia MIT). Consulta [`NOTICE`](NOTICE) para el detalle completo.
+- **Atribución del proyecto original**: implementación independiente en Rust inspirada y portada a partir del motor en C `gabriele-mastrapasqua/qwen3-tts` (licencia MIT). Consulta [`NOTICE`](NOTICE) para el detalle completo.
 
 ---
 

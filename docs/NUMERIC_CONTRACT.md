@@ -23,7 +23,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | **Q4_0** (`18 B / 32 pesos`) | `scale_f16` (`u16`) + `qs[16]` | **Mínimos cuadrados ponderados (`q4_0s1`)**: toma el elemento de mayor magnitud `vmax` (con signo), fija `isc = -8.0 / vmax`, `q[i] = clamp(round(v[i] * isc), -8, 7)` y reescala `s* = sum(v^2 * v * q) / sum(v^2 * q^2)`. Empaque intercalado: `qs[i] = (q[2i]+8) \| ((q[2i+1]+8) << 4)`. | `--int4`; Talker + FFN del CP en `--quant-mixed`. |
 | **Q2_0** (`12 B / 32 pesos`) | `scale` (`f32`) + `qs[8]` | 4 niveles simétricos `{-1.5, -0.5, 0.5, 1.5} * scale`: `scale = absmax / 1.5`, `code = clamp(round_ties_even(v / scale + 1.5), 0, 3)`; 4 códigos/byte (`(i & 3) * 2`). | Solo `down_q2_rough` bajo `--roughness > 0`, mezclado en `down_proj` del CP: `proj = (1 - r) * proj + r * proj_q2`. |
 
-- **Cero fallbacks en coma flotante**: todas las rutas (`AVX2` `maddubs`, NEON `SDOT` o `SMULL` y escalar `i32`) acumulan en producto escalar entero.
+- **Ninguna ruta de reserva en coma flotante**: todas las rutas (`AVX2` `maddubs`, NEON `SDOT` o `SMULL` y escalar `i32`) acumulan en producto escalar entero.
 - **Matriz `gate_up` intercalada**: la fila `2r` corresponde a `gate[r]` y la `2r+1` a `up[r]`. En modos cuantizados se cuantiza directamente desde `gate_bf16` y `up_bf16` sin materializar `gate_up_fused_bf16`.
 
 ### 1.3 Perfil `--quant-mixed` (`[INT8+Q4_0-FFN]`)
@@ -75,7 +75,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 - **Coste aceptado**: sin *streaming* se renuncia a los bloques fijos de 10 heredados del motor original en C. El decoder trabaja un 4–17 % más y el RTF sube de +0,00 a +0,01 (A/B intercalado).
 - **Por qué no bloques de 10 en todos los modos**: retrasaría el primer audio del *streaming* (estimado: ~450 → ~850 ms sin carga). La subida gradual del calendario evita cortes con RTF cercano a 1.
 - **Para recuperar esa eficiencia sin perder la identidad entre modos**: haría falta un decoder cuyo redondeo no dependa del tamaño del chunk.
-4. **Tiling y workspace del decoder**: `DecoderWorkspace` reutiliza 8 slots crecientes por trabajador. En modo paralelo, los bloques residuales `up2` y `up3` (`SD_TILE_FROM_BLOCK = 2`) procesan por tiles de **`256 KB`** (`SD_TILE_BYTES = 262144`) durante toda la petición (incluido el drenaje final).
+4. **Troceo por tiles y workspace del decoder**: `DecoderWorkspace` reutiliza 8 slots crecientes por trabajador. En modo paralelo, los bloques residuales `up2` y `up3` (`SD_TILE_FROM_BLOCK = 2`) procesan por tiles de **`256 KB`** (`SD_TILE_BYTES = 262144`) durante toda la petición (incluido el drenaje final).
 5. **Rampas de borde y composición.** Un mismo guion da el mismo PCM en la entrega completa y en *streaming*.
    - **Rampas de borde**: 5 ms de entrada y 40 ms de salida, cada una acotada a la mitad del audio, aplicadas después de la ganancia (`apply_gain`) y antes de la conversión a PCM16. El WAV completo las aplica en `encode_wav_bytes`. Las salidas en *streaming* (`--stream`, `--stdout`, `/v1/tts/stream`) las aplican con `EdgeRampSink`, que retiene los últimos 40 ms hasta el chunk siguiente o el cierre y no emite nada hasta reunir 80 ms. Ambos caminos usan las mismas operaciones en el mismo orden (prueba `audio::tests`).
    - **Ganancia**: la aplica siempre `synthesize`, elemento a elemento (`(s·g)` con *clamp* a `[-1, 1]`), justo antes de escribir en el destino; `EdgeRampSink` no aplica ganancia. En texto plano es `x·v`. Con `rate != 1`, la ganancia va antes de `time_stretch`.

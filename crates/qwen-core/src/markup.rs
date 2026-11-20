@@ -158,7 +158,7 @@ pub struct ParalinguisticSubstitution {
 pub struct MarkupPlanner;
 
 impl MarkupPlanner {
-    /// Sustitución paralingüística inline para `0.6B`.
+    /// Sustitución paralingüística en línea para `0.6B`.
     /// Reemplaza `[laugh]`, `[sigh]`, etc. por onomatopeyas delimitadas por comas
     /// en una única generación, fijando la semilla y temperatura del primer tag.
     pub fn paralinguistic_substitute(text: &str) -> ParalinguisticSubstitution {
@@ -277,7 +277,7 @@ impl MarkupPlanner {
         }
     }
 
-    /// Parsea marcado inline / `--compose` en `Vec<SpanSpec>`.
+    /// Parsea marcado en línea / `--compose` en `Vec<SpanSpec>`.
     /// Los tags desconocidos (por ejemplo `[xyz]`) quedan como texto.
     pub fn parse_spans(input: &str) -> Vec<SpanSpec> {
         let mut spans = Vec::new();

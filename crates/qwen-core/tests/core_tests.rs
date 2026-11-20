@@ -386,7 +386,7 @@ fn test_markup_sampling_and_lookups() {
     assert_eq!(s1, s2);
     assert_eq!(rng1.seed, rng2.seed);
 
-    // Muestreo nucleus (top_p < 1.0) determinista y sin bloqueo O(N^2)
+    // Muestreo *nucleus* (top_p < 1.0) determinista y sin bloqueo O(N^2)
     let mut lp1 = vec![0.1f32, 3.0, 2.5, -1.0, 0.2];
     let mut lp2 = lp1.clone();
     let mut rng_p1 = LcgRng::new(123);
@@ -412,7 +412,7 @@ fn test_markup_pauses_and_pipe_separator() {
     assert_eq!(p_spans[1], SpanSpec::Pause { seconds: 0.0 });
     assert_eq!(p_spans[2], SpanSpec::Pause { seconds: 0.0 });
 
-    // Separador '|' detectado por has_markup y dividido en spans
+    // Separador '|' detectado por has_markup y dividido en tramos
     assert!(MarkupPlanner::has_markup("Hola. | Adiós."));
     let pipe_spans = MarkupPlanner::parse_spans("Hola. | Adiós.");
     assert_eq!(pipe_spans.len(), 2);

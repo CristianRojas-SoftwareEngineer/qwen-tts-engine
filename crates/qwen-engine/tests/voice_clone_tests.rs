@@ -401,7 +401,7 @@ fn test_clone_from_default_voice_e2e() {
         "se obtuvo: {err}"
     );
 
-    // 6. Marcado multi-span con roughness y streaming de spans, con la voz `default`
+    // 6. Marcado multitramo con `--roughness` y streaming de tramos, con la voz `default`
     let plan = plan_script(
         "Che bella notizia! [pause:400ms] Devo andare... [sigh] Ciao.",
         MarkupMode::Auto,

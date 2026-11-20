@@ -75,7 +75,7 @@ fn test_decoder_streaming_equivalence() {
     let full_samples = speech_decoder_decode(&runtime, &model.decoder, &codes, n_frames).unwrap();
     assert_eq!(full_samples.len(), n_frames * 1920);
 
-    // 2. Decodificación streaming (rampa 2, 4x8, 6x8, ..., tiling) frente a completa en Rust
+    // 2. Decodificación streaming (rampa 2, 4x8, 6x8, ..., por tiles) frente a completa en Rust
     let mut st = SdStreamState::new();
     st.cs_tile = true;
     let mut ws = DecoderWorkspace::new();

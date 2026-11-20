@@ -26,7 +26,7 @@ pub fn apply_gain(samples: &mut [f32], gain: f32) {
     }
 }
 
-/// Estiramiento temporal preservando el pitch mediante WSOLA (`--rate`).
+/// Estiramiento temporal preservando el tono mediante WSOLA (`--rate`).
 pub fn time_stretch(input: &[f32], rate: f32) -> Vec<f32> {
     let rate = if !rate.is_finite() || rate <= 0.0 {
         1.0

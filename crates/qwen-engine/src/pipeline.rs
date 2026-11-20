@@ -105,7 +105,7 @@ pub(crate) fn talker_codec_logits(
     );
 }
 
-/// Aplica clamp de logits, supresión de tokens códec especiales y boost progresivo de EOS.
+/// Aplica clamp de logits, supresión de tokens códec especiales y refuerzo progresivo de EOS.
 pub(crate) fn apply_talker_logit_rules(
     logits: &mut [f32],
     frame: usize,
@@ -637,7 +637,7 @@ mod tests {
     use std::path::PathBuf;
 
     /// Las filas que `talker_codec_logits` no calcula no influyen en los logits tras las reglas,
-    /// con cualquier valor previo, en cualquier frame y con y sin boost de EOS.
+    /// con cualquier valor previo, en cualquier frame y con y sin refuerzo de EOS.
     #[test]
     fn logit_rules_ignore_rows_skipped_by_codec_head() {
         let eos0 = (CODEC_EOS as usize) & !1;

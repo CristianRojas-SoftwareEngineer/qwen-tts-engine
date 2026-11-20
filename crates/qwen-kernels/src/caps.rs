@@ -95,7 +95,7 @@ impl CpuCaps {
                 let dot = if kernels == "neon-dotprod" {
                     "NEON SDOT (dotprod)"
                 } else {
-                    "NEON SMULL widening"
+                    "NEON SMULL ampliado"
                 };
                 let _ = writeln!(s, "  q4_0 + int8 dot:  {dot}, orden de suma de AVX2");
                 let _ = writeln!(s, "  bf16 + attn:      NEON (FMA, orden de suma de AVX2)");

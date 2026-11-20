@@ -122,7 +122,7 @@ fn synth_span(
     Ok(samples)
 }
 
-/// Compone `spans` y los entrega a `dest` (que se cierra con `finish`). Devuelve el número de
+/// Compone los tramos (`spans`) y los entrega a `dest` (que se cierra con `finish`). Devuelve el número de
 /// tramos hablados y el de muestras entregadas.
 pub(crate) fn compose_spans(
     job: &Run<'_>,
