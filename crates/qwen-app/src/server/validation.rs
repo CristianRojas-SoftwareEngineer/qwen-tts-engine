@@ -3,11 +3,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use qwen_core::config::{
-    lookup_language, CODEC_VOCAB_SIZE, DEFAULT_SEED, DEFAULT_TEMPERATURE,
-};
+use qwen_core::config::{lookup_language, CODEC_VOCAB_SIZE};
+use qwen_core::SeedChoice;
 use serde_json::Value;
 
 pub const MAX_TTS_TEXT: usize = 8192;
@@ -17,24 +14,16 @@ pub const DEFAULT_CHUNK_FRAMES: usize = 10;
 pub struct ValidatedTtsRequest {
     pub text: String,
     pub language_id: Option<i32>,
-    pub temperature: f32,
-    pub temp_set: bool,
+    /// Temperatura pedida; `None` deja el valor por defecto (o el de la paralingüística).
+    pub temperature: Option<f32>,
     pub top_k: i32,
     pub top_p: f32,
     pub rep_penalty: f32,
-    /// Semilla de muestreo (`Some(4)` por defecto; `None` cuando el cliente solicita reloj con `< 0`).
-    pub seed: Option<u32>,
-    pub seed_set: bool,
+    /// Semilla pedida (`Clock` cuando el cliente envía un valor `< 0`).
+    pub seed: SeedChoice,
     pub volume: f32,
     pub rate: f32,
     pub chunk_frames: usize,
-}
-
-pub fn time_based_seed() -> u32 {
-    let d = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    ((d.as_secs() ^ (d.subsec_micros() as u64)) & 0xFFFF_FFFF) as u32
 }
 
 fn is_only_whitespace_or_escaped(s: &str) -> bool {
@@ -101,7 +90,6 @@ impl ValidatedTtsRequest {
         body: &str,
         is_stream: bool,
         loaded_voice_name: &str,
-        default_language_id: Option<i32>,
     ) -> Result<Self, String> {
         let val: Value = serde_json::from_str(body)
             .map_err(|_| "invalid JSON body".to_string())?;
@@ -142,12 +130,11 @@ impl ValidatedTtsRequest {
 
         // idioma
         let language_name = extract_opt_str(obj, "language")?;
-        let language_id = if let Some(lang) = language_name {
-            let id = lookup_language(lang)
-                .ok_or_else(|| format!("unknown language '{lang}'"))?;
-            Some(id)
-        } else {
-            default_language_id
+        let language_id = match language_name {
+            Some(lang) => Some(
+                lookup_language(lang).ok_or_else(|| format!("unknown language '{lang}'"))?,
+            ),
+            None => None,
         };
 
         // voice (opcional): debe coincidir con la voz cargada
@@ -159,16 +146,15 @@ impl ValidatedTtsRequest {
             }
         }
 
-        // temperature en [0.0, 2.0], default = 0.325 (DEFAULT_TEMPERATURE)
-        let temp_opt = extract_opt_f64(obj, "temperature")?;
-        let (temperature, temp_set) = match temp_opt {
+        // temperature en [0.0, 2.0]; sin valor manda el defecto de `SamplingParams`
+        let temperature = match extract_opt_f64(obj, "temperature")? {
             Some(v) => {
                 if !(0.0..=2.0).contains(&v) {
                     return Err("'temperature' out of range [0, 2]".to_string());
                 }
-                (v as f32, true)
+                Some(v as f32)
             }
-            None => (DEFAULT_TEMPERATURE, false),
+            None => None,
         };
 
         // top_k en [0, codec_vocab_size (3072)], default = 50
@@ -204,12 +190,12 @@ impl ValidatedTtsRequest {
             None => 1.05,
         };
 
-        // semilla: por defecto DEFAULT_SEED (4); valores negativos activan reloj del sistema
-        let (seed, seed_set) = match extract_opt_i64(obj, "seed")? {
-            Some(v) if v < 0 => (None, true),
-            Some(v) if v <= u32::MAX as i64 => (Some(v as u32), true),
+        // semilla: sin valor manda el defecto de `SamplingParams`; valores negativos activan reloj
+        let seed = match extract_opt_i64(obj, "seed")? {
+            Some(v) if v < 0 => SeedChoice::Clock,
+            Some(v) if v <= u32::MAX as i64 => SeedChoice::Fixed(v as u32),
             Some(_) => return Err("'seed' exceeds u32::MAX".to_string()),
-            None => (Some(DEFAULT_SEED), false),
+            None => SeedChoice::Default,
         };
 
         // volumen / velocidad
@@ -247,20 +233,14 @@ impl ValidatedTtsRequest {
             text: text.to_string(),
             language_id,
             temperature,
-            temp_set,
             top_k,
             top_p,
             rep_penalty,
             seed,
-            seed_set,
             volume,
             rate,
             chunk_frames,
         })
-    }
-
-    pub fn resolve_seed_or_time(&self) -> u32 {
-        self.seed.unwrap_or_else(time_based_seed)
     }
 }
 
@@ -269,7 +249,7 @@ mod tests {
     use super::*;
 
     fn parse(body: &str, is_stream: bool) -> Result<ValidatedTtsRequest, String> {
-        ValidatedTtsRequest::parse(body, is_stream, "default", None)
+        ValidatedTtsRequest::parse(body, is_stream, "default")
     }
 
     #[test]
@@ -291,37 +271,19 @@ mod tests {
 
         let ok = parse(r#"{"input":"Hello!","rate":1.2}"#, false).unwrap();
         assert_eq!(ok.text, "Hello!");
-        assert_eq!(ok.temperature, DEFAULT_TEMPERATURE);
-        assert_eq!(ok.seed, Some(DEFAULT_SEED));
-        assert!(!ok.seed_set);
-        assert_eq!(ok.resolve_seed_or_time(), DEFAULT_SEED);
+        assert_eq!(ok.temperature, None);
+        assert_eq!(ok.seed, SeedChoice::Default);
         assert!((ok.rate - 1.2).abs() < 1e-6);
 
         let neg_seed = parse(r#"{"text":"Hi.","seed":-1}"#, false).unwrap();
-        assert_eq!(neg_seed.seed, None);
-        assert!(neg_seed.seed_set);
+        assert_eq!(neg_seed.seed, SeedChoice::Clock);
 
-        // Sin `language` y sin idioma en la voz cargada se mantiene `None` (no fuerza `English`).
+        // Sin `language` queda `None`; la voz o el defecto de la interfaz lo resuelven después.
         let clone_ok = parse(r#"{"text":"Cloned.","chunk_frames":999}"#, true).unwrap();
         assert_eq!(clone_ok.language_id, None);
         assert_eq!(clone_ok.chunk_frames, 250);
         let clone_min = parse(r#"{"text":"Cloned.","chunk_frames":0}"#, true).unwrap();
         assert_eq!(clone_min.chunk_frames, 2);
-    }
-
-    #[test]
-    fn test_language_defaults_to_voice_language() {
-        let with_voice_lang =
-            ValidatedTtsRequest::parse(r#"{"text":"Hola."}"#, false, "default", Some(2054)).unwrap();
-        assert_eq!(with_voice_lang.language_id, Some(2054));
-        let explicit = ValidatedTtsRequest::parse(
-            r#"{"text":"Hola.","language":"English"}"#,
-            false,
-            "default",
-            Some(2054),
-        )
-        .unwrap();
-        assert_eq!(explicit.language_id, Some(2050));
     }
 
     #[test]

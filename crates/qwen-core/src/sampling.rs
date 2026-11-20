@@ -3,6 +3,53 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::config::{DEFAULT_SEED, DEFAULT_TEMPERATURE};
+
+/// Parámetros de muestreo de una petición. Única fuente de los valores por defecto.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SamplingParams {
+    pub temperature: f32,
+    pub top_k: usize,
+    pub top_p: f32,
+    pub rep_penalty: f32,
+    pub greedy_warmup: usize,
+    pub seed: u32,
+}
+
+impl Default for SamplingParams {
+    fn default() -> Self {
+        Self {
+            temperature: DEFAULT_TEMPERATURE,
+            top_k: 50,
+            top_p: 1.0,
+            rep_penalty: 1.05,
+            greedy_warmup: 0,
+            seed: DEFAULT_SEED,
+        }
+    }
+}
+
+/// Origen de la semilla pedida por el usuario.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedChoice {
+    /// El usuario no fijó semilla: manda la paralingüística o `DEFAULT_SEED`.
+    Default,
+    /// Semilla explícita.
+    Fixed(u32),
+    /// Semilla temporal (reloj del sistema).
+    Clock,
+}
+
+/// Semilla derivada del reloj del sistema.
+pub fn time_based_seed() -> u32 {
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    ((d.as_secs() ^ (d.subsec_micros() as u64)) & 0xFFFF_FFFF) as u32
+}
+
 #[derive(Debug, Clone)]
 pub struct LcgRng {
     pub seed: u32,

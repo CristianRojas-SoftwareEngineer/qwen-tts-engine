@@ -6,11 +6,13 @@
 use std::fs;
 use std::path::PathBuf;
 
-use qwen_core::config::{DEFAULT_SEED, DEFAULT_TEMPERATURE, ENC_DIM, SAMPLE_RATE};
-use qwen_core::{MarkupPlanner, QVoiceFile};
+use qwen_core::config::{DEFAULT_SEED, ENC_DIM, SAMPLE_RATE};
+use qwen_core::{
+    plan_script, resolve_sampling, MarkupMode, QVoiceFile, SamplingParams, Script, SeedChoice,
+};
 use qwen_engine::{
     clone_voice, encode_wav_bytes, mel_spectrogram,
-    prepare_markup_06b, read_wav_24khz, render_spans_buffer, render_spans_stream,
+    read_wav_24khz, render_spans_buffer, render_spans_stream,
     synthesize_to_samples, trim_trailing_silence, validate_wav_path_or_header, write_wav,
     CloneOptions, MemorySink, Model06B, ModelLoadOptions, RequestConfig, RequestExecution,
     SessionScratch, Voice, VoiceLoadOptions,
@@ -183,28 +185,19 @@ fn test_voice_file_extension_and_version_errors() {
 #[test]
 fn test_markup_with_default_voice_texts() {
     // `[sad]` ya no es marcado: queda como texto y no activa el modo compose
-    let prep = prepare_markup_06b(
-        "Devo andare [sad] Ciao.",
-        false,
-        Some(DEFAULT_SEED),
-        None,
-        DEFAULT_TEMPERATURE,
-    );
-    assert!(!prep.did_para_substitute);
-    assert!(!prep.use_compose);
-    assert!(prep.text.contains("[sad]"));
+    let plan = plan_script("Devo andare [sad] Ciao.", MarkupMode::Auto);
+    assert!(plan.para.is_none());
+    let Script::Plain(text) = &plan.script else {
+        panic!("expected Plain");
+    };
+    assert!(text.contains("[sad]"));
 
     // Pausas y `[laugh]` siguen funcionando
-    let prep = prepare_markup_06b(
-        "Oh! [laugh] [pause:0.5] Great!",
-        false,
-        Some(DEFAULT_SEED),
-        None,
-        DEFAULT_TEMPERATURE,
-    );
-    assert!(prep.did_para_substitute);
-    assert!(prep.use_compose);
-    let spans = MarkupPlanner::parse_spans(&prep.text);
+    let plan = plan_script("Oh! [laugh] [pause:0.5] Great!", MarkupMode::Auto);
+    assert!(plan.para.is_some());
+    let Script::Spans(spans) = &plan.script else {
+        panic!("expected Spans");
+    };
     assert!(spans.iter().any(
         |s| matches!(s, qwen_core::SpanSpec::Pause { seconds } if (*seconds - 0.5).abs() < 1e-6)
     ));
@@ -392,16 +385,20 @@ fn test_clone_from_default_voice_e2e() {
     assert!(err.contains("voice files must be .qvoice"), "got: {err}");
 
     // 6. Marcado multi-span con roughness y streaming de spans, con la voz `default`
-    let prep = prepare_markup_06b(
+    let plan = plan_script(
         "Che bella notizia! [pause:400ms] Devo andare... [sigh] Ciao.",
-        false,
-        Some(DEFAULT_SEED),
-        None,
-        DEFAULT_TEMPERATURE,
+        MarkupMode::Auto,
     );
-    assert!(prep.did_para_substitute);
-    assert!(prep.use_compose);
-    let spans = MarkupPlanner::parse_spans(&prep.text);
+    assert!(plan.para.is_some());
+    let Script::Spans(spans) = &plan.script else {
+        panic!("expected Spans");
+    };
+    let sampling = resolve_sampling(
+        SamplingParams::default(),
+        SeedChoice::Fixed(DEFAULT_SEED),
+        None,
+        plan.para,
+    );
     assert!(spans.len() >= 3);
     let (composed, n_spoken) = render_spans_buffer(
         &runtime,
@@ -410,13 +407,13 @@ fn test_clone_from_default_voice_e2e() {
         &mut scratch,
         &RequestExecution::new(RequestConfig {
             language_id: Some(2070),
-            seed: prep.seed,
-            temperature: prep.temperature,
+            seed: sampling.seed,
+            temperature: sampling.temperature,
             cp_roughness: 0.35,
             silent: true,
             ..Default::default()
         }),
-        &spans,
+        spans,
         0.12,
     )
     .unwrap();
@@ -432,13 +429,13 @@ fn test_clone_from_default_voice_e2e() {
         &mut scratch,
         &RequestExecution::new(RequestConfig {
             language_id: Some(2070),
-            seed: prep.seed,
-            temperature: prep.temperature,
+            seed: sampling.seed,
+            temperature: sampling.temperature,
             volume: 2.0,
             silent: true,
             ..Default::default()
         }),
-        &spans,
+        spans,
         0.12,
         &mut stream_sink,
     )

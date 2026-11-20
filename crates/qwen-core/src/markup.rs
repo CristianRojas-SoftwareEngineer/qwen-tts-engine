@@ -3,6 +3,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::sampling::{time_based_seed, SamplingParams, SeedChoice};
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpanSpec {
     Utterance {
@@ -14,6 +16,86 @@ pub enum SpanSpec {
     Pause {
         seconds: f32,
     },
+}
+
+/// Cómo se interpreta el marcado del texto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkupMode {
+    /// Sustitución paralingüística y composición si queda marcado.
+    Auto,
+    /// `--no-compose`: las etiquetas pasan literales al modelo.
+    Literal,
+    /// `--compose`: el texto es una especificación de tramos.
+    Compose,
+}
+
+/// Guion a sintetizar: un texto plano o una lista de tramos.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Script {
+    Plain(String),
+    Spans(Vec<SpanSpec>),
+}
+
+/// Resultado de planificar el marcado.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlannedScript {
+    pub script: Script,
+    /// Semilla y temperatura de la primera etiqueta paralingüística sustituida, si hubo.
+    pub para: Option<(u32, f32)>,
+    /// Texto tras la sustitución paralingüística (solo para registros).
+    pub text: String,
+}
+
+/// Único sitio que decide la sustitución paralingüística y los tramos.
+pub fn plan_script(text: &str, mode: MarkupMode) -> PlannedScript {
+    match mode {
+        MarkupMode::Literal => PlannedScript {
+            script: Script::Plain(text.to_string()),
+            para: None,
+            text: text.to_string(),
+        },
+        // Hasta la composición unificada, `Compose` no aplica la paralingüística.
+        MarkupMode::Compose => PlannedScript {
+            script: Script::Spans(MarkupPlanner::parse_spans(text)),
+            para: None,
+            text: text.to_string(),
+        },
+        MarkupMode::Auto => {
+            let sub = MarkupPlanner::para_substitute(text);
+            let para = sub.did_substitute.then_some((sub.seed, sub.temperature));
+            let script = if MarkupPlanner::has_markup(&sub.text) {
+                Script::Spans(MarkupPlanner::parse_spans(&sub.text))
+            } else {
+                Script::Plain(sub.text.clone())
+            };
+            PlannedScript {
+                script,
+                para,
+                text: sub.text,
+            }
+        }
+    }
+}
+
+/// Resuelve el muestreo final. Precedencia: lo explícito del usuario, después la etiqueta
+/// paralingüística y por último el valor de `base`. `Clock` se resuelve con `time_based_seed()`.
+pub fn resolve_sampling(
+    base: SamplingParams,
+    seed: SeedChoice,
+    temperature: Option<f32>,
+    para: Option<(u32, f32)>,
+) -> SamplingParams {
+    let seed = match seed {
+        SeedChoice::Fixed(s) => s,
+        SeedChoice::Clock => time_based_seed(),
+        SeedChoice::Default => para.map_or(base.seed, |(s, _)| s),
+    };
+    let temperature = temperature.unwrap_or_else(|| para.map_or(base.temperature, |(_, t)| t));
+    SamplingParams {
+        temperature,
+        seed,
+        ..base
+    }
 }
 
 struct ComposeMacro {
@@ -270,5 +352,60 @@ impl MarkupPlanner {
         }
         flush(&mut seg, &mut spans);
         spans
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{DEFAULT_SEED, DEFAULT_TEMPERATURE};
+
+    #[test]
+    fn plan_script_modes() {
+        let lit = plan_script("Hola [laugh] mundo.", MarkupMode::Literal);
+        assert_eq!(lit.script, Script::Plain("Hola [laugh] mundo.".to_string()));
+        assert!(lit.para.is_none());
+
+        let auto = plan_script("Hola [laugh] mundo.", MarkupMode::Auto);
+        assert_eq!(auto.para, Some((2024, 1.1)));
+        assert!(matches!(auto.script, Script::Plain(_)));
+
+        let plain = plan_script("Hola.", MarkupMode::Auto);
+        assert!(plain.para.is_none());
+        assert_eq!(plain.script, Script::Plain("Hola.".to_string()));
+
+        let pause = plan_script("Hola. [pause:0.4] Adiós.", MarkupMode::Auto);
+        assert!(matches!(pause.script, Script::Spans(_)));
+
+        // `Compose` no aplica la paralingüística (comportamiento vigente).
+        let comp = plan_script("Hola. [laugh] Adiós.", MarkupMode::Compose);
+        assert!(comp.para.is_none());
+        let Script::Spans(spans) = comp.script else {
+            panic!("expected Spans");
+        };
+        assert_eq!(spans.len(), 3);
+    }
+
+    #[test]
+    fn resolve_sampling_precedence() {
+        let base = SamplingParams::default();
+        let para = Some((2024, 1.1));
+
+        let d = resolve_sampling(base, SeedChoice::Default, None, None);
+        assert_eq!((d.seed, d.temperature), (DEFAULT_SEED, DEFAULT_TEMPERATURE));
+
+        let p = resolve_sampling(base, SeedChoice::Default, None, para);
+        assert_eq!((p.seed, p.temperature), (2024, 1.1));
+
+        let u = resolve_sampling(base, SeedChoice::Fixed(9), Some(0.5), para);
+        assert_eq!((u.seed, u.temperature), (9, 0.5));
+
+        let mixed = resolve_sampling(base, SeedChoice::Fixed(9), None, para);
+        assert_eq!((mixed.seed, mixed.temperature), (9, 1.1));
+
+        // `Clock` manda sobre la etiqueta; el resto de campos viene de `base`.
+        let c = resolve_sampling(base, SeedChoice::Clock, None, para);
+        assert_eq!(c.top_k, base.top_k);
+        assert_eq!(c.temperature, 1.1);
     }
 }

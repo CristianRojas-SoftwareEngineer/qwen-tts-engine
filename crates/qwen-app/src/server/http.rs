@@ -9,16 +9,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use qwen_core::config::{language_name, SAMPLE_RATE};
-use qwen_core::MarkupPlanner;
+use qwen_core::Script;
 use qwen_engine::{
-    encode_wav_bytes, prepare_markup_06b, render_spans_buffer,
-    render_spans_stream, synthesize_to_samples, synthesize_to_sink, AbortHandle, AudioSink,
-    EngineError, MemorySink, Model06B, RequestConfig, RequestExecution, SessionScratch,
-    StreamEdgeRamp, SynthesisTiming, Voice,
+    encode_wav_bytes, render_spans_buffer, render_spans_stream, synthesize_to_samples,
+    synthesize_to_sink, AbortHandle, AudioSink, EngineError, MemorySink, Model06B,
+    RequestExecution, SessionScratch, StreamEdgeRamp, SynthesisTiming, Voice,
 };
 use qwen_kernels::ComputeRuntime;
 
 use super::validation::ValidatedTtsRequest;
+use crate::request::from_http;
 
 pub const MAX_HTTP_BODY: usize = 1024 * 1024;
 
@@ -359,35 +359,6 @@ impl AudioSink for HttpAudioChunkSink<'_> {
     }
 }
 
-struct PreparedHttpTts {
-    prep: qwen_engine::PreparedMarkup,
-    effective_seed: u32,
-}
-
-fn prepare_http_tts(vreq: &ValidatedTtsRequest) -> PreparedHttpTts {
-    let seed = vreq.resolve_seed_or_time();
-    let prep = prepare_markup_06b(
-        &vreq.text,
-        false,
-        if vreq.seed_set { Some(seed) } else { None },
-        if vreq.temp_set {
-            Some(vreq.temperature)
-        } else {
-            None
-        },
-        vreq.temperature,
-    );
-    let effective_seed = if !vreq.seed_set && prep.did_para_substitute {
-        prep.seed
-    } else {
-        seed
-    };
-    PreparedHttpTts {
-        prep,
-        effective_seed,
-    }
-}
-
 /// Fotogramas de la síntesis de calentamiento: el primer fragmento (2) y uno completo (10).
 const WARM_UP_FRAMES: usize = 12;
 
@@ -406,7 +377,6 @@ pub fn warm_up_session(
         r#"{"text":"Hello.","seed":1}"#,
         true,
         &voice.name,
-        voice.language_id,
     ) {
         Ok(v) => v,
         Err(msg) => {
@@ -414,8 +384,11 @@ pub fn warm_up_session(
             return;
         }
     };
-    let ctx = prepare_http_tts(&vreq);
-    let mut exec = build_http_exec(&vreq, &ctx.prep, ctx.effective_seed, true, AbortHandle::new());
+    let (config, planned) = from_http(&vreq, voice, true);
+    let mut exec = RequestExecution {
+        config,
+        abort: AbortHandle::new(),
+    };
     exec.config.max_tokens = WARM_UP_FRAMES;
     let mut sink = MemorySink::new(0);
     let t0 = Instant::now();
@@ -425,39 +398,11 @@ pub fn warm_up_session(
         voice,
         scratch,
         &exec,
-        &ctx.prep.text,
+        &planned.text,
         &mut sink,
     ) {
         Ok(_) => eprintln!("[HTTP] Calentamiento: {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0),
         Err(e) => eprintln!("[HTTP] Calentamiento fallido (sin efecto en las peticiones): {e}"),
-    }
-}
-
-fn build_http_exec(
-    vreq: &ValidatedTtsRequest,
-    prep: &qwen_engine::PreparedMarkup,
-    effective_seed: u32,
-    is_stream: bool,
-    abort: AbortHandle,
-) -> RequestExecution {
-    RequestExecution {
-        config: RequestConfig {
-            language_id: vreq.language_id,
-            temperature: prep.temperature,
-            top_k: vreq.top_k,
-            top_p: vreq.top_p,
-            rep_penalty: vreq.rep_penalty,
-            max_tokens: 8192,
-            greedy_warmup: 0,
-            seed: effective_seed,
-            stream_chunk_frames: if is_stream { vreq.chunk_frames } else { 10 },
-            volume: vreq.volume,
-            rate: if is_stream { 1.0 } else { vreq.rate },
-            silent: true,
-            debug: false,
-            cp_roughness: 0.0,
-        },
-        abort,
     }
 }
 
@@ -469,16 +414,14 @@ pub fn handle_tts_full(
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
-    let ctx = prepare_http_tts(vreq);
-    let prep = ctx.prep;
-    let effective_seed = ctx.effective_seed;
+    let (config, planned) = from_http(vreq, voice, false);
 
     eprintln!(
         "[HTTP] TTS: \"{}\" (voice={}, lang={}, seed={})",
-        prep.text,
+        planned.text,
         voice.name,
         vreq.language_id.unwrap_or(0),
-        effective_seed
+        config.seed
     );
 
     let guard = match AbortGuard::for_socket(stream) {
@@ -488,29 +431,31 @@ pub fn handle_tts_full(
             return;
         }
     };
-    let exec = build_http_exec(vreq, &prep, effective_seed, false, guard.abort.clone());
+    let exec = RequestExecution {
+        config,
+        abort: guard.abort.clone(),
+    };
 
     let t0 = Instant::now();
     let mut timing_opt: Option<SynthesisTiming> = None;
-    let res = if prep.use_compose {
-        let spans = MarkupPlanner::parse_spans(&prep.text);
-        if !spans.is_empty() {
-            eprintln!(
-                "[HTTP] inline markup -> per-sentence compose ({} spans)",
-                spans.len()
-            );
-            render_spans_buffer(runtime, model, voice, scratch, &exec, &spans, 0.12)
-                .map(|(buf, _)| buf)
-        } else {
-            Err(EngineError::InvalidArg("markup parse failed".to_string()))
+    let res = match &planned.script {
+        Script::Spans(spans) => {
+            if !spans.is_empty() {
+                eprintln!(
+                    "[HTTP] inline markup -> per-sentence compose ({} spans)",
+                    spans.len()
+                );
+                render_spans_buffer(runtime, model, voice, scratch, &exec, spans, 0.12)
+                    .map(|(buf, _)| buf)
+            } else {
+                Err(EngineError::InvalidArg("markup parse failed".to_string()))
+            }
         }
-    } else {
-        synthesize_to_samples(runtime, model, voice, scratch, &exec, &prep.text).map(
-            |(buf, timing)| {
+        Script::Plain(text) => synthesize_to_samples(runtime, model, voice, scratch, &exec, text)
+            .map(|(buf, timing)| {
                 timing_opt = Some(timing);
                 buf
-            },
-        )
+            }),
     };
 
     let samples = match res {
@@ -552,16 +497,14 @@ pub fn handle_tts_stream(
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
-    let ctx = prepare_http_tts(vreq);
-    let prep = ctx.prep;
-    let effective_seed = ctx.effective_seed;
+    let (config, planned) = from_http(vreq, voice, true);
 
     eprintln!(
         "[HTTP] TTS stream: \"{}\" (voice={}, lang={}, seed={})",
-        prep.text,
+        planned.text,
         voice.name,
         vreq.language_id.unwrap_or(0),
-        effective_seed
+        config.seed
     );
 
     let guard = match AbortGuard::for_socket(stream) {
@@ -577,45 +520,43 @@ pub fn handle_tts_stream(
     }
 
     let t0 = Instant::now();
-    let exec = build_http_exec(vreq, &prep, effective_seed, true, guard.abort.clone());
+    let exec = RequestExecution {
+        config,
+        abort: guard.abort.clone(),
+    };
 
     let mut chunk_sink = HttpAudioChunkSink::new(stream, vreq.volume);
 
     let mut timing_opt: Option<SynthesisTiming> = None;
-    let gen_res: Result<(), EngineError> = if prep.use_compose {
-        let spans = MarkupPlanner::parse_spans(&prep.text);
-        if !spans.is_empty() {
-            eprintln!(
-                "[HTTP] inline markup -> per-sentence compose stream ({} spans)",
-                spans.len()
-            );
-            render_spans_stream(
-                runtime,
-                model,
-                voice,
-                scratch,
-                &exec,
-                &spans,
-                0.12,
-                &mut chunk_sink,
-            )
-            .map(|_| ())
-        } else {
-            Err(EngineError::InvalidArg("markup parse failed".to_string()))
+    let gen_res: Result<(), EngineError> = match &planned.script {
+        Script::Spans(spans) => {
+            if !spans.is_empty() {
+                eprintln!(
+                    "[HTTP] inline markup -> per-sentence compose stream ({} spans)",
+                    spans.len()
+                );
+                render_spans_stream(
+                    runtime,
+                    model,
+                    voice,
+                    scratch,
+                    &exec,
+                    spans,
+                    0.12,
+                    &mut chunk_sink,
+                )
+                .map(|_| ())
+            } else {
+                Err(EngineError::InvalidArg("markup parse failed".to_string()))
+            }
         }
-    } else {
-        synthesize_to_sink(
-            runtime,
-            model,
-            voice,
-            scratch,
-            &exec,
-            &prep.text,
-            &mut chunk_sink,
-        )
-        .map(|t| {
-            timing_opt = Some(t);
-        })
+        Script::Plain(text) => {
+            synthesize_to_sink(runtime, model, voice, scratch, &exec, text, &mut chunk_sink).map(
+                |t| {
+                    timing_opt = Some(t);
+                },
+            )
+        }
     };
 
     let total_samples = chunk_sink.total_samples;
@@ -674,13 +615,13 @@ pub fn handle_connection(
         ("GET", "/v1/health") => handle_health(&mut stream),
         ("GET", "/v1/voices") => handle_voices(&mut stream, voice),
         ("POST", "/v1/tts") | ("POST", "/v1/audio/speech") => {
-            match ValidatedTtsRequest::parse(&req.body, false, voice_name, voice.language_id) {
+            match ValidatedTtsRequest::parse(&req.body, false, voice_name) {
                 Ok(vreq) => handle_tts_full(runtime, model, voice, scratch, &mut stream, &vreq),
                 Err(msg) => send_error(&mut stream, 400, &msg),
             }
         }
         ("POST", "/v1/tts/stream") => {
-            match ValidatedTtsRequest::parse(&req.body, true, voice_name, voice.language_id) {
+            match ValidatedTtsRequest::parse(&req.body, true, voice_name) {
                 Ok(vreq) => {
                     handle_tts_stream(runtime, model, voice, scratch, &mut stream, &vreq)
                 }

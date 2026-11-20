@@ -5,6 +5,7 @@
 
 mod affinity;
 mod cli;
+mod request;
 mod server;
 
 use std::fs;
@@ -15,10 +16,9 @@ use std::sync::Arc;
 use std::thread;
 
 use qwen_core::config::{language_name, lookup_language, FRAME_RATE, SAMPLE_RATE};
-use qwen_core::{MarkupPlanner, QVoiceFile};
+use qwen_core::{QVoiceFile, Script};
 use qwen_engine::{
-    clone_voice, ensure_qvoice_path, onset_fade, prepare_markup_06b,
-    render_spans_buffer, synthesize_to_samples, synthesize_to_sink,
+    clone_voice, ensure_qvoice_path, onset_fade, render_spans_buffer, synthesize_to_samples, synthesize_to_sink,
     tail_glitch_score, tail_trim, validate_wav_path_or_header, write_wav,
     CloneOptions, Model06B, ModelLoadOptions, RequestConfig, RequestExecution,
     SessionScratch, StdoutRawSink, Voice, VoiceLoadOptions, WavStreamSink,
@@ -28,7 +28,6 @@ use qwen_kernels::selftest::run_kernel_selftest;
 use qwen_kernels::ComputeRuntime;
 
 use cli::{parse_cli, print_usage, CliArgs, ParseOutcome};
-use server::validation::time_based_seed;
 use server::{serve, ServeConfig};
 
 fn spawn_stdin_watcher() -> Result<(), String> {
@@ -446,18 +445,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
     let model = Arc::new(model);
     let voice = Arc::new(voice);
 
-    let language_id = cli_language_id.or(voice.language_id).or(Some(2050));
-
-    let max_tokens = if let Some(dur) = cfg.max_duration {
-        if dur > 0.0 {
-            ((dur * FRAME_RATE) as usize).max(1)
-        } else {
-            cfg.max_tokens
-        }
-    } else {
-        cfg.max_tokens
-    };
-
     // Modo servidor HTTP
     if let Some(port) = cfg.serve_port {
         serve(ServeConfig {
@@ -470,92 +457,32 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         return Ok(0);
     }
 
-    // Detección de paralingüística inline + compose
-    let mut active_text = cfg.text.clone().unwrap_or_default();
-    let mut compose_spec = cfg.compose_spec.clone();
-    let mut resolved_seed = cfg.seed;
-    let mut resolved_temp = cfg.temperature;
-
-    if compose_spec.is_none() && !active_text.is_empty() {
-        let prep = prepare_markup_06b(
-            &active_text,
-            cfg.no_compose,
-            if cfg.seed_set { cfg.seed } else { None },
-            if cfg.temp_set {
-                Some(cfg.temperature)
-            } else {
-                None
-            },
-            cfg.temperature,
-        );
-        active_text = prep.text;
-        if !cfg.seed_set && prep.did_para_substitute {
-            resolved_seed = Some(prep.seed);
-        }
-        resolved_temp = prep.temperature;
-        if prep.did_para_substitute && !cfg.silent {
-            eprintln!(
-                "Paralinguistics: inline [tag]->onomatopoeia (seed {}, T{:.1}): \"{}\"",
-                resolved_seed.unwrap_or(prep.seed),
-                resolved_temp,
-                active_text
-            );
-        }
-        if prep.use_compose {
-            compose_spec = Some(active_text.clone());
-            if !cfg.silent {
-                eprintln!("Inline markup detected in --text -> compose mode");
-            }
-        }
-    }
-
-    let final_seed = resolved_seed.unwrap_or_else(time_based_seed);
-    if !cfg.silent {
-        eprintln!(
-            "seed: {final_seed}{}",
-            if resolved_seed.is_some() { "" } else { " (auto/time-based)" }
-        );
-    }
-
-    let req_cfg = RequestConfig {
-        language_id,
-        temperature: resolved_temp,
-        top_k: cfg.top_k,
-        top_p: cfg.top_p,
-        rep_penalty: cfg.rep_penalty,
-        max_tokens,
-        greedy_warmup: cfg.greedy_warmup,
-        seed: final_seed,
-        stream_chunk_frames: cfg.stream_chunk.clamp(2, 250),
-        volume: cfg.volume,
-        rate: cfg.rate,
-        silent: cfg.silent,
-        debug: cfg.debug,
-        cp_roughness: cfg.roughness,
-    };
+    let (req_cfg, planned) = request::from_cli(&cfg, &voice);
 
     let mut scratch = SessionScratch::new();
 
     // Modo compose (sin streaming)
-    if let Some(ref spec) = compose_spec {
-        if !cfg.silent {
-            eprintln!("Compose mode: rendering spans...");
+    let active_text = match planned.script {
+        Script::Spans(spans) => {
+            if !cfg.silent {
+                eprintln!("Compose mode: rendering spans...");
+            }
+            let exec = RequestExecution::new(req_cfg);
+            let (mut audio, _) = render_spans_buffer(
+                &runtime,
+                &model,
+                &voice,
+                &mut scratch,
+                &exec,
+                &spans,
+                cfg.compose_pause,
+            )
+            .map_err(|e| e.to_string())?;
+            postprocess_and_write_wav(&cfg, &mut audio)?;
+            return Ok(0);
         }
-        let spans = MarkupPlanner::parse_spans(spec);
-        let exec = RequestExecution::new(req_cfg);
-        let (mut audio, _) = render_spans_buffer(
-            &runtime,
-            &model,
-            &voice,
-            &mut scratch,
-            &exec,
-            &spans,
-            cfg.compose_pause,
-        )
-        .map_err(|e| e.to_string())?;
-        postprocess_and_write_wav(&cfg, &mut audio)?;
-        return Ok(0);
-    }
+        Script::Plain(text) => text,
+    };
 
     // Modo CLI en streaming (--stream / --stdout)
     if cfg.stream {

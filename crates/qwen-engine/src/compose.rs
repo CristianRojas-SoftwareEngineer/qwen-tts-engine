@@ -3,8 +3,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use qwen_core::config::{DEFAULT_SEED, SAMPLE_RATE};
-use qwen_core::{MarkupPlanner, SpanSpec};
+use qwen_core::config::SAMPLE_RATE;
+use qwen_core::SpanSpec;
 use qwen_kernels::ComputeRuntime;
 
 use crate::audio::AudioSink;
@@ -12,55 +12,6 @@ use crate::error::EngineError;
 use crate::model::{Model06B, RequestExecution, SessionScratch};
 use crate::voice::Voice;
 use crate::pipeline::synthesize_to_samples;
-
-pub struct PreparedMarkup {
-    pub text: String,
-    pub did_para_substitute: bool,
-    pub use_compose: bool,
-    pub seed: u32,
-    pub temperature: f32,
-}
-
-/// Aplica sustitución inline de `[laugh]`/`[sigh]`/`[yawn]`/`[wow]`/`[giggle]`/`[scoff]`
-/// para `0.6B` y detecta si el marcado restante requiere composición multi-span.
-pub fn prepare_markup_06b(
-    text: &str,
-    no_compose: bool,
-    user_seed: Option<u32>,
-    user_temp: Option<f32>,
-    default_temp: f32,
-) -> PreparedMarkup {
-    if no_compose {
-        return PreparedMarkup {
-            text: text.to_string(),
-            did_para_substitute: false,
-            use_compose: false,
-            seed: user_seed.unwrap_or(DEFAULT_SEED),
-            temperature: user_temp.unwrap_or(default_temp),
-        };
-    }
-
-    let sub = MarkupPlanner::para_substitute(text);
-    let seed = user_seed.unwrap_or(if sub.did_substitute {
-        sub.seed
-    } else {
-        DEFAULT_SEED
-    });
-    let temperature = user_temp.unwrap_or(if sub.did_substitute {
-        sub.temperature
-    } else {
-        default_temp
-    });
-    let use_compose = MarkupPlanner::has_markup(&sub.text);
-
-    PreparedMarkup {
-        text: sub.text,
-        did_para_substitute: sub.did_substitute,
-        use_compose,
-        seed,
-        temperature,
-    }
-}
 
 #[allow(clippy::too_many_arguments)]
 fn synth_one_span_06b(

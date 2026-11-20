@@ -5,7 +5,8 @@
 
 use std::net::Ipv4Addr;
 
-use qwen_core::config::{CODEC_VOCAB_SIZE, DEFAULT_SEED, DEFAULT_TEMPERATURE};
+use qwen_core::config::CODEC_VOCAB_SIZE;
+use qwen_core::{SamplingParams, SeedChoice};
 
 /// Argumentos CLI parseados para el binario `qwen_tts`.
 #[derive(Debug, Clone)]
@@ -14,18 +15,16 @@ pub struct CliArgs {
     pub text: Option<String>,
     pub output: String,
     pub language: Option<String>,
-    /// Temperatura de muestreo (por defecto `DEFAULT_TEMPERATURE = 0.325`).
-    pub temperature: f32,
-    pub temp_set: bool,
+    /// Temperatura pedida con `-T`; `None` deja el valor por defecto (o el de la paralingüística).
+    pub temperature: Option<f32>,
     pub top_k: i32,
     pub top_p: f32,
     pub rep_penalty: f32,
     pub max_tokens: usize,
     pub max_duration: Option<f32>,
     pub threads: Option<usize>,
-    /// Semilla de muestreo (por defecto `Some(DEFAULT_SEED)` = `4`; un valor negativo en `--seed` activa semilla temporal).
-    pub seed: Option<u32>,
-    pub seed_set: bool,
+    /// Semilla pedida con `--seed` (un valor negativo activa semilla temporal).
+    pub seed: SeedChoice,
     pub greedy_warmup: usize,
 
     pub use_int8: bool,
@@ -74,22 +73,21 @@ pub struct CliArgs {
 
 impl Default for CliArgs {
     fn default() -> Self {
+        let sampling = SamplingParams::default();
         Self {
             model_dir: None,
             text: None,
             output: "output.wav".to_string(),
             language: None,
-            temperature: DEFAULT_TEMPERATURE,
-            temp_set: false,
-            top_k: 50,
-            top_p: 1.0,
-            rep_penalty: 1.05,
+            temperature: None,
+            top_k: sampling.top_k as i32,
+            top_p: sampling.top_p,
+            rep_penalty: sampling.rep_penalty,
             max_tokens: 8192,
             max_duration: None,
             threads: None,
-            seed: Some(DEFAULT_SEED),
-            seed_set: false,
-            greedy_warmup: 0,
+            seed: SeedChoice::Default,
+            greedy_warmup: sampling.greedy_warmup,
             use_int8: false,
             use_int4: false,
             quant_mixed: false,
@@ -275,9 +273,15 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                 out.language = Some(take_val(args, &mut i, inline_val, flag)?);
             }
             "-T" | "--temperature" => {
-                out.temperature =
-                    take_bounded_f32(args, &mut i, inline_val, flag, "temperature", 0.0, 2.0)?;
-                out.temp_set = true;
+                out.temperature = Some(take_bounded_f32(
+                    args,
+                    &mut i,
+                    inline_val,
+                    flag,
+                    "temperature",
+                    0.0,
+                    2.0,
+                )?);
             }
             "-k" | "--top-k" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
@@ -315,11 +319,9 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                     .parse::<i64>()
                     .map_err(|_| format!("Error: invalid seed '{s}'"))?;
                 if val < 0 {
-                    out.seed = None;
-                    out.seed_set = true;
+                    out.seed = SeedChoice::Clock;
                 } else if val <= u32::MAX as i64 {
-                    out.seed = Some(val as u32);
-                    out.seed_set = true;
+                    out.seed = SeedChoice::Fixed(val as u32);
                 } else {
                     return Err(format!("Error: seed {val} exceeds u32::MAX"));
                 }
@@ -530,15 +532,13 @@ mod tests {
         };
         assert!(cfg.stdout_pcm);
         assert!(cfg.stream);
-        assert_eq!(cfg.temperature, DEFAULT_TEMPERATURE);
-        assert_eq!(cfg.seed, Some(DEFAULT_SEED));
-        assert!(!cfg.seed_set);
+        assert_eq!(cfg.temperature, None);
+        assert_eq!(cfg.seed, SeedChoice::Default);
 
         let neg_seed = vec!["qwen_tts".to_string(), "--seed".to_string(), "-1".to_string()];
         let ParseOutcome::Run(neg_cfg) = parse_cli(&neg_seed).unwrap() else {
             panic!("expected Run");
         };
-        assert_eq!(neg_cfg.seed, None);
-        assert!(neg_cfg.seed_set);
+        assert_eq!(neg_cfg.seed, SeedChoice::Clock);
     }
 }

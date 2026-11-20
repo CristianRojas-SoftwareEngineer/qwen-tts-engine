@@ -25,9 +25,7 @@ pub use audio::{
     tail_glitch_score, tail_trim, time_stretch, trim_trailing_silence,
     validate_wav_path_or_header, write_wav, AudioSink, MemorySink, StdoutRawSink, StreamEdgeRamp, WavStreamSink,
 };
-pub use compose::{
-    prepare_markup_06b, render_spans_buffer, render_spans_stream, PreparedMarkup,
-};
+pub use compose::{render_spans_buffer, render_spans_stream};
 pub use error::EngineError;
 pub use model::{
     AbortHandle, Bf16Weight, CodePredictorWeights, F32Weight, Model06B, ModelLoadOptions,
