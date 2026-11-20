@@ -8,15 +8,17 @@ use std::net::TcpStream;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use qwen_core::config::{language_name, SAMPLE_RATE};
-use qwen_core::Script;
+use qwen_core::config::{effective_language, language_name, SAMPLE_RATE};
+use qwen_core::{PlannedScript, SamplingParams, Script};
 use qwen_engine::{
-    encode_wav_bytes, synthesize, AbortHandle, Delivery, EdgeRampSink, EngineError, MemorySink,
-    Model06B, PcmWrite, SessionScratch, SynthesisTiming, Voice,
+    encode_wav_bytes, synthesize, AbortHandle, Delivery, EdgeRampSink, EngineError, LogLevel,
+    MemorySink, Model06B, PcmWrite, SessionScratch, SynthesisOutput, SynthesisRequest,
+    SynthesisTiming, Voice,
 };
 use qwen_kernels::ComputeRuntime;
 
 use super::validation::ValidatedTtsRequest;
+use super::ServerContext;
 use crate::request::from_http;
 
 pub const MAX_HTTP_BODY: usize = 1024 * 1024;
@@ -346,30 +348,27 @@ impl PcmWrite for HttpChunkWriter<'_> {
 /// Fotogramas de la síntesis de calentamiento: el primer fragmento (2) y uno completo (10).
 const WARM_UP_FRAMES: usize = 12;
 
-/// Síntesis corta y descartada al arrancar un worker del servidor.
+/// Síntesis corta y descartada al arrancar el servidor (único calentamiento).
 ///
 /// Deja `scratch` (Talker, Code Predictor y decoder) dimensionado y en caliente, para que la
 /// primera petición no pague el arranque en frío (~60–80 ms de TTFA). No cambia el audio de
 /// las peticiones: cada una reinicia su estado y su semilla.
-pub fn warm_up_session(
+pub fn warm_up(
     runtime: &ComputeRuntime,
     model: &Model06B,
     voice: &Voice,
     scratch: &mut SessionScratch,
 ) {
-    let vreq = match ValidatedTtsRequest::parse(
-        r#"{"text":"Hello.","seed":1}"#,
-        true,
-        &voice.name,
-    ) {
-        Ok(v) => v,
-        Err(msg) => {
-            eprintln!("[HTTP] Calentamiento omitido: {msg}");
-            return;
-        }
+    let req = SynthesisRequest {
+        language_id: effective_language(None, voice.language_id),
+        sampling: SamplingParams {
+            seed: 1,
+            ..SamplingParams::default()
+        },
+        max_frames: WARM_UP_FRAMES,
+        log: LogLevel::Silent,
+        ..SynthesisRequest::default()
     };
-    let (mut req, planned) = from_http(&vreq, voice, true);
-    req.max_frames = WARM_UP_FRAMES;
     let abort = AbortHandle::new();
     let mut sink = MemorySink::new(0);
     let t0 = Instant::now();
@@ -380,7 +379,7 @@ pub fn warm_up_session(
         scratch,
         &req,
         &abort,
-        &Script::Plain(planned.text),
+        &Script::Plain("Hello.".to_string()),
         Delivery::Stream(&mut sink),
     ) {
         Ok(_) => eprintln!("[HTTP] Calentamiento: {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0),
@@ -388,65 +387,96 @@ pub fn warm_up_session(
     }
 }
 
-pub fn handle_tts_full(
-    runtime: &ComputeRuntime,
-    model: &Model06B,
-    voice: &Voice,
+/// Prepara la petición y registra la línea `[HTTP] TTS…` (`label` = `TTS` o `TTS stream`).
+fn prepare(
+    ctx: &ServerContext,
+    vreq: &ValidatedTtsRequest,
+    stream: bool,
+    label: &str,
+) -> (SynthesisRequest, PlannedScript) {
+    let (req, planned) = from_http(vreq, &ctx.voice, stream);
+    eprintln!(
+        "[HTTP] {label}: \"{}\" (voice={}, lang={}, seed={})",
+        planned.text, ctx.voice.name, req.language_id, req.sampling.seed
+    );
+    (req, planned)
+}
+
+/// Guarda de aborto ligada al socket; responde 500 si no se puede crear.
+fn abort_guard(stream: &mut TcpStream) -> Option<AbortGuard> {
+    match AbortGuard::for_socket(stream) {
+        Ok(g) => Some(g),
+        Err(_) => {
+            send_error(stream, 500, "internal socket error");
+            None
+        }
+    }
+}
+
+/// Única llamada a `synthesize` del servidor. `markup_label` es el texto del log de marcado en
+/// línea (`compose` o `compose stream`).
+fn run_synthesis(
+    ctx: &ServerContext,
+    scratch: &mut SessionScratch,
+    req: &SynthesisRequest,
+    script: &Script,
+    abort: &AbortHandle,
+    delivery: Delivery<'_>,
+    markup_label: &str,
+) -> Result<SynthesisOutput, EngineError> {
+    if let Script::Spans(spans) = script {
+        if spans.is_empty() {
+            return Err(EngineError::InvalidArg("markup parse failed".to_string()));
+        }
+        eprintln!(
+            "[HTTP] inline markup -> per-sentence {markup_label} ({} spans)",
+            spans.len()
+        );
+    }
+    synthesize(
+        &ctx.runtime,
+        &ctx.model,
+        &ctx.voice,
+        scratch,
+        req,
+        abort,
+        script,
+        delivery,
+    )
+}
+
+/// Desglose de tiempos: solo para texto plano (la composición no lo produce).
+fn plain_timing(script: &Script, out: &SynthesisOutput) -> Option<SynthesisTiming> {
+    matches!(script, Script::Plain(_)).then(|| out.timing.clone())
+}
+
+fn handle_tts_full(
+    ctx: &ServerContext,
     scratch: &mut SessionScratch,
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
-    let (req, planned) = from_http(vreq, voice, false);
-
-    eprintln!(
-        "[HTTP] TTS: \"{}\" (voice={}, lang={}, seed={})",
-        planned.text,
-        voice.name,
-        req.language_id,
-        req.sampling.seed
-    );
-
-    let guard = match AbortGuard::for_socket(stream) {
-        Ok(g) => g,
-        Err(_) => {
-            send_error(stream, 500, "internal socket error");
-            return;
-        }
+    let (req, planned) = prepare(ctx, vreq, false, "TTS");
+    let Some(guard) = abort_guard(stream) else {
+        return;
     };
 
     let t0 = Instant::now();
-    let mut timing_opt: Option<SynthesisTiming> = None;
-    let res = match &planned.script {
-        Script::Spans(spans) if spans.is_empty() => {
-            Err(EngineError::InvalidArg("markup parse failed".to_string()))
-        }
-        script => {
-            if let Script::Spans(spans) = script {
-                eprintln!(
-                    "[HTTP] inline markup -> per-sentence compose ({} spans)",
-                    spans.len()
-                );
-            }
-            synthesize(
-                runtime,
-                model,
-                voice,
-                scratch,
-                &req,
-                &guard.abort,
-                script,
-                Delivery::Buffer,
-            )
-            .map(|out| {
-                if matches!(script, Script::Plain(_)) {
-                    timing_opt = Some(out.timing);
-                }
-                out.samples.unwrap_or_default()
-            })
-        }
-    };
+    let res = run_synthesis(
+        ctx,
+        scratch,
+        &req,
+        &planned.script,
+        &guard.abort,
+        Delivery::Buffer,
+        "compose",
+    );
+    let timing_opt = res
+        .as_ref()
+        .ok()
+        .and_then(|o| plain_timing(&planned.script, o));
 
-    let samples = match res {
+    let samples = match res.map(|o| o.samples.unwrap_or_default()) {
         Ok(s) if !s.is_empty() => s,
         Err(EngineError::Aborted) => {
             eprintln!(
@@ -477,30 +507,15 @@ pub fn handle_tts_full(
     }
 }
 
-pub fn handle_tts_stream(
-    runtime: &ComputeRuntime,
-    model: &Model06B,
-    voice: &Voice,
+fn handle_tts_stream(
+    ctx: &ServerContext,
     scratch: &mut SessionScratch,
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
-    let (req, planned) = from_http(vreq, voice, true);
-
-    eprintln!(
-        "[HTTP] TTS stream: \"{}\" (voice={}, lang={}, seed={})",
-        planned.text,
-        voice.name,
-        req.language_id,
-        req.sampling.seed
-    );
-
-    let guard = match AbortGuard::for_socket(stream) {
-        Ok(g) => g,
-        Err(_) => {
-            send_error(stream, 500, "internal socket error");
-            return;
-        }
+    let (req, planned) = prepare(ctx, vreq, true, "TTS stream");
+    let Some(guard) = abort_guard(stream) else {
+        return;
     };
 
     if send_chunked_header(stream).is_err() {
@@ -508,38 +523,21 @@ pub fn handle_tts_stream(
     }
 
     let t0 = Instant::now();
-
     let mut chunk_sink = EdgeRampSink::new(HttpChunkWriter::new(stream), SAMPLE_RATE as u32);
-
-    let mut timing_opt: Option<SynthesisTiming> = None;
-    let gen_res: Result<(), EngineError> = match &planned.script {
-        Script::Spans(spans) if spans.is_empty() => {
-            Err(EngineError::InvalidArg("markup parse failed".to_string()))
-        }
-        script => {
-            if let Script::Spans(spans) = script {
-                eprintln!(
-                    "[HTTP] inline markup -> per-sentence compose stream ({} spans)",
-                    spans.len()
-                );
-            }
-            synthesize(
-                runtime,
-                model,
-                voice,
-                scratch,
-                &req,
-                &guard.abort,
-                script,
-                Delivery::Stream(&mut chunk_sink),
-            )
-            .map(|out| {
-                if matches!(script, Script::Plain(_)) {
-                    timing_opt = Some(out.timing);
-                }
-            })
-        }
-    };
+    let res = run_synthesis(
+        ctx,
+        scratch,
+        &req,
+        &planned.script,
+        &guard.abort,
+        Delivery::Stream(&mut chunk_sink),
+        "compose stream",
+    );
+    let timing_opt = res
+        .as_ref()
+        .ok()
+        .and_then(|o| plain_timing(&planned.script, o));
+    let gen_res = res.map(|_| ());
 
     let total_samples = chunk_sink.total_samples();
     if gen_res.is_err() || total_samples == 0 {
@@ -564,10 +562,10 @@ pub fn handle_tts_stream(
     }
 }
 
+/// Único manejo de rutas: `/v1/health`, `/v1/voices`, `/v1/tts`, `/v1/tts/stream` y
+/// `/v1/audio/speech`.
 pub fn handle_connection(
-    runtime: &ComputeRuntime,
-    model: &Model06B,
-    voice: &Voice,
+    ctx: &ServerContext,
     scratch: &mut SessionScratch,
     mut stream: TcpStream,
     peer_ip: &str,
@@ -592,26 +590,17 @@ pub fn handle_connection(
         return;
     }
 
-    let voice_name = voice.name.as_str();
-
-    match (req.method.as_str(), req.path.as_str()) {
-        ("GET", "/v1/health") => handle_health(&mut stream),
-        ("GET", "/v1/voices") => handle_voices(&mut stream, voice),
-        ("POST", "/v1/tts") | ("POST", "/v1/audio/speech") => {
-            match ValidatedTtsRequest::parse(&req.body, false, voice_name) {
-                Ok(vreq) => handle_tts_full(runtime, model, voice, scratch, &mut stream, &vreq),
-                Err(msg) => send_error(&mut stream, 400, &msg),
-            }
-        }
-        ("POST", "/v1/tts/stream") => {
-            match ValidatedTtsRequest::parse(&req.body, true, voice_name) {
-                Ok(vreq) => {
-                    handle_tts_stream(runtime, model, voice, scratch, &mut stream, &vreq)
-                }
-                Err(msg) => send_error(&mut stream, 400, &msg),
-            }
-        }
-        _ => send_error(&mut stream, 404, "not found"),
+    let is_stream = match (req.method.as_str(), req.path.as_str()) {
+        ("GET", "/v1/health") => return handle_health(&mut stream),
+        ("GET", "/v1/voices") => return handle_voices(&mut stream, &ctx.voice),
+        ("POST", "/v1/tts") | ("POST", "/v1/audio/speech") => false,
+        ("POST", "/v1/tts/stream") => true,
+        _ => return send_error(&mut stream, 404, "not found"),
+    };
+    match ValidatedTtsRequest::parse(&req.body, is_stream, &ctx.voice.name) {
+        Ok(vreq) if is_stream => handle_tts_stream(ctx, scratch, &mut stream, &vreq),
+        Ok(vreq) => handle_tts_full(ctx, scratch, &mut stream, &vreq),
+        Err(msg) => send_error(&mut stream, 400, &msg),
     }
 }
 

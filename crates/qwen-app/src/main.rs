@@ -28,7 +28,7 @@ use qwen_kernels::selftest::run_kernel_selftest;
 use qwen_kernels::ComputeRuntime;
 
 use cli::{parse_cli, print_usage, CliArgs, ParseOutcome};
-use server::{serve, ServeConfig};
+use server::{serve, ServerContext};
 
 fn spawn_stdin_watcher() -> Result<(), String> {
     thread::Builder::new()
@@ -442,13 +442,15 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
 
     // Modo servidor HTTP
     if let Some(port) = cfg.serve_port {
-        serve(ServeConfig {
-            runtime: Arc::clone(&runtime),
-            model: Arc::clone(&model),
-            voice: Arc::clone(&voice),
-            host: cfg.serve_host,
+        serve(
+            ServerContext {
+                runtime: Arc::clone(&runtime),
+                model: Arc::clone(&model),
+                voice: Arc::clone(&voice),
+            },
+            cfg.serve_host,
             port,
-        })?;
+        )?;
         return Ok(0);
     }
 
