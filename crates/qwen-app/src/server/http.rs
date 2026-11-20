@@ -402,14 +402,14 @@ const WARM_UP_FRAMES: usize = 12;
 pub fn warm_up_session(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    base_voice: &VoiceBindings,
+    voice: &VoiceBindings,
     voice_language_id: Option<i32>,
     scratch: &mut SessionScratch,
 ) {
     let vreq = match ValidatedTtsRequest::parse(
         r#"{"text":"Hello.","seed":1}"#,
         true,
-        &base_voice.name,
+        &voice.name,
         voice_language_id,
     ) {
         Ok(v) => v,
@@ -426,7 +426,7 @@ pub fn warm_up_session(
     match synthesize_to_sink(
         runtime,
         model,
-        base_voice,
+        voice,
         scratch,
         &exec,
         &ctx.prep.text,
@@ -454,7 +454,6 @@ fn build_http_exec(
             max_tokens: 8192,
             greedy_warmup: 0,
             seed: effective_seed,
-            stream: is_stream,
             stream_chunk_frames: if is_stream { vreq.chunk_frames } else { 10 },
             volume: vreq.volume,
             rate: if is_stream { 1.0 } else { vreq.rate },
@@ -469,20 +468,19 @@ fn build_http_exec(
 pub fn handle_tts_full(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    base_voice: &VoiceBindings,
+    voice: &VoiceBindings,
     scratch: &mut SessionScratch,
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
     let ctx = prepare_http_tts(vreq);
-    let voice_ref = base_voice;
     let prep = ctx.prep;
     let effective_seed = ctx.effective_seed;
 
     eprintln!(
         "[HTTP] TTS: \"{}\" (voice={}, lang={}, seed={})",
         prep.text,
-        base_voice.name,
+        voice.name,
         vreq.language_id.unwrap_or(0),
         effective_seed
     );
@@ -505,13 +503,13 @@ pub fn handle_tts_full(
                 "[HTTP] inline markup -> per-sentence compose ({} spans)",
                 spans.len()
             );
-            render_spans_buffer(runtime, model, voice_ref, scratch, &exec, &spans, 0.12)
+            render_spans_buffer(runtime, model, voice, scratch, &exec, &spans, 0.12)
                 .map(|(buf, _)| buf)
         } else {
             Err(EngineError::InvalidArg("markup parse failed".to_string()))
         }
     } else {
-        synthesize_to_samples(runtime, model, voice_ref, scratch, &exec, &prep.text).map(
+        synthesize_to_samples(runtime, model, voice, scratch, &exec, &prep.text).map(
             |(buf, timing)| {
                 timing_opt = Some(timing);
                 buf
@@ -553,20 +551,19 @@ pub fn handle_tts_full(
 pub fn handle_tts_stream(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    base_voice: &VoiceBindings,
+    voice: &VoiceBindings,
     scratch: &mut SessionScratch,
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
     let ctx = prepare_http_tts(vreq);
-    let voice_ref = base_voice;
     let prep = ctx.prep;
     let effective_seed = ctx.effective_seed;
 
     eprintln!(
         "[HTTP] TTS stream: \"{}\" (voice={}, lang={}, seed={})",
         prep.text,
-        base_voice.name,
+        voice.name,
         vreq.language_id.unwrap_or(0),
         effective_seed
     );
@@ -599,7 +596,7 @@ pub fn handle_tts_stream(
             render_spans_stream(
                 runtime,
                 model,
-                voice_ref,
+                voice,
                 scratch,
                 &exec,
                 &spans,
@@ -614,7 +611,7 @@ pub fn handle_tts_stream(
         synthesize_to_sink(
             runtime,
             model,
-            voice_ref,
+            voice,
             scratch,
             &exec,
             &prep.text,
@@ -650,7 +647,7 @@ pub fn handle_tts_stream(
 pub fn handle_connection(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    base_voice: &VoiceBindings,
+    voice: &VoiceBindings,
     voice_language_id: Option<i32>,
     scratch: &mut SessionScratch,
     mut stream: TcpStream,
@@ -676,21 +673,21 @@ pub fn handle_connection(
         return;
     }
 
-    let voice_name = base_voice.name.as_str();
+    let voice_name = voice.name.as_str();
 
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/v1/health") => handle_health(&mut stream),
-        ("GET", "/v1/voices") => handle_voices(&mut stream, base_voice, voice_language_id),
+        ("GET", "/v1/voices") => handle_voices(&mut stream, voice, voice_language_id),
         ("POST", "/v1/tts") | ("POST", "/v1/audio/speech") => {
             match ValidatedTtsRequest::parse(&req.body, false, voice_name, voice_language_id) {
-                Ok(vreq) => handle_tts_full(runtime, model, base_voice, scratch, &mut stream, &vreq),
+                Ok(vreq) => handle_tts_full(runtime, model, voice, scratch, &mut stream, &vreq),
                 Err(msg) => send_error(&mut stream, 400, &msg),
             }
         }
         ("POST", "/v1/tts/stream") => {
             match ValidatedTtsRequest::parse(&req.body, true, voice_name, voice_language_id) {
                 Ok(vreq) => {
-                    handle_tts_stream(runtime, model, base_voice, scratch, &mut stream, &vreq)
+                    handle_tts_stream(runtime, model, voice, scratch, &mut stream, &vreq)
                 }
                 Err(msg) => send_error(&mut stream, 400, &msg),
             }

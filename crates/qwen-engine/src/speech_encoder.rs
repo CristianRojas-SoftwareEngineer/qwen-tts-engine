@@ -61,13 +61,15 @@ pub struct SpeechEncoderWeights {
 }
 
 impl SpeechEncoderWeights {
-    pub fn load_opt(
+    pub fn load(
         store: &MmapStore,
         codebooks: Arc<[AlignedBuf<f32>; NUM_CODEBOOKS]>,
         silent: bool,
-    ) -> Result<Option<Self>, EngineError> {
+    ) -> Result<Self, EngineError> {
         if !store.contains("encoder.encoder.layers.0.conv.weight") {
-            return Ok(None);
+            return Err(EngineError::Model(
+                "the checkpoint has no speech encoder (the Base model is required)".to_string(),
+            ));
         }
         let req = |name: &str| -> Result<F32Ref, EngineError> { Ok(store.tensor_f32_ref(name)?) };
         let opt = |name: &str| -> Result<Option<F32Ref>, EngineError> {
@@ -171,7 +173,7 @@ impl SpeechEncoderWeights {
             eprintln!("  Speech encoder: 15/15 components loaded");
         }
 
-        Ok(Some(Self {
+        Ok(Self {
             initial_conv,
             resblocks,
             stride_convs,
@@ -183,7 +185,7 @@ impl SpeechEncoderWeights {
             rope_cos: AlignedBuf::from_slice(&cos_v),
             rope_sin: AlignedBuf::from_slice(&sin_v),
             codebooks,
-        }))
+        })
     }
 }
 

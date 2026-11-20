@@ -63,7 +63,7 @@ pub const DEC_UPSAMPLE_RATES: [usize; 4] = [8, 5, 4, 3];
 pub const DEC_UPSAMPLE_CHANNELS: [usize; 4] = [768, 384, 192, 96];
 pub const DEC_CONVNEXT_RATIOS: [usize; 2] = [2, 2];
 
-// Speaker Encoder (0.6B-Base)
+// Speaker Encoder
 pub const ENC_DIM: usize = 1024;
 pub const MEL_DIM: usize = 128;
 
@@ -145,7 +145,6 @@ struct RawTalkerConfig {
     text_vocab_size: Option<usize>,
     vocab_size: Option<usize>,
     rms_norm_eps: Option<f32>,
-    rope_theta: Option<f32>,
     code_predictor_config: RawCpConfig,
 }
 
@@ -161,9 +160,7 @@ struct RawCpConfig {
 
 #[derive(Debug, Clone)]
 pub struct ModelConfig06B {
-    pub tts_model_type: String,
     pub rms_norm_eps: f32,
-    pub rope_theta: f32,
 }
 
 impl ModelConfig06B {
@@ -265,27 +262,26 @@ impl ModelConfig06B {
                     .to_string(),
             ));
         }
-        if let Some(sec) = &raw.speaker_encoder_config {
-            if let Some(ed) = sec.enc_dim {
-                if ed != ENC_DIM {
-                    return Err(CoreError::InvalidConfig(format!(
-                        "Unsupported speaker_encoder enc_dim={ed} (expected {ENC_DIM})"
-                    )));
-                }
+        let sec = raw.speaker_encoder_config.as_ref().ok_or_else(|| {
+            CoreError::InvalidConfig("Missing speaker_encoder_config".to_string())
+        })?;
+        if let Some(ed) = sec.enc_dim {
+            if ed != ENC_DIM {
+                return Err(CoreError::InvalidConfig(format!(
+                    "Unsupported speaker_encoder enc_dim={ed} (expected {ENC_DIM})"
+                )));
             }
-            if let Some(sr) = sec.sample_rate {
-                if sr != SAMPLE_RATE {
-                    return Err(CoreError::InvalidConfig(format!(
-                        "Unsupported speaker_encoder sample_rate={sr} (expected {SAMPLE_RATE})"
-                    )));
-                }
+        }
+        if let Some(sr) = sec.sample_rate {
+            if sr != SAMPLE_RATE {
+                return Err(CoreError::InvalidConfig(format!(
+                    "Unsupported speaker_encoder sample_rate={sr} (expected {SAMPLE_RATE})"
+                )));
             }
         }
 
         Ok(Self {
-            tts_model_type,
             rms_norm_eps: tc.rms_norm_eps.unwrap_or(RMS_NORM_EPS),
-            rope_theta: tc.rope_theta.unwrap_or(ROPE_THETA),
         })
     }
 }

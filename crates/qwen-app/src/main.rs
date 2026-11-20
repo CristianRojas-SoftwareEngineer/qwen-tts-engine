@@ -186,7 +186,7 @@ fn resolve_voice(
     let voice = if let Some(ref ref_audio_path) = cfg.ref_audio {
         let save_opts = SaveVoiceOptions {
             ref_text: cfg.ref_text.as_deref(),
-            xvector_only: cfg.xvector_only || cfg.ref_text.is_none(),
+            xvector_only: cfg.xvector_only,
             icl_frames_cap: cfg.icl_frames,
             max_ref_seconds: cfg.max_ref_duration,
             language: cfg.language.as_deref(),
@@ -521,7 +521,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         max_tokens,
         greedy_warmup: cfg.greedy_warmup,
         seed: final_seed,
-        stream: cfg.stream,
         stream_chunk_frames: cfg.stream_chunk.clamp(2, 250),
         volume: cfg.volume,
         rate: cfg.rate,

@@ -145,7 +145,6 @@ pub(crate) fn build_step_embed(
     model: &Model06B,
     code0: i32,
     cp_codes: &[i32],
-    tts_pad: &[f32],
     out: &mut [f32],
 ) {
     lookup_codec_embed(dispatch, model, code0, out);
@@ -156,6 +155,7 @@ pub(crate) fn build_step_embed(
             dispatch.bf16_accum_f32(out, emb);
         }
     }
+    let tts_pad = model.cached_tts_pad_embed.as_slice();
     for (dst, &pad) in out[..HIDDEN_SIZE].iter_mut().zip(tts_pad[..HIDDEN_SIZE].iter()) {
         *dst += pad;
     }
@@ -466,12 +466,6 @@ pub fn synthesize_to_sink(
     sink: &mut (dyn AudioSink + Send),
 ) -> Result<SynthesisTiming, EngineError> {
     let req = &exec.config;
-    if req.stream && (req.rate - 1.0).abs() > 1e-4 {
-        return Err(EngineError::InvalidArg(
-            "--rate != 1.0 cannot be combined with --stream".to_string(),
-        ));
-    }
-
     let t_start = Instant::now();
     scratch.rng = LcgRng::new(req.seed);
 
@@ -480,9 +474,9 @@ pub fn synthesize_to_sink(
 
     if !req.silent {
         eprintln!(
-            "Text: \"{}\" (template: {} BPE tokens, text_content: {})",
+            "Text: \"{}\" (prompt: {} positions, text_content: {})",
             text,
-            text_content_len + 8,
+            prefill_len,
             text_content_len
         );
         eprintln!(
@@ -677,8 +671,6 @@ pub fn synthesize_to_sink(
             }
         });
 
-        let tts_pad_embed = model.cached_tts_pad_embed.as_slice();
-
         for frame in 0..max_frames {
             if exec.abort.is_cancelled() {
                 queue.aborted.store(true, Ordering::Release);
@@ -758,7 +750,6 @@ pub fn synthesize_to_sink(
                 model,
                 code0,
                 &codes[1..16],
-                tts_pad_embed,
                 &mut scratch.talker_bufs.step_embed,
             );
 

@@ -159,7 +159,7 @@ pub fn print_usage(prog: &str) {
     eprintln!("  --seed <n>                 Random seed (default: 4; < 0 for time-based)");
     eprintln!("  --greedy-warmup <n>        First n frames greedy (T=0, k=1)");
     eprintln!("  --max-duration <secs>      Max audio duration in seconds");
-    eprintln!("  --ref-audio <path>         Reference 24 kHz mono WAV for voice cloning (0.6B-Base)");
+    eprintln!("  --ref-audio <path>         Reference 24 kHz mono WAV for voice cloning");
     eprintln!("  --ref-text <string>        Transcript of --ref-audio for ICL cloning");
     eprintln!("  --xvector-only             Use speaker embedding only (no ICL)");
     eprintln!("  --save-voice <path>        Save voice (.qvoice)");

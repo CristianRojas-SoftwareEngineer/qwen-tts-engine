@@ -29,6 +29,8 @@ use crate::error::EngineError;
 use crate::speech_encoder::SpeechEncoderWeights;
 use crate::voice_clone::SpeakerEncoderWeights;
 
+/// Fila del embedding de códec cuya norma L2 fija la escala de referencia de la huella del locutor.
+pub const SPK_REF_CODEC_ROW: usize = 3061;
 pub const KV_INITIAL_POSITIONS: usize = 256;
 pub const ROPE_MAX_POS: usize = 8192;
 pub const CP_KV_MAX_POS: usize = 64;
@@ -494,12 +496,12 @@ pub struct Model06B {
     pub talker: TalkerWeights,
     pub cp: CodePredictorWeights,
     pub decoder: SpeechDecoderWeights,
-    pub speaker_encoder: Option<Arc<SpeakerEncoderWeights>>,
-    pub speech_encoder: Option<Arc<SpeechEncoderWeights>>,
+    pub speaker_encoder: Arc<SpeakerEncoderWeights>,
+    pub speech_encoder: Arc<SpeechEncoderWeights>,
     pub cached_tts_pad_embed: AlignedBuf<f32>,
     pub cached_tts_bos_embed: AlignedBuf<f32>,
     pub cached_tts_eos_embed: AlignedBuf<f32>,
-    /// Norma L2 de la fila 3061 del embedding de códec, referencia de escala de la huella.
+    /// Norma L2 de la fila `SPK_REF_CODEC_ROW` del embedding de códec, referencia de escala de la huella.
     pub spk_ref_norm: f32,
 }
 
@@ -1057,7 +1059,6 @@ pub struct RequestConfig {
     pub greedy_warmup: usize,
     /// Semilla inicial del LCG (por defecto `DEFAULT_SEED = 4`).
     pub seed: u32,
-    pub stream: bool,
     pub stream_chunk_frames: usize,
     pub volume: f32,
     pub rate: f32,
@@ -1077,7 +1078,6 @@ impl Default for RequestConfig {
             max_tokens: 8192,
             greedy_warmup: 0,
             seed: DEFAULT_SEED,
-            stream: false,
             stream_chunk_frames: 10,
             volume: 1.0,
             rate: 1.0,
@@ -1423,23 +1423,21 @@ impl Model06B {
         let talker = Self::load_talker(&main_store, tk_prec, opts.silent)?;
         let cp = Self::load_cp(&main_store, cp_prec, opts.silent)?;
         let decoder = Self::load_decoder(&speech_store, opts.silent)?;
-        let speaker_encoder =
-            SpeakerEncoderWeights::load_opt(&main_store, opts.silent)?.map(Arc::new);
-        let speech_encoder = SpeechEncoderWeights::load_opt(
+        let speaker_encoder = Arc::new(SpeakerEncoderWeights::load(&main_store, opts.silent)?);
+        let speech_encoder = Arc::new(SpeechEncoderWeights::load(
             &speech_store,
             Arc::clone(&decoder.codebooks),
             opts.silent,
-        )?
-        .map(Arc::new);
+        )?);
 
         let (cached_tts_pad_embed, cached_tts_bos_embed, cached_tts_eos_embed) =
             compute_special_text_embeds(runtime, &talker);
 
-        // Norma L2 de la fila 3061 del embedding de códec, referencia de escala de la huella.
+        // Norma L2 de la fila `SPK_REF_CODEC_ROW` del embedding de códec: escala de referencia de la huella.
         let mut spk_ref_tmp = [0.0f32; HIDDEN_SIZE];
         runtime.dispatch.bf16_to_f32_vec(
             &mut spk_ref_tmp,
-            &talker.codec_embedding_bf16[3061 * HIDDEN_SIZE..3062 * HIDDEN_SIZE],
+            &talker.codec_embedding_bf16[SPK_REF_CODEC_ROW * HIDDEN_SIZE..(SPK_REF_CODEC_ROW + 1) * HIDDEN_SIZE],
         );
         let spk_ref_norm = spk_ref_tmp.iter().map(|&v| v * v).sum::<f32>().sqrt();
 
@@ -1460,29 +1458,6 @@ impl Model06B {
             cached_tts_eos_embed,
             spk_ref_norm,
         })
-    }
-
-    pub fn weights_have_q4(&self) -> bool {
-        for l in &self.talker.layers {
-            if matches!(l.wq_q, Some(QuantWeight::Q4_0(_)))
-                || matches!(l.gate_up_q, Some(QuantWeight::Q4_0(_)))
-            {
-                return true;
-            }
-        }
-        for l in &self.cp.layers {
-            if matches!(l.wq_q, Some(QuantWeight::Q4_0(_)))
-                || matches!(l.gate_up_q, Some(QuantWeight::Q4_0(_)))
-            {
-                return true;
-            }
-        }
-        for h in &self.cp.lm_heads {
-            if matches!(h.quant, Some(QuantWeight::Q4_0(_))) {
-                return true;
-            }
-        }
-        false
     }
 
     fn load_talker(

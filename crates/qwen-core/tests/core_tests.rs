@@ -43,7 +43,7 @@ fn load_synthetic(name: &str, config_json: &str) -> Result<ModelConfig06B, qwen_
 fn test_config_only_base_loads_and_rejects_others() {
     // Base carga (sin distinguir mayúsculas en `tts_model_type`)
     let cfg = load_synthetic("base_ok", &synthetic_config("base", true)).expect("Base valid");
-    assert_eq!(cfg.tts_model_type, "base");
+    assert_eq!(cfg.rms_norm_eps, qwen_core::config::RMS_NORM_EPS);
     load_synthetic("base_upper", &synthetic_config("BASE", true)).expect("BASE valid");
 
     // CustomVoice se rechaza con el mensaje exacto
@@ -70,7 +70,7 @@ fn test_config_only_base_loads_and_rejects_others() {
     let base_dir = repo_root().join("models/qwen3-tts-0.6b-base");
     if base_dir.exists() {
         let cfg_base = ModelConfig06B::load_and_validate(&base_dir).expect("0.6b Base valid");
-        assert_eq!(cfg_base.tts_model_type, "base");
+        assert_eq!(cfg_base.rms_norm_eps, qwen_core::config::RMS_NORM_EPS);
     } else {
         eprintln!("Skipping real Base config check (model absent)");
     }

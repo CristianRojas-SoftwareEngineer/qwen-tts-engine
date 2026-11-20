@@ -44,9 +44,11 @@ pub struct SpeakerEncoderWeights {
 }
 
 impl SpeakerEncoderWeights {
-    pub fn load_opt(store: &MmapStore, silent: bool) -> Result<Option<Self>, EngineError> {
+    pub fn load(store: &MmapStore, silent: bool) -> Result<Self, EngineError> {
         if !store.contains("speaker_encoder.blocks.0.conv.weight") {
-            return Ok(None);
+            return Err(EngineError::Model(
+                "the checkpoint has no speaker encoder (the Base model is required)".to_string(),
+            ));
         }
         let req = |name: &str| -> Result<F32Ref, EngineError> { Ok(store.tensor_f32_ref(name)?) };
         let block0_conv_w = req("speaker_encoder.blocks.0.conv.weight")?;
@@ -107,7 +109,7 @@ impl SpeakerEncoderWeights {
             eprintln!("  Speaker encoder (ECAPA-TDNN): loaded (enc_dim={ENC_DIM}, mel_dim={MEL_DIM})");
         }
 
-        Ok(Some(Self {
+        Ok(Self {
             block0_conv_w,
             block0_conv_b,
             se_blocks,
@@ -119,7 +121,7 @@ impl SpeakerEncoderWeights {
             asp_conv_b,
             fc_w,
             fc_b,
-        }))
+        })
     }
 }
 
@@ -865,34 +867,24 @@ pub fn build_voice_from_ref_audio(
             )));
         }
     }
-    let spk_enc = model.speaker_encoder.as_ref().ok_or_else(|| {
-        EngineError::InvalidArg(
-            "Error: the model has no speaker encoder (--ref-audio requires the Base model)"
-                .to_string(),
-        )
-    })?;
     let audio = load_and_trim_ref_audio(ref_audio_path, opts.max_ref_seconds, opts.silent)?;
     let (mel, n_frames) = mel_spectrogram(&audio, SAMPLE_RATE)?;
     if !opts.silent {
         eprintln!("Mel spectrogram: {n_frames} frames x {MEL_DIM} mels");
     }
-    let speaker_embedding = speaker_encoder_forward(runtime, spk_enc, &mel, n_frames);
+    let speaker_embedding = speaker_encoder_forward(runtime, &model.speaker_encoder, &mel, n_frames);
 
     let need_icl = !opts.xvector_only && opts.ref_text.is_some_and(|t| !t.is_empty());
     let mut ref_codes = Vec::new();
     let mut n_ref_frames = 0usize;
 
     if need_icl {
-        if let Some(enc) = model.speech_encoder.as_ref() {
-            let (codes, frames) =
-                speech_encoder_encode(runtime, enc, &audio, opts.debug, opts.silent)?;
-            ref_codes = codes;
-            n_ref_frames = frames;
-            if !opts.silent {
-                eprintln!("Encoded ref audio: {n_ref_frames} ICL frames");
-            }
-        } else if !opts.silent {
-            eprintln!("Warning: speech encoder unavailable, falling back to x-vector only");
+        let (codes, frames) =
+            speech_encoder_encode(runtime, &model.speech_encoder, &audio, opts.debug, opts.silent)?;
+        ref_codes = codes;
+        n_ref_frames = frames;
+        if !opts.silent {
+            eprintln!("Encoded ref audio: {n_ref_frames} ICL frames");
         }
     }
 
@@ -933,7 +925,7 @@ pub fn build_voice_from_ref_audio(
             .to_string(),
     };
 
-    let identity = if !ref_codes.is_empty() && !opts.xvector_only {
+    let identity = if !ref_codes.is_empty() {
         VoiceIdentity::Icl {
             speaker_embedding,
             ref_text,

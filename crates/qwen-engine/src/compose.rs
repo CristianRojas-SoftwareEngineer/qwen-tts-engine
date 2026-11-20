@@ -94,8 +94,7 @@ fn synth_one_span_06b(
             1.0
         };
     }
-    // Cada span compuesto ejecuta prefill frío sin streaming hacia MemorySink y luego DSP.
-    span_cfg.stream = false;
+    // Cada span compuesto ejecuta prefill frío hacia MemorySink y luego DSP.
     let span_exec = RequestExecution {
         config: span_cfg,
         abort: exec.abort.clone(),
