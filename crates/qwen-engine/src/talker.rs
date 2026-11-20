@@ -10,6 +10,7 @@ use qwen_kernels::{AlignedBuf, ComputeRuntime, Transpose};
 
 use crate::error::EngineError;
 use crate::model::{Model06B, SessionScratch, TransformerLayerWeights};
+use crate::request::LogLevel;
 
 /// Elementos F32 del bloque de pesos convertidos del *prefill* (4 MiB).
 ///
@@ -92,13 +93,12 @@ pub fn talker_prefill(
     scratch: &mut SessionScratch,
     input_embeds: &[f32],
     seq_len: usize,
-    silent: bool,
-    debug: bool,
+    log: LogLevel,
 ) -> Result<(), EngineError> {
     let eps = model.config.rms_norm_eps;
     let d = runtime.dispatch;
 
-    if !silent {
+    if !log.is_silent() {
         eprintln!("  Prefill:{} tokens, hidden={}", seq_len, HIDDEN_SIZE);
     }
     if seq_len > model.talker.rope_cos.len() / (HEAD_DIM / 2) {
@@ -242,7 +242,7 @@ pub fn talker_prefill(
         );
         d.add_inplace(residual, pref_proj);
 
-        if debug {
+        if log.is_debug() {
             eprintln!(
                 "  Layer {}/{} done res[:4]=[{:.4},{:.4},{:.4},{:.4}]",
                 layer_idx + 1,
@@ -259,7 +259,7 @@ pub fn talker_prefill(
     tb.dec_x[..HIDDEN_SIZE]
         .copy_from_slice(&residual[(seq_len - 1) * HIDDEN_SIZE..seq_len * HIDDEN_SIZE]);
 
-    if debug {
+    if log.is_debug() {
         eprint!("[PREFILL] last_hidden[:8]:");
         for v in &tb.dec_x[..8] {
             eprint!(" {:.6}", v);
@@ -267,7 +267,7 @@ pub fn talker_prefill(
         eprintln!();
     }
 
-    if !silent {
+    if !log.is_silent() {
         eprintln!("  Prefill complete ({seq_len} tokens in KV cache)");
     }
     Ok(())

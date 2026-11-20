@@ -7,6 +7,7 @@ use std::net::Ipv4Addr;
 
 use qwen_core::config::CODEC_VOCAB_SIZE;
 use qwen_core::{SamplingParams, SeedChoice};
+use qwen_engine::{DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES};
 
 /// Argumentos CLI parseados para el binario `qwen_tts`.
 #[derive(Debug, Clone)]
@@ -83,7 +84,7 @@ impl Default for CliArgs {
             top_k: sampling.top_k as i32,
             top_p: sampling.top_p,
             rep_penalty: sampling.rep_penalty,
-            max_tokens: 8192,
+            max_tokens: DEFAULT_MAX_FRAMES,
             max_duration: None,
             threads: None,
             seed: SeedChoice::Default,
@@ -93,7 +94,7 @@ impl Default for CliArgs {
             quant_mixed: false,
             stream: false,
             stdout_pcm: false,
-            stream_chunk: 10,
+            stream_chunk: DEFAULT_CHUNK_FRAMES,
             volume: 1.0,
             rate: 1.0,
             ref_audio: None,
@@ -106,7 +107,7 @@ impl Default for CliArgs {
             max_ref_duration: 30.0,
             roughness: 0.0,
             compose_spec: None,
-            compose_pause: 0.12,
+            compose_pause: DEFAULT_COMPOSE_PAUSE_S,
             no_compose: false,
             serve_port: None,
             serve_host: Ipv4Addr::new(127, 0, 0, 1),
@@ -144,14 +145,14 @@ pub fn print_usage(prog: &str) {
     eprintln!("  -k, --top-k <int>          Top-k sampling (default: 50)");
     eprintln!("  -p, --top-p <float>        Top-p sampling (default: 1.0)");
     eprintln!("  -r, --rep-penalty <float>  Repetition penalty (default: 1.05)");
-    eprintln!("  -m, --max-tokens <int>     Max tokens (default: 8192)");
+    eprintln!("  -m, --max-tokens <int>     Max tokens (default: {DEFAULT_MAX_FRAMES})");
     eprintln!("  -j, --threads <int>        Number of threads (0=auto)");
     eprintln!("  --int8                     INT8 quantized Talker + Code Predictor");
     eprintln!("  --int4                     Q4_0 quantized Talker + Code Predictor");
     eprintln!("  --quant-mixed              Q4_0 Talker + CP with INT8 attention and Q4_0 FFN");
     eprintln!("  --stream                   Stream audio progressively to WAV");
     eprintln!("  --stdout                   Output raw s16le PCM to stdout (implies --stream)");
-    eprintln!("  --stream-chunk <n>         Max frames per stream chunk (2..250, default: 10)");
+    eprintln!("  --stream-chunk <n>         Max frames per stream chunk (2..250, default: {DEFAULT_CHUNK_FRAMES})");
     eprintln!("  --volume <f>               Output gain (default: 1.0)");
     eprintln!("  --rate <f>                 Speaking rate, pitch-preserving (default: 1.0)");
     eprintln!("  --seed <n>                 Random seed (default: 4; < 0 for time-based)");
@@ -169,7 +170,7 @@ pub fn print_usage(prog: &str) {
     eprintln!("  --delete-voice <path>      Delete a .qvoice file");
     eprintln!("  --roughness <0..1>         Code Predictor Q2_0 down_proj blend");
     eprintln!("  --compose <spec>           Inline markup multi-span synthesis");
-    eprintln!("  --compose-pause <s>        Default pause between spoken spans (default: 0.12)");
+    eprintln!("  --compose-pause <s>        Default pause between spoken spans (default: {DEFAULT_COMPOSE_PAUSE_S})");
     eprintln!("  --no-compose               Pass [tags] literally to the model");
     eprintln!("  --serve <port>             Start HTTP server on port");
     eprintln!("  --host <ipv4>              Bind IPv4 address (default: 127.0.0.1)");

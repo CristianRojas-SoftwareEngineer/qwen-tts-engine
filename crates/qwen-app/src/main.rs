@@ -18,10 +18,10 @@ use std::thread;
 use qwen_core::config::{language_name, lookup_language, FRAME_RATE, SAMPLE_RATE};
 use qwen_core::{QVoiceFile, Script};
 use qwen_engine::{
-    clone_voice, ensure_qvoice_path, onset_fade, render_spans_buffer, synthesize_to_samples, synthesize_to_sink,
-    tail_glitch_score, tail_trim, validate_wav_path_or_header, write_wav,
-    CloneOptions, Model06B, ModelLoadOptions, RequestConfig, RequestExecution,
-    SessionScratch, StdoutRawSink, Voice, VoiceLoadOptions, WavStreamSink,
+    clone_voice, ensure_qvoice_path, finish_full_delivery, render_spans_buffer, synthesize_to_samples,
+    synthesize_to_sink, tail_glitch_score, validate_wav_path_or_header, write_wav, AbortHandle,
+    CloneOptions, Model06B, ModelLoadOptions, SessionScratch, StdoutRawSink, SynthesisRequest,
+    Voice, VoiceLoadOptions, WavStreamSink,
 };
 use qwen_kernels::bench::run_matmat_bench;
 use qwen_kernels::selftest::run_kernel_selftest;
@@ -194,8 +194,7 @@ fn resolve_voice(
             name: cfg.voice_name.clone(),
             language_id: cli_language_id,
             icl_frames_cap: cfg.icl_frames,
-            silent: cfg.silent,
-            debug: cfg.debug,
+            log: request::log_level(cfg),
         };
         let (qv, voice) = clone_voice(runtime, model, Path::new(ref_audio_path), &clone_opts)
             .map_err(|e| e.to_string())?;
@@ -216,7 +215,7 @@ fn resolve_voice(
             ref_text_override: cfg.ref_text.clone(),
             use_icl: !cfg.xvector_only,
             icl_frames_cap: cfg.icl_frames,
-            silent: cfg.silent,
+            log: request::log_level(cfg),
         };
         let v = Voice::load(Path::new(lv_path), &lv_opts).map_err(|e| e.to_string())?;
         if let Some(vl_id) = v.language_id {
@@ -249,22 +248,7 @@ fn resolve_voice(
     Ok(voice)
 }
 
-fn postprocess_and_write_wav(cfg: &CliArgs, audio: &mut Vec<f32>) -> Result<(), String> {
-    if cfg.tail_trim {
-        let cut = tail_trim(audio, SAMPLE_RATE, 0.30);
-        if cut > 0 && !cfg.silent {
-            eprintln!(
-                "Tail-trim: cut {:.2}s degenerate tail ({cut} samples)",
-                cut as f64 / SAMPLE_RATE as f64
-            );
-        }
-    }
-    if cfg.onset_fade_ms > 0 {
-        onset_fade(audio, SAMPLE_RATE, cfg.onset_fade_ms as usize);
-        if !cfg.silent {
-            eprintln!("Onset-fade: {} ms over the real attack", cfg.onset_fade_ms);
-        }
-    }
+fn write_output_wav(cfg: &CliArgs, audio: &[f32]) -> Result<(), String> {
     write_wav(Path::new(&cfg.output), audio, SAMPLE_RATE as u32).map_err(|e| e.to_string())?;
     if !cfg.silent {
         eprintln!(
@@ -283,24 +267,27 @@ fn run_seed_audition(
     model: &Model06B,
     voice: &Voice,
     scratch: &mut SessionScratch,
-    req_cfg: &RequestConfig,
+    req: &SynthesisRequest,
     active_text: &str,
 ) -> Result<Vec<f32>, String> {
     let n_takes = cfg.seed_audition.min(64);
     let mut candidates: Vec<(Vec<f32>, u32, f32)> = Vec::with_capacity(n_takes);
+    let abort = AbortHandle::new();
     for i in 0..n_takes {
-        let mut ccfg = req_cfg.clone();
-        ccfg.seed = req_cfg.seed.wrapping_add(i as u32);
-        let exec = RequestExecution::new(ccfg.clone());
+        // Las tomas se sintetizan sin `tail_trim` ni `onset_fade`: el acabado va solo a la elegida.
+        let mut ccfg = req.clone();
+        ccfg.sampling.seed = req.sampling.seed.wrapping_add(i as u32);
+        ccfg.tail_trim = false;
+        ccfg.onset_fade_ms = 0.0;
         if let Ok((a, _)) =
-            synthesize_to_samples(runtime, model, voice, scratch, &exec, active_text)
+            synthesize_to_samples(runtime, model, voice, scratch, &ccfg, &abort, active_text)
         {
             if !a.is_empty() {
                 let (g, _) = tail_glitch_score(&a, SAMPLE_RATE);
                 if !cfg.silent {
                     eprintln!(
                         "  audition seed {}: {:.2}s glitch={g:.2}",
-                        ccfg.seed,
+                        ccfg.sampling.seed,
                         a.len() as f32 / SAMPLE_RATE as f32
                     );
                 }
@@ -312,15 +299,15 @@ fn run_seed_audition(
                         .unwrap_or("output");
                     let keep_name = match out_p.parent() {
                         Some(parent) if !parent.as_os_str().is_empty() => {
-                            parent.join(format!("{stem}.seed{}.wav", ccfg.seed))
+                            parent.join(format!("{stem}.seed{}.wav", ccfg.sampling.seed))
                         }
-                        _ => Path::new(&format!("{stem}.seed{}.wav", ccfg.seed)).to_path_buf(),
+                        _ => Path::new(&format!("{stem}.seed{}.wav", ccfg.sampling.seed)).to_path_buf(),
                     };
                     if write_wav(&keep_name, &a, SAMPLE_RATE as u32).is_ok() && !cfg.silent {
                         eprintln!("    kept -> {}", keep_name.display());
                     }
                 }
-                candidates.push((a, ccfg.seed, g));
+                candidates.push((a, ccfg.sampling.seed, g));
             }
         }
     }
@@ -457,7 +444,8 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         return Ok(0);
     }
 
-    let (req_cfg, planned) = request::from_cli(&cfg, &voice);
+    let (req, planned) = request::from_cli(&cfg, &voice);
+    let abort = AbortHandle::new();
 
     let mut scratch = SessionScratch::new();
 
@@ -467,18 +455,10 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
             if !cfg.silent {
                 eprintln!("Compose mode: rendering spans...");
             }
-            let exec = RequestExecution::new(req_cfg);
-            let (mut audio, _) = render_spans_buffer(
-                &runtime,
-                &model,
-                &voice,
-                &mut scratch,
-                &exec,
-                &spans,
-                cfg.compose_pause,
-            )
-            .map_err(|e| e.to_string())?;
-            postprocess_and_write_wav(&cfg, &mut audio)?;
+            let (audio, _) =
+                render_spans_buffer(&runtime, &model, &voice, &mut scratch, &req, &abort, &spans)
+                    .map_err(|e| e.to_string())?;
+            write_output_wav(&cfg, &audio)?;
             return Ok(0);
         }
         Script::Plain(text) => text,
@@ -489,8 +469,8 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         if !cfg.silent {
             eprintln!(
                 "Streaming: chunk={} frames ({:.1}s), {}",
-                req_cfg.stream_chunk_frames,
-                req_cfg.stream_chunk_frames as f32 / FRAME_RATE,
+                req.chunk_frames,
+                req.chunk_frames as f32 / FRAME_RATE,
                 if cfg.stdout_pcm {
                     "raw PCM to stdout"
                 } else {
@@ -498,11 +478,19 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
                 }
             );
         }
-        let exec = RequestExecution::new(req_cfg);
         if cfg.stdout_pcm {
             let mut sink = StdoutRawSink::new(cfg.volume);
-            synthesize_to_sink(&runtime, &model, &voice, &mut scratch, &exec, &active_text, &mut sink)
-                .map_err(|e| e.to_string())?;
+            synthesize_to_sink(
+                &runtime,
+                &model,
+                &voice,
+                &mut scratch,
+                &req,
+                &abort,
+                &active_text,
+                &mut sink,
+            )
+            .map_err(|e| e.to_string())?;
         } else {
             let mut sink = WavStreamSink::create(
                 Path::new(&cfg.output),
@@ -515,7 +503,8 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
                 &model,
                 &voice,
                 &mut scratch,
-                &exec,
+                &req,
+                &abort,
                 &active_text,
                 &mut sink,
             )
@@ -537,25 +526,28 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         eprintln!("Warning: --audition-keep has no effect without --seed-audition N (N>1, non-stream)");
     }
 
-    let mut audio = if cfg.seed_audition > 1 {
-        run_seed_audition(
-            &cfg,
+    let audio = if cfg.seed_audition > 1 {
+        let mut chosen =
+            run_seed_audition(&cfg, &runtime, &model, &voice, &mut scratch, &req, &active_text)?;
+        // Las tomas no llevan acabado: `tail_trim` y `onset_fade` van solo a la elegida.
+        finish_full_delivery(&mut chosen, &req);
+        chosen
+    } else {
+        // `synthesize_to_samples` ya aplica el acabado tras `time_stretch`.
+        let (a, _) = synthesize_to_samples(
             &runtime,
             &model,
             &voice,
             &mut scratch,
-            &req_cfg,
+            &req,
+            &abort,
             &active_text,
-        )?
-    } else {
-        let exec = RequestExecution::new(req_cfg);
-        let (a, _) =
-            synthesize_to_samples(&runtime, &model, &voice, &mut scratch, &exec, &active_text)
-                .map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         a
     };
 
-    postprocess_and_write_wav(&cfg, &mut audio)?;
+    write_output_wav(&cfg, &audio)?;
     Ok(0)
 }
 

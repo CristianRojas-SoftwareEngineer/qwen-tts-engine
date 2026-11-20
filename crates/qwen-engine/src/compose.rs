@@ -9,9 +9,10 @@ use qwen_kernels::ComputeRuntime;
 
 use crate::audio::AudioSink;
 use crate::error::EngineError;
-use crate::model::{Model06B, RequestExecution, SessionScratch};
+use crate::model::{AbortHandle, Model06B, SessionScratch};
+use crate::pipeline::{finish_full_delivery, synthesize_to_samples};
+use crate::request::SynthesisRequest;
 use crate::voice::Voice;
-use crate::pipeline::synthesize_to_samples;
 
 #[allow(clippy::too_many_arguments)]
 fn synth_one_span_06b(
@@ -19,40 +20,40 @@ fn synth_one_span_06b(
     model: &Model06B,
     voice: &Voice,
     scratch: &mut SessionScratch,
-    exec: &RequestExecution,
+    req: &SynthesisRequest,
+    abort: &AbortHandle,
     span_text: &str,
     rate_override: f32,
     volume_override: f32,
     apply_base_volume: bool,
     idx: usize,
 ) -> Result<Vec<f32>, EngineError> {
-    let silent = exec.config.silent;
+    let silent = req.log.is_silent();
     if !silent {
         eprintln!("Span {idx}: \"{span_text}\"");
     }
-    let mut span_cfg = exec.config.clone();
+    let mut span_req = req.clone();
+    // El acabado (`tail_trim`, `onset_fade`) se aplica una sola vez, a la composición entera.
+    span_req.tail_trim = false;
+    span_req.onset_fade_ms = 0.0;
     if rate_override > 0.0 {
-        span_cfg.rate = (span_cfg.rate * rate_override).clamp(0.25, 4.0);
+        span_req.rate = (span_req.rate * rate_override).clamp(0.25, 4.0);
     }
     if apply_base_volume {
         if volume_override > 0.0 {
-            span_cfg.volume *= volume_override;
+            span_req.volume *= volume_override;
         }
     } else {
-        // En `render_spans_stream`, el `AudioSink` del llamador aplica `exec.config.volume`.
-        span_cfg.volume = if volume_override > 0.0 {
+        // En `render_spans_stream`, el `AudioSink` del llamador aplica `req.volume`.
+        span_req.volume = if volume_override > 0.0 {
             volume_override
         } else {
             1.0
         };
     }
     // Cada span compuesto ejecuta prefill frío hacia MemorySink y luego DSP.
-    let span_exec = RequestExecution {
-        config: span_cfg,
-        abort: exec.abort.clone(),
-    };
     let (samples, _) =
-        synthesize_to_samples(runtime, model, voice, scratch, &span_exec, span_text)?;
+        synthesize_to_samples(runtime, model, voice, scratch, &span_req, abort, span_text)?;
     if samples.is_empty() {
         return Err(EngineError::Runtime(format!(
             "Compose: synthesis failed for span {idx}"
@@ -77,18 +78,18 @@ pub fn render_spans_buffer(
     model: &Model06B,
     voice: &Voice,
     scratch: &mut SessionScratch,
-    exec: &RequestExecution,
+    req: &SynthesisRequest,
+    abort: &AbortHandle,
     spans: &[SpanSpec],
-    default_pause_s: f32,
 ) -> Result<(Vec<f32>, usize), EngineError> {
-    let silent = exec.config.silent;
+    let silent = req.log.is_silent();
     let mut out: Vec<f32> = Vec::new();
     let mut spoken = 0usize;
     let mut last_spoken = false;
     let mut prev_filler = false;
 
     for span in spans {
-        if exec.abort.is_cancelled() {
+        if abort.is_cancelled() {
             return Err(EngineError::Aborted);
         }
         match span {
@@ -111,7 +112,7 @@ pub fn render_spans_buffer(
             } => {
                 let xfade_seam = *is_filler || prev_filler;
                 let pn = if last_spoken && !xfade_seam {
-                    pause_sample_count(default_pause_s)
+                    pause_sample_count(req.compose_pause_s)
                 } else {
                     0
                 };
@@ -124,7 +125,8 @@ pub fn render_spans_buffer(
                     model,
                     voice,
                     scratch,
-                    exec,
+                    req,
+                    abort,
                     text,
                     *rate,
                     *volume,
@@ -163,6 +165,7 @@ pub fn render_spans_buffer(
             out.len() as f64 / SAMPLE_RATE as f64
         );
     }
+    finish_full_delivery(&mut out, req);
     Ok((out, spoken))
 }
 
@@ -173,18 +176,18 @@ pub fn render_spans_stream(
     model: &Model06B,
     voice: &Voice,
     scratch: &mut SessionScratch,
-    exec: &RequestExecution,
+    req: &SynthesisRequest,
+    abort: &AbortHandle,
     spans: &[SpanSpec],
-    default_pause_s: f32,
     sink: &mut (dyn AudioSink + Send),
 ) -> Result<usize, EngineError> {
-    let silent = exec.config.silent;
+    let silent = req.log.is_silent();
     let mut spoken = 0usize;
     let mut last_spoken = false;
     let mut prev_filler = false;
 
     for span in spans {
-        if exec.abort.is_cancelled() {
+        if abort.is_cancelled() {
             return Err(EngineError::Aborted);
         }
         match span {
@@ -208,7 +211,7 @@ pub fn render_spans_stream(
             } => {
                 let xfade_seam = *is_filler || prev_filler;
                 let pn = if last_spoken && !xfade_seam {
-                    pause_sample_count(default_pause_s)
+                    pause_sample_count(req.compose_pause_s)
                 } else {
                     0
                 };
@@ -221,7 +224,8 @@ pub fn render_spans_stream(
                     model,
                     voice,
                     scratch,
-                    exec,
+                    req,
+                    abort,
                     text,
                     *rate,
                     *volume,

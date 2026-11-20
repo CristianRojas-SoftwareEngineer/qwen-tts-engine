@@ -14,6 +14,7 @@ use qwen_kernels::ComputeRuntime;
 
 use crate::error::EngineError;
 use crate::model::Model06B;
+use crate::request::LogLevel;
 use crate::speech_encoder::speech_encoder_encode;
 use crate::voice_clone::{load_and_trim_ref_audio, mel_spectrogram, speaker_encoder_forward};
 
@@ -55,7 +56,7 @@ pub struct VoiceLoadOptions {
     pub use_icl: bool,
     /// Tope de fotogramas ICL (0 = sin tope). `QWEN_ICL_FRAMES`, si está definida, manda.
     pub icl_frames_cap: usize,
-    pub silent: bool,
+    pub log: LogLevel,
 }
 
 /// Opciones para clonar una voz desde un audio de referencia.
@@ -68,8 +69,7 @@ pub struct CloneOptions {
     pub name: Option<String>,
     pub language_id: Option<i32>,
     pub icl_frames_cap: usize,
-    pub silent: bool,
-    pub debug: bool,
+    pub log: LogLevel,
 }
 
 /// Error si `path` no tiene extensión `.qvoice`.
@@ -142,7 +142,7 @@ impl Voice {
         let file_icl_frames = (opts.use_icl && !ref_text_empty && !qv.ref_codes.is_empty())
             .then_some(qv.ref_codes.len() / NUM_CODEBOOKS);
         let voice = Self::from_qvoice(qv, opts);
-        if !opts.silent {
+        if !opts.log.is_silent() {
             eprintln!(
                 "Voice clone: loaded .qvoice v4 from {}{}",
                 path.display(),
@@ -196,9 +196,9 @@ pub fn clone_voice(
     ref_wav: &Path,
     opts: &CloneOptions,
 ) -> Result<(QVoiceFile, Voice), EngineError> {
-    let audio = load_and_trim_ref_audio(ref_wav, opts.max_ref_seconds, opts.silent)?;
+    let audio = load_and_trim_ref_audio(ref_wav, opts.max_ref_seconds, opts.log.is_silent())?;
     let (mel, n_frames) = mel_spectrogram(&audio, SAMPLE_RATE)?;
-    if !opts.silent {
+    if !opts.log.is_silent() {
         eprintln!("Mel spectrogram: {n_frames} frames x {MEL_DIM} mels");
     }
     let speaker_embedding =
@@ -211,11 +211,11 @@ pub fn clone_voice(
             runtime,
             &model.speech_encoder,
             &audio,
-            opts.debug,
-            opts.silent,
+            opts.log.is_debug(),
+            opts.log.is_silent(),
         )?;
         ref_codes = codes;
-        if !opts.silent {
+        if !opts.log.is_silent() {
             eprintln!("Encoded ref audio: {frames} ICL frames");
         }
     }

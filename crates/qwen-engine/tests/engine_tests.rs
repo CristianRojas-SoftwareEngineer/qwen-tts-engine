@@ -12,7 +12,7 @@ use qwen_engine::model::{DecoderWorkspace, SdStreamState};
 use qwen_engine::{
     encode_wav_bytes, speech_decoder_decode, speech_decoder_decode_streaming,
     synthesize_to_samples, synthesize_to_sink, EngineError, MemorySink, Model06B, ModelLoadOptions,
-    RequestConfig, RequestExecution, SessionScratch, Voice,
+    AbortHandle, LogLevel, SessionScratch, SynthesisRequest, Voice,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -135,21 +135,23 @@ fn test_e2e_determinism_and_abort() {
     let lang = lookup_language("Spanish").unwrap();
     let voice = Voice::builtin_default();
 
-    let req = RequestConfig {
+    let req = SynthesisRequest {
         language_id: Some(lang),
-        silent: true,
+        log: LogLevel::Silent,
         ..Default::default()
     };
-    assert_eq!(req.temperature, DEFAULT_TEMPERATURE);
-    assert_eq!(req.seed, DEFAULT_SEED);
+    assert_eq!(req.sampling.temperature, DEFAULT_TEMPERATURE);
+    assert_eq!(req.sampling.seed, DEFAULT_SEED);
 
+    let abort = AbortHandle::new();
     let mut scratch1 = SessionScratch::new();
     let (s1, t1) = synthesize_to_samples(
         &runtime,
         &model,
         &voice,
         &mut scratch1,
-        &RequestExecution::new(req.clone()),
+        &req,
+        &abort,
         "Hola, ¿cómo estás?",
     )
     .unwrap();
@@ -161,7 +163,8 @@ fn test_e2e_determinism_and_abort() {
         &model,
         &voice,
         &mut scratch2,
-        &RequestExecution::new(req.clone()),
+        &req,
+        &abort,
         "Hola, ¿cómo estás?",
     )
     .unwrap();
@@ -173,15 +176,16 @@ fn test_e2e_determinism_and_abort() {
     );
 
     // Comprobación de cancelación mediante AbortHandle
-    let exec_abort = RequestExecution::new(req);
-    exec_abort.abort.cancel();
+    let abort_now = AbortHandle::new();
+    abort_now.cancel();
     let mut sink = MemorySink::new(0);
     let err = synthesize_to_sink(
         &runtime,
         &model,
         &voice,
         &mut scratch2,
-        &exec_abort,
+        &req,
+        &abort_now,
         "Hola, ¿cómo estás?",
         &mut sink,
     )

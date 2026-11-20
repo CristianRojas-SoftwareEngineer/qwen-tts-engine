@@ -10,26 +10,26 @@ use std::sync::{Condvar, Mutex};
 use std::time::Instant;
 
 use qwen_core::config::{
-    CODEBOOK_SIZE, CODEC_BOS, CODEC_EOS, CODEC_NO_THINK, CODEC_PAD, CODEC_THINK, CODEC_THINK_BOS,
-    CODEC_THINK_EOS, CODEC_VOCAB_SIZE, FRAME_RATE, HIDDEN_SIZE, HOP_SAMPLES, NUM_CODEBOOKS,
-    SAMPLE_RATE, TOKEN_ASSISTANT, TOKEN_IM_START, TOKEN_NEWLINE, TOKEN_TTS_BOS, TOKEN_TTS_EOS,
-    TOKEN_TTS_PAD,
+    CODEBOOK_SIZE, CODEC_EOS, CODEC_VOCAB_SIZE, FRAME_RATE, HIDDEN_SIZE, HOP_SAMPLES,
+    NUM_CODEBOOKS, SAMPLE_RATE,
 };
 use qwen_core::LcgRng;
 use qwen_kernels::{ftz_on, ComputeRuntime, KernelDispatch};
 
-use crate::audio::{apply_gain, time_stretch, AudioSink, MemorySink};
+use crate::audio::{
+    apply_gain, onset_fade, tail_trim, time_stretch, AudioSink, MemorySink,
+};
 use crate::code_predictor::cp_predict;
 use crate::error::EngineError;
 use crate::model::{
-    embed_one_text_token_compute, lookup_codec_embed, Model06B, RequestConfig, RequestExecution,
-    SessionScratch, SynthesisTiming, ROPE_MAX_POS,
+    lookup_codec_embed, AbortHandle, Model06B, SessionScratch, SynthesisTiming, ROPE_MAX_POS,
 };
+use crate::prompt::{build_prompt, prefill};
+use crate::request::{SynthesisRequest, DEFAULT_CHUNK_FRAMES};
 use crate::speech_decoder::speech_decoder_decode_streaming;
-use crate::talker::{talker_prefill, talker_step};
+use crate::talker::talker_step;
 use crate::voice::Voice;
 
-const DEFAULT_CHUNK_FRAMES: usize = 10;
 const STREAM_RAMP_START_FRAMES: usize = 4;
 const STREAM_RAMP_STEP_FRAMES: usize = 2;
 const STREAM_RAMP_HOLD_CHUNKS: usize = 8;
@@ -181,279 +181,29 @@ pub(crate) fn next_stream_chunk_target(
     (target, ramped)
 }
 
-/// Devuelve el número de muestras PCM iniciales a recortar cuando hay contexto ICL activo.
-pub(crate) fn resolve_icl_trim_samples(icl_mode: bool) -> usize {
-    if !icl_mode {
-        return 0;
-    }
-    let tf = std::env::var("QWEN_ICL_TRIM_FRAMES")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .unwrap_or(2);
-    tf.saturating_mul(HOP_SAMPLES)
-}
-
-fn embed_text_cached(
-    runtime: &ComputeRuntime,
-    model: &Model06B,
-    scratch: &mut SessionScratch,
-    tid: i32,
-    out: &mut [f32],
-) {
-    let (pad_emb, bos_emb, eos_emb) = (
-        model.cached_tts_pad_embed.as_slice(),
-        model.cached_tts_bos_embed.as_slice(),
-        model.cached_tts_eos_embed.as_slice(),
-    );
-
-    if tid == TOKEN_TTS_PAD {
-        out[..HIDDEN_SIZE].copy_from_slice(pad_emb);
-        return;
-    }
-    if tid == TOKEN_TTS_BOS {
-        out[..HIDDEN_SIZE].copy_from_slice(bos_emb);
-        return;
-    }
-    if tid == TOKEN_TTS_EOS {
-        out[..HIDDEN_SIZE].copy_from_slice(eos_emb);
-        return;
-    }
-
-    let tb = &mut scratch.talker_bufs;
-    let d = runtime.dispatch;
-    let pool = &runtime.pool;
-    scratch.emb_lru.get_or_insert(tid, out, |t, dst| {
-        embed_one_text_token_compute(
-            d,
-            pool,
-            model,
-            t,
-            &mut tb.emb_tmp1,
-            &mut tb.emb_tmp2,
-            dst,
-        );
-    });
-}
-
-/// Elemento de la sección 2 del prompt: un token de códec o el x-vector del locutor.
-enum Sec2Token {
-    Codec(i32),
-    Speaker,
-}
-
-pub fn build_prefill_embeds(
-    runtime: &ComputeRuntime,
-    model: &Model06B,
-    voice: &Voice,
-    scratch: &mut SessionScratch,
-    req: &RequestConfig,
-    text: &str,
-) -> Result<(Vec<f32>, usize, usize, bool), EngineError> {
-    let text_tokens = model.tokenizer.encode_para(text);
-    if text_tokens.is_empty() {
-        return Err(EngineError::InvalidArg(
-            "Text tokenization produced 0 tokens".to_string(),
-        ));
-    }
-
-    let (icl_text, ref_codes_slice): (Option<&str>, Option<&[i32]>) = match &voice.icl {
-        Some(icl) => (Some(icl.ref_text.as_str()), Some(icl.ref_codes.as_slice())),
-        None => (None, None),
-    };
-
-    // `ref_codes` ya viene recortado al tope de fotogramas al construir la voz.
-    let ref_text_tokens = icl_text.map(|t| model.tokenizer.encode(t)).unwrap_or_default();
-    let ref_n_frames = ref_codes_slice
-        .map(|c| c.len() / NUM_CODEBOOKS)
-        .unwrap_or(0);
-    let icl_mode = !ref_text_tokens.is_empty() && ref_n_frames > 0;
-
-    let role_prefix = [TOKEN_IM_START, TOKEN_ASSISTANT, TOKEN_NEWLINE];
-    let text_content_len = text_tokens.len();
-
-    // Secuencia de códec de la sección 2: prefijo de idioma, locutor (en `spk_pos`) y `CODEC_PAD`.
-    let mut codec_prefix = Vec::with_capacity(4);
-    if let Some(lang_id) = req.language_id {
-        codec_prefix.push(CODEC_THINK);
-        codec_prefix.push(CODEC_THINK_BOS);
-        codec_prefix.push(lang_id);
-        codec_prefix.push(CODEC_THINK_EOS);
-    } else {
-        codec_prefix.push(CODEC_NO_THINK);
-        codec_prefix.push(CODEC_THINK_BOS);
-        codec_prefix.push(CODEC_THINK_EOS);
-    }
-    let spk_emb: &[f32] = voice.xvector.as_slice();
-    // Posición explícita del locutor, tras el prefijo; después va `CODEC_PAD`.
-    let sec2: Vec<Sec2Token> = codec_prefix
-        .iter()
-        .map(|&t| Sec2Token::Codec(t))
-        .chain([Sec2Token::Speaker, Sec2Token::Codec(CODEC_PAD)])
-        .collect();
-    let sec2_len = sec2.len();
-    let (sec3_len, sec4_len) = if icl_mode {
-        (ref_text_tokens.len() + text_content_len + 1, ref_n_frames + 1)
-    } else {
-        (text_content_len + 1, 1)
-    };
-    let prefill_len = role_prefix.len() + sec2_len + sec3_len + sec4_len;
-    if prefill_len > ROPE_MAX_POS {
-        return Err(EngineError::InvalidArg(format!(
-            "Prompt too long ({prefill_len} tokens > RoPE cache {ROPE_MAX_POS}); shorten the text."
-        )));
-    }
-
-    let (tts_pad_embed, tts_bos_embed, tts_eos_embed) = (
-        model.cached_tts_pad_embed.as_slice(),
-        model.cached_tts_bos_embed.as_slice(),
-        model.cached_tts_eos_embed.as_slice(),
-    );
-
-    let d = runtime.dispatch;
-    let mut codec_pad_embed = [0.0f32; HIDDEN_SIZE];
-    let mut codec_bos_embed = [0.0f32; HIDDEN_SIZE];
-    lookup_codec_embed(d, model, CODEC_PAD, &mut codec_pad_embed);
-    lookup_codec_embed(d, model, CODEC_BOS, &mut codec_bos_embed);
-
-    let mut input_embeds = vec![0.0f32; prefill_len * HIDDEN_SIZE];
-    let mut tmp_embed = [0.0f32; HIDDEN_SIZE];
-    let mut pos = 0usize;
-
-    // Sección 1: prefijo de rol (solo texto)
-    for &tid in &role_prefix {
-        embed_text_cached(
-            runtime,
-            model,
-            scratch,
-            tid,
-            &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE],
-        );
-        pos += 1;
-    }
-
-    // Sección 2: tts_pad*(sec2_len-1) + tts_bos emparejado con codec[0..sec2_len]
-    for (i, tok) in sec2.iter().enumerate() {
-        let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-        if i + 1 < sec2_len {
-            dst.copy_from_slice(tts_pad_embed);
-        } else {
-            dst.copy_from_slice(tts_bos_embed);
-        }
-        if let Sec2Token::Codec(ctok) = *tok {
-            lookup_codec_embed(d, model, ctok, &mut tmp_embed);
-            for j in 0..HIDDEN_SIZE {
-                dst[j] += tmp_embed[j];
-            }
-        } else {
-            let emb_norm = spk_emb.iter().map(|&v| v * v).sum::<f32>().sqrt();
-            let mut scale = if model.spk_ref_norm > 0.1 && emb_norm > 0.1 {
-                model.spk_ref_norm / emb_norm
-            } else {
-                1.0
-            };
-            if let Ok(sse) = std::env::var("QWEN_SPK_SCALE") {
-                if let Ok(f) = sse.trim().parse::<f32>() {
-                    if f.is_finite() {
-                        scale *= f;
-                    }
-                }
-            }
-            for j in 0..HIDDEN_SIZE {
-                dst[j] += spk_emb[j] * scale;
-            }
-        }
-        pos += 1;
-    }
-
-    if icl_mode {
-        let ref_codes = ref_codes_slice.expect("icl_mode implies ref_codes");
-        for i in 0..sec3_len {
-            let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-            if i < ref_text_tokens.len() {
-                embed_text_cached(runtime, model, scratch, ref_text_tokens[i], dst);
-            } else if i < ref_text_tokens.len() + text_content_len {
-                let idx = i - ref_text_tokens.len();
-                embed_text_cached(runtime, model, scratch, text_tokens[idx], dst);
-            } else {
-                dst.copy_from_slice(tts_eos_embed);
-            }
-            for j in 0..HIDDEN_SIZE {
-                dst[j] += codec_pad_embed[j];
-            }
-            pos += 1;
-        }
-
-        for i in 0..sec4_len {
-            let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-            dst.copy_from_slice(tts_pad_embed);
-            if i == 0 {
-                for j in 0..HIDDEN_SIZE {
-                    dst[j] += codec_bos_embed[j];
-                }
-            } else {
-                let frame = i - 1;
-                let code0 = ref_codes[frame * NUM_CODEBOOKS];
-                lookup_codec_embed(d, model, code0, &mut tmp_embed);
-                for j in 0..HIDDEN_SIZE {
-                    dst[j] += tmp_embed[j];
-                }
-                for g in 0..15 {
-                    let code_g = ref_codes[frame * NUM_CODEBOOKS + g + 1];
-                    if code_g >= 0 && (code_g as usize) < CODEBOOK_SIZE {
-                        let off = (code_g as usize) * HIDDEN_SIZE;
-                        let emb = &model.cp.codec_emb_bf16[g][off..off + HIDDEN_SIZE];
-                        d.bf16_accum_f32(dst, emb);
-                    }
-                }
-            }
-            pos += 1;
-        }
-    } else {
-        for &tok in &text_tokens {
-            let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-            embed_text_cached(runtime, model, scratch, tok, dst);
-            for (d_val, &cp_val) in dst.iter_mut().zip(codec_pad_embed.iter()) {
-                *d_val += cp_val;
-            }
-            pos += 1;
-        }
-        let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-        dst.copy_from_slice(tts_eos_embed);
-        for (d_val, &cp_val) in dst.iter_mut().zip(codec_pad_embed.iter()) {
-            *d_val += cp_val;
-        }
-        pos += 1;
-
-        let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-        dst.copy_from_slice(tts_pad_embed);
-        for j in 0..HIDDEN_SIZE {
-            dst[j] += codec_bos_embed[j];
-        }
-        pos += 1;
-    }
-
-    debug_assert_eq!(pos, prefill_len);
-    Ok((input_embeds, prefill_len, text_content_len, icl_mode))
-}
-
 /// Ejecuta la síntesis completa y entrega progresivamente los fragmentos de audio PCM a `sink`.
+#[allow(clippy::too_many_arguments)]
 pub fn synthesize_to_sink(
     runtime: &ComputeRuntime,
     model: &Model06B,
     voice: &Voice,
     scratch: &mut SessionScratch,
-    exec: &RequestExecution,
+    req: &SynthesisRequest,
+    abort: &AbortHandle,
     text: &str,
     sink: &mut (dyn AudioSink + Send),
 ) -> Result<SynthesisTiming, EngineError> {
-    let req = &exec.config;
     let t_start = Instant::now();
-    scratch.rng = LcgRng::new(req.seed);
+    scratch.rng = LcgRng::new(req.sampling.seed);
 
-    let (input_embeds, prefill_len, text_content_len, icl_mode) =
-        build_prefill_embeds(runtime, model, voice, scratch, req, text)?;
+    let prompt = build_prompt(runtime, model, voice, req.language_id, text, scratch)?;
+    let prefill_len = prompt.len;
+    let text_content_len = prompt.text_len;
+    let silent = req.log.is_silent();
+    let debug = req.log.is_debug();
+    let sp = &req.sampling;
 
-    if !req.silent {
+    if !silent {
         eprintln!(
             "Text: \"{}\" (prompt: {} positions, text_content: {})",
             text,
@@ -469,44 +219,10 @@ pub fn synthesize_to_sink(
     let nt = runtime.pool.n_threads();
     runtime.blas.set_threads(nt);
 
-    scratch.talker_kv.len = 0;
-    let t_pref = Instant::now();
-    talker_prefill(
-        runtime,
-        model,
-        scratch,
-        &input_embeds,
-        prefill_len,
-        req.silent,
-        req.debug,
-    )?;
-    let prefill_ms = t_pref.elapsed().as_secs_f64() * 1000.0;
-    if !req.silent {
-        eprintln!("  Prefill: {:.0} ms ({} tokens)", prefill_ms, prefill_len);
-    }
-
+    let prefill_ms = prefill(runtime, model, scratch, &prompt, req.log)?;
     let d = runtime.dispatch;
-    let eps = model.config.rms_norm_eps;
-    {
-        let tb = &mut scratch.talker_bufs;
-        d.rms_norm(
-            &mut tb.last_hidden,
-            &tb.dec_x,
-            &model.talker.norm,
-            1,
-            HIDDEN_SIZE,
-            eps,
-        );
-        if req.debug {
-            eprint!("[PREFILL] after_norm[:8]:");
-            for v in &tb.last_hidden[..8] {
-                eprint!(" {:.6}", v);
-            }
-            eprintln!();
-        }
-    }
 
-    let mut max_frames = req.max_tokens;
+    let mut max_frames = req.max_frames;
     let rope_rem = ROPE_MAX_POS.saturating_sub(prefill_len);
     if max_frames > rope_rem {
         max_frames = rope_rem;
@@ -522,13 +238,13 @@ pub fn synthesize_to_sink(
         _ => None,
     };
 
-    let chunk_frames = if req.stream_chunk_frames > 0 {
-        req.stream_chunk_frames.clamp(2, 250)
+    let chunk_frames = if req.chunk_frames > 0 {
+        req.chunk_frames.clamp(2, 250)
     } else {
         DEFAULT_CHUNK_FRAMES
     };
 
-    let mut trim_head_left = resolve_icl_trim_samples(icl_mode);
+    let mut trim_head_left = prompt.icl_trim_samples;
 
     let mut gen_blas = if nt > 1 { nt - 1 } else { 1 };
     if let Ok(v) = std::env::var("QWEN_BLAS_GEN_THREADS") {
@@ -653,7 +369,7 @@ pub fn synthesize_to_sink(
         });
 
         for frame in 0..max_frames {
-            if exec.abort.is_cancelled() {
+            if abort.is_cancelled() {
                 queue.aborted.store(true, Ordering::Release);
                 was_aborted = true;
                 break;
@@ -668,23 +384,23 @@ pub fn synthesize_to_sink(
                 apply_talker_logit_rules(&mut tb.logits, frame, text_content_len);
             }
 
-            let (frame_temp, frame_top_k) = if req.greedy_warmup > 0 && frame < req.greedy_warmup {
+            let (frame_temp, frame_top_k) = if sp.greedy_warmup > 0 && frame < sp.greedy_warmup {
                 (0.0, 1)
             } else {
-                (req.temperature, req.top_k)
+                (sp.temperature, sp.top_k as i32)
             };
             let code0 = scratch.sampler.sample(
                 &mut scratch.talker_bufs.logits,
                 frame_temp,
                 frame_top_k,
-                req.top_p,
-                req.rep_penalty,
+                sp.top_p,
+                sp.rep_penalty,
                 &scratch.prev_tokens,
                 &mut scratch.rng,
             ) as i32;
 
             if code0 == CODEC_EOS {
-                if !req.silent {
+                if !silent {
                     eprintln!("  EOS at frame {}", frame);
                 }
                 break;
@@ -736,7 +452,7 @@ pub fn synthesize_to_sink(
 
             let mut step_embed_copy = [0.0f32; HIDDEN_SIZE];
             step_embed_copy.copy_from_slice(&scratch.talker_bufs.step_embed);
-            if req.debug && frame < 2 {
+            if debug && frame < 2 {
                 eprintln!(
                     "  [frame {}] step_embed[:5]=[{:.6},{:.6},{:.6},{:.6},{:.6}]",
                     frame,
@@ -760,7 +476,7 @@ pub fn synthesize_to_sink(
                 break;
             }
             scratch.talker_bufs.last_hidden.copy_from_slice(&lh_copy);
-            if req.debug && frame < 2 {
+            if debug && frame < 2 {
                 eprintln!(
                     "  [frame {}] POST last_hidden[:5]=[{:.6},{:.6},{:.6},{:.6},{:.6}]",
                     frame,
@@ -802,7 +518,7 @@ pub fn synthesize_to_sink(
 
     let frames = scratch.codec_codes.len() / NUM_CODEBOOKS;
     let total_ms = t_start.elapsed().as_secs_f64() * 1000.0;
-    if !req.silent {
+    if !silent {
         log_synthesis_summary(&SynthesisTiming {
             prefill_ms,
             talker_ms,
@@ -870,22 +586,48 @@ fn log_synthesis_summary(t: &SynthesisTiming, chunk_frames: usize) {
     }
 }
 
+/// Acabado de la entrega completa: recorte de la cola degenerada y fundido del ataque.
+///
+/// Va siempre después de `apply_gain` y `time_stretch`. En streaming no se aplica.
+pub fn finish_full_delivery(samples: &mut Vec<f32>, req: &SynthesisRequest) {
+    let silent = req.log.is_silent();
+    if req.tail_trim {
+        let cut = tail_trim(samples, SAMPLE_RATE, 0.30);
+        if cut > 0 && !silent {
+            eprintln!(
+                "Tail-trim: cut {:.2}s degenerate tail ({cut} samples)",
+                cut as f64 / SAMPLE_RATE as f64
+            );
+        }
+    }
+    if req.onset_fade_ms > 0.0 {
+        onset_fade(samples, SAMPLE_RATE, req.onset_fade_ms as usize);
+        if !silent {
+            eprintln!("Onset-fade: {} ms over the real attack", req.onset_fade_ms);
+        }
+    }
+}
+
 /// Ejecuta la síntesis completa y devuelve el buffer mono `f32` a 24 kHz junto con las métricas.
+///
+/// Orden del buffer: ganancia, `time_stretch` y, al final, `tail_trim` y `onset_fade`.
 pub fn synthesize_to_samples(
     runtime: &ComputeRuntime,
     model: &Model06B,
     voice: &Voice,
     scratch: &mut SessionScratch,
-    exec: &RequestExecution,
+    req: &SynthesisRequest,
+    abort: &AbortHandle,
     text: &str,
 ) -> Result<(Vec<f32>, SynthesisTiming), EngineError> {
-    let mut sink = MemorySink::new(exec.config.max_tokens.min(1024) * HOP_SAMPLES);
-    let mut timing = synthesize_to_sink(runtime, model, voice, scratch, exec, text, &mut sink)?;
+    let mut sink = MemorySink::new(req.max_frames.min(1024) * HOP_SAMPLES);
+    let mut timing = synthesize_to_sink(runtime, model, voice, scratch, req, abort, text, &mut sink)?;
     let mut samples = sink.samples;
-    apply_gain(&mut samples, exec.config.volume);
-    if (exec.config.rate - 1.0).abs() > 1e-4 {
-        samples = time_stretch(&samples, exec.config.rate);
+    apply_gain(&mut samples, req.volume);
+    if (req.rate - 1.0).abs() > 1e-4 {
+        samples = time_stretch(&samples, req.rate);
     }
+    finish_full_delivery(&mut samples, req);
     timing.samples_produced = samples.len();
     Ok((samples, timing))
 }

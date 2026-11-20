@@ -14,7 +14,7 @@ use crate::speech_decoder::SD_TILE_FROM_BLOCK;
 use qwen_core::config::{
     CODEBOOK_DIM, CODEBOOK_SIZE, CODEC_VOCAB_SIZE, CP_HEAD_DIM, CP_HIDDEN_SIZE,
     CP_INTERMEDIATE_SIZE, CP_KV_DIM, CP_NUM_LAYERS, CP_Q_DIM, DEC_HEAD_DIM,
-    DEC_NUM_LAYERS, DEC_ROPE_THETA, DEC_UPSAMPLE_CHANNELS, DEFAULT_SEED, DEFAULT_TEMPERATURE,
+    DEC_NUM_LAYERS, DEC_ROPE_THETA, DEC_UPSAMPLE_CHANNELS,
     HEAD_DIM, HIDDEN_SIZE, INTERMEDIATE_SIZE, KV_DIM, NUM_CODEBOOKS, NUM_HEADS, NUM_LAYERS,
     Q_DIM, TEXT_HIDDEN_SIZE, TOKEN_TTS_BOS, TOKEN_TTS_EOS, TOKEN_TTS_PAD,
 };
@@ -1004,49 +1004,6 @@ impl Default for SessionScratch {
     }
 }
 
-/// Parámetros de muestreo, audio y diagnóstico para una petición de síntesis.
-/// Por defecto usa `DEFAULT_TEMPERATURE` (`0.325`) y `DEFAULT_SEED` (`4`).
-#[derive(Debug, Clone)]
-pub struct RequestConfig {
-    pub language_id: Option<i32>,
-    /// Temperatura de muestreo del Talker (`[0.0, 2.0]`; por defecto `0.325`).
-    pub temperature: f32,
-    pub top_k: i32,
-    pub top_p: f32,
-    pub rep_penalty: f32,
-    pub max_tokens: usize,
-    pub greedy_warmup: usize,
-    /// Semilla inicial del LCG (por defecto `DEFAULT_SEED = 4`).
-    pub seed: u32,
-    pub stream_chunk_frames: usize,
-    pub volume: f32,
-    pub rate: f32,
-    pub silent: bool,
-    pub debug: bool,
-    pub cp_roughness: f32,
-}
-
-impl Default for RequestConfig {
-    fn default() -> Self {
-        Self {
-            language_id: None,
-            temperature: DEFAULT_TEMPERATURE,
-            top_k: 50,
-            top_p: 1.0,
-            rep_penalty: 1.05,
-            max_tokens: 8192,
-            greedy_warmup: 0,
-            seed: DEFAULT_SEED,
-            stream_chunk_frames: 10,
-            volume: 1.0,
-            rate: 1.0,
-            silent: false,
-            debug: false,
-            cp_roughness: 0.0,
-        }
-    }
-}
-
 type AbortPollFn = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// Señal cooperativa de cancelación por bandera atómica y función opcional de sondeo.
@@ -1088,21 +1045,6 @@ impl AbortHandle {
             }
         }
         false
-    }
-}
-
-/// Contexto efímero de ejecución de una petición (configuración + [`AbortHandle`]).
-pub struct RequestExecution {
-    pub config: RequestConfig,
-    pub abort: AbortHandle,
-}
-
-impl RequestExecution {
-    pub fn new(config: RequestConfig) -> Self {
-        Self {
-            config,
-            abort: AbortHandle::new(),
-        }
     }
 }
 

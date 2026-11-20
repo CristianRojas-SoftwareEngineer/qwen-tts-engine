@@ -5,10 +5,10 @@
 
 use qwen_core::config::{lookup_language, CODEC_VOCAB_SIZE};
 use qwen_core::SeedChoice;
+use qwen_engine::DEFAULT_CHUNK_FRAMES;
 use serde_json::Value;
 
 pub const MAX_TTS_TEXT: usize = 8192;
-pub const DEFAULT_CHUNK_FRAMES: usize = 10;
 
 #[derive(Debug, Clone)]
 pub struct ValidatedTtsRequest {

@@ -14,6 +14,8 @@ pub mod compose;
 pub mod error;
 pub mod model;
 pub mod pipeline;
+mod prompt;
+pub mod request;
 pub mod speech_decoder;
 pub mod speech_encoder;
 pub mod talker;
@@ -29,10 +31,13 @@ pub use compose::{render_spans_buffer, render_spans_stream};
 pub use error::EngineError;
 pub use model::{
     AbortHandle, Bf16Weight, CodePredictorWeights, F32Weight, Model06B, ModelLoadOptions,
-    RequestConfig, RequestExecution, SessionScratch, SpeechDecoderWeights, SynthesisTiming,
+    SessionScratch, SpeechDecoderWeights, SynthesisTiming,
     TalkerWeights,
 };
-pub use pipeline::{synthesize_to_samples, synthesize_to_sink};
+pub use pipeline::{finish_full_delivery, synthesize_to_samples, synthesize_to_sink};
+pub use request::{
+    LogLevel, SynthesisRequest, DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES,
+};
 pub use speech_decoder::{speech_decoder_decode, speech_decoder_decode_streaming};
 pub use speech_encoder::{speech_encoder_encode, SpeechEncoderWeights};
 pub use voice::{

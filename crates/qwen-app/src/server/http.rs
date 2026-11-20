@@ -13,7 +13,7 @@ use qwen_core::Script;
 use qwen_engine::{
     encode_wav_bytes, render_spans_buffer, render_spans_stream, synthesize_to_samples,
     synthesize_to_sink, AbortHandle, AudioSink, EngineError, MemorySink, Model06B,
-    RequestExecution, SessionScratch, StreamEdgeRamp, SynthesisTiming, Voice,
+    SessionScratch, StreamEdgeRamp, SynthesisTiming, Voice,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -384,12 +384,9 @@ pub fn warm_up_session(
             return;
         }
     };
-    let (config, planned) = from_http(&vreq, voice, true);
-    let mut exec = RequestExecution {
-        config,
-        abort: AbortHandle::new(),
-    };
-    exec.config.max_tokens = WARM_UP_FRAMES;
+    let (mut req, planned) = from_http(&vreq, voice, true);
+    req.max_frames = WARM_UP_FRAMES;
+    let abort = AbortHandle::new();
     let mut sink = MemorySink::new(0);
     let t0 = Instant::now();
     match synthesize_to_sink(
@@ -397,7 +394,8 @@ pub fn warm_up_session(
         model,
         voice,
         scratch,
-        &exec,
+        &req,
+        &abort,
         &planned.text,
         &mut sink,
     ) {
@@ -414,14 +412,14 @@ pub fn handle_tts_full(
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
-    let (config, planned) = from_http(vreq, voice, false);
+    let (req, planned) = from_http(vreq, voice, false);
 
     eprintln!(
         "[HTTP] TTS: \"{}\" (voice={}, lang={}, seed={})",
         planned.text,
         voice.name,
         vreq.language_id.unwrap_or(0),
-        config.seed
+        req.sampling.seed
     );
 
     let guard = match AbortGuard::for_socket(stream) {
@@ -430,10 +428,6 @@ pub fn handle_tts_full(
             send_error(stream, 500, "internal socket error");
             return;
         }
-    };
-    let exec = RequestExecution {
-        config,
-        abort: guard.abort.clone(),
     };
 
     let t0 = Instant::now();
@@ -445,13 +439,13 @@ pub fn handle_tts_full(
                     "[HTTP] inline markup -> per-sentence compose ({} spans)",
                     spans.len()
                 );
-                render_spans_buffer(runtime, model, voice, scratch, &exec, spans, 0.12)
+                render_spans_buffer(runtime, model, voice, scratch, &req, &guard.abort, spans)
                     .map(|(buf, _)| buf)
             } else {
                 Err(EngineError::InvalidArg("markup parse failed".to_string()))
             }
         }
-        Script::Plain(text) => synthesize_to_samples(runtime, model, voice, scratch, &exec, text)
+        Script::Plain(text) => synthesize_to_samples(runtime, model, voice, scratch, &req, &guard.abort, text)
             .map(|(buf, timing)| {
                 timing_opt = Some(timing);
                 buf
@@ -497,14 +491,14 @@ pub fn handle_tts_stream(
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
-    let (config, planned) = from_http(vreq, voice, true);
+    let (req, planned) = from_http(vreq, voice, true);
 
     eprintln!(
         "[HTTP] TTS stream: \"{}\" (voice={}, lang={}, seed={})",
         planned.text,
         voice.name,
         vreq.language_id.unwrap_or(0),
-        config.seed
+        req.sampling.seed
     );
 
     let guard = match AbortGuard::for_socket(stream) {
@@ -520,10 +514,6 @@ pub fn handle_tts_stream(
     }
 
     let t0 = Instant::now();
-    let exec = RequestExecution {
-        config,
-        abort: guard.abort.clone(),
-    };
 
     let mut chunk_sink = HttpAudioChunkSink::new(stream, vreq.volume);
 
@@ -540,9 +530,9 @@ pub fn handle_tts_stream(
                     model,
                     voice,
                     scratch,
-                    &exec,
+                    &req,
+                    &guard.abort,
                     spans,
-                    0.12,
                     &mut chunk_sink,
                 )
                 .map(|_| ())
@@ -551,7 +541,17 @@ pub fn handle_tts_stream(
             }
         }
         Script::Plain(text) => {
-            synthesize_to_sink(runtime, model, voice, scratch, &exec, text, &mut chunk_sink).map(
+            synthesize_to_sink(
+                runtime,
+                model,
+                voice,
+                scratch,
+                &req,
+                &guard.abort,
+                text,
+                &mut chunk_sink,
+            )
+            .map(
                 |t| {
                     timing_opt = Some(t);
                 },

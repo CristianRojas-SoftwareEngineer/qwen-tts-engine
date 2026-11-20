@@ -11,11 +11,11 @@ use qwen_core::{
     plan_script, resolve_sampling, MarkupMode, QVoiceFile, SamplingParams, Script, SeedChoice,
 };
 use qwen_engine::{
-    clone_voice, encode_wav_bytes, mel_spectrogram,
+    clone_voice, encode_wav_bytes, mel_spectrogram, AbortHandle,
     read_wav_24khz, render_spans_buffer, render_spans_stream,
     synthesize_to_samples, trim_trailing_silence, validate_wav_path_or_header, write_wav,
-    CloneOptions, MemorySink, Model06B, ModelLoadOptions, RequestConfig, RequestExecution,
-    SessionScratch, Voice, VoiceLoadOptions,
+    CloneOptions, LogLevel, MemorySink, Model06B, ModelLoadOptions, SessionScratch,
+    SynthesisRequest, Voice, VoiceLoadOptions,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -150,7 +150,7 @@ fn test_voice_file_extension_and_version_errors() {
     let dir = temp_dir("voice_errors");
     let opts = VoiceLoadOptions {
         use_icl: true,
-        silent: true,
+        log: LogLevel::Silent,
         ..Default::default()
     };
 
@@ -230,20 +230,23 @@ fn test_clone_from_default_voice_e2e() {
     // 1. Referencia: la voz `default` dice un texto conocido (WAV de 24 kHz)
     let ref_wav = dir.join("ref.wav");
     let ref_text = "The weather is beautiful today, perfect for a walk in the park.";
-    let exec = |lang: i32| {
-        RequestExecution::new(RequestConfig {
-            language_id: Some(lang),
+    let req = |lang: i32| SynthesisRequest {
+        language_id: Some(lang),
+        sampling: SamplingParams {
             seed: DEFAULT_SEED,
-            silent: true,
-            ..Default::default()
-        })
+            ..SamplingParams::default()
+        },
+        log: LogLevel::Silent,
+        ..Default::default()
     };
+    let abort = AbortHandle::new();
     let (ref_samples, t_ref) = synthesize_to_samples(
         &runtime,
         &model,
         &default_voice,
         &mut scratch,
-        &exec(2050),
+        &req(2050),
+        &abort,
         ref_text,
     )
     .unwrap();
@@ -261,7 +264,7 @@ fn test_clone_from_default_voice_e2e() {
             max_ref_seconds: 30.0,
             name: Some("clone_icl".to_string()),
             language_id: Some(2050),
-            silent: true,
+            log: LogLevel::Silent,
             ..Default::default()
         },
     )
@@ -277,7 +280,7 @@ fn test_clone_from_default_voice_e2e() {
         &ref_wav,
         &CloneOptions {
             ref_text: None,
-            silent: true,
+            log: LogLevel::Silent,
             ..Default::default()
         },
     )
@@ -308,7 +311,7 @@ fn test_clone_from_default_voice_e2e() {
     // 4. Carga de cada voz y síntesis de un texto corto
     let load_opts = VoiceLoadOptions {
         use_icl: true,
-        silent: true,
+        log: LogLevel::Silent,
         ..Default::default()
     };
     let icl_voice = Voice::load(&icl_path, &load_opts).unwrap();
@@ -328,7 +331,7 @@ fn test_clone_from_default_voice_e2e() {
         &icl_path,
         &VoiceLoadOptions {
             use_icl: false,
-            silent: true,
+            log: LogLevel::Silent,
             ..Default::default()
         },
     )
@@ -370,7 +373,8 @@ fn test_clone_from_default_voice_e2e() {
             &model,
             voice,
             &mut scratch,
-            &exec(2050),
+            &req(2050),
+            &abort,
             "Hello, this is a test of the cloned voice running with the new engine.",
         )
         .unwrap();
@@ -400,21 +404,21 @@ fn test_clone_from_default_voice_e2e() {
         plan.para,
     );
     assert!(spans.len() >= 3);
+    let compose_req = SynthesisRequest {
+        language_id: Some(2070),
+        sampling,
+        cp_roughness: 0.35,
+        log: LogLevel::Silent,
+        ..Default::default()
+    };
     let (composed, n_spoken) = render_spans_buffer(
         &runtime,
         &model,
         &default_voice,
         &mut scratch,
-        &RequestExecution::new(RequestConfig {
-            language_id: Some(2070),
-            seed: sampling.seed,
-            temperature: sampling.temperature,
-            cp_roughness: 0.35,
-            silent: true,
-            ..Default::default()
-        }),
+        &compose_req,
+        &abort,
         spans,
-        0.12,
     )
     .unwrap();
     assert!(n_spoken >= 2 && composed.len() > SAMPLE_RATE);
@@ -427,16 +431,13 @@ fn test_clone_from_default_voice_e2e() {
         &model,
         &default_voice,
         &mut scratch,
-        &RequestExecution::new(RequestConfig {
-            language_id: Some(2070),
-            seed: sampling.seed,
-            temperature: sampling.temperature,
+        &SynthesisRequest {
             volume: 2.0,
-            silent: true,
-            ..Default::default()
-        }),
+            cp_roughness: 0.0,
+            ..compose_req
+        },
+        &abort,
         spans,
-        0.12,
         &mut stream_sink,
     )
     .unwrap();
