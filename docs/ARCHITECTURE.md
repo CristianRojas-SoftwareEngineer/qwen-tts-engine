@@ -13,7 +13,7 @@
   qwen-engine        (#![forbid(unsafe_code)] Modelo 0.6B, Talker, CP, Decoder, Encoder, Audio)
       │
       ▼
-   qwen-core         (Constantes 0.6B, MmapStore, BPE, Sampler, .qvoice/.bin, MarkupPlanner)
+   qwen-core         (Constantes 0.6B, MmapStore, BPE, Sampler, .qvoice v4, MarkupPlanner)
       │
       ▼
   qwen-kernels       (AlignedBuf<64>, CpuCaps, ComputePool, FTZ, SIMD, Quant, FFI/Rust BLAS)
@@ -23,7 +23,7 @@
 |---|---|---|
 | **`qwen-kernels`** | `aligned`, `caps`, `pool`, `ftz`, `blas`, `quant`, `simd/{scalar,avx2,neon}` *(internos del crate)*, `dispatch`, `selftest`, `bench`. | **Permitido y aislado** (intrínsecos `AVX2+FMA` y NEON, `asm!` para `SDOT`, `std::alloc`, `MXCSR`/`FPCR`, FFI BLAS / `faer`); la API segura `KernelDispatch` valida límites antes de despachar. |
 | **`qwen-core`** | `config`, `error`, `mmap_store`, `tokenizer`, `sampling`, `qvoice`, `markup`. | **Solo `Mmap::map` y cast de slices alineadas** en `mmap_store.rs`; resto 100 % seguro. |
-| **`qwen-engine`** | `model`, `talker`, `code_predictor`, `speech_decoder`, `speech_encoder`, `voice_clone`, `emotion`, `compose`, `batch`, `audio`, `pipeline`, `error`. | **`#![forbid(unsafe_code)]`** |
+| **`qwen-engine`** | `model`, `talker`, `code_predictor`, `speech_decoder`, `speech_encoder`, `voice_clone`, `compose`, `batch`, `audio`, `pipeline`, `error`. | **`#![forbid(unsafe_code)]`** |
 | **`qwen-app`** | `main`, `cli`, `affinity`, `build.rs` + manifiesto UTF-8, `server/{mod,http,validation,scheduler}`. | **Solo llamada puntual** a Win32 (`SetProcessAffinityMask` / `GetLogicalProcessorInformationEx`). |
 
 ---
@@ -42,10 +42,10 @@ Arc<Model06B>  [Inmutable, Send + Sync — compartido por todo el proceso]
  ├── speaker_encoder: Option<Arc<SpeakerEncoderWeights>> // ECAPA-TDNN (0.6B-Base)
  └── speech_encoder: Option<Arc<SpeechEncoderWeights>>   // RVQ encoder (comparte Arc<Codebooks>)
 
-Arc<VoiceBindings>  [Inmutable por voz — 0 B en preset, ~25 MB con WOVR]
- ├── identity: VoiceIdentity              // Preset(i32) | XVector(Vec<f32>) | IclGraft
- └── wovr / emo_ref_*                     // TextProjOverride y ancla prosódica opcionales
-     (Al cargar deltas de pesos `WDLT` desde un `.qvoice`, `load_voice_from_file` muta `Model06B` antes de envolverlo en `Arc`.)
+Arc<VoiceBindings>  [Inmutable por voz — unos pocos KB; la voz `default` va embebida en el binario]
+ ├── identity: VoiceIdentity              // XVector(Vec<f32>) | Icl { speaker_embedding, ref_text, ref_codes }
+ └── name: String                         // nombre de la voz (`default`, el guardado en el `.qvoice` o el del archivo)
+     (`load_voice_from_file` no modifica `Model06B`: solo lee el `.qvoice`.)
 
 SessionScratch  [Mutable, exclusivo por worker o sesión — cero locks internos]
  ├── talker_kv / cp_kv                    // KV caches BF16 (Talker inicia en KV_INITIAL_POSITIONS = 256 y duplica bajo demanda)
@@ -54,7 +54,7 @@ SessionScratch  [Mutable, exclusivo por worker o sesión — cero locks internos
  └── emb_lru + sampler + rng: LcgRng      // caché texto local + muestreador + RNG propio
 
 RequestExecution  [Efímero por petición — se destruye al finalizar]
- ├── config: RequestConfig                // speaker_id, temperature (0.325), seed (4), top_k, top_p, rep_penalty, ...
+ ├── config: RequestConfig                // language_id, temperature (0.325), seed (4), top_k, top_p, rep_penalty, ...
  └── abort: AbortHandle                   // Arc<AtomicBool> + poll opcional acoplado por RAII (Drop)
 ```
 

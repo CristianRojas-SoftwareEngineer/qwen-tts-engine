@@ -2,7 +2,7 @@
 
 > Referencia normativa de las tres interfaces públicas de **Qwen TTS Engine** (`qwen-tts-engine`): binario CLI (`qwen_tts`), servidor HTTP (`--serve`) y API Rust embebida (`qwen-engine`, `qwen-core`, `qwen-kernels`), además de variables de entorno y logs operativos.
 
-> **Alcance**: Exclusivo para **Qwen3-TTS 0.6B** (`CustomVoice` y `Base`). Las opciones de `1.7B` (`--voice-design`, `-I`/`--instruct`, `--expr`, `--expr-weight`, `--ml-steer`) son rechazadas explícitamente.
+> **Alcance**: Exclusivo para **Qwen3-TTS 0.6B Base**. Las opciones de `1.7B` (`--voice-design`, `-I`/`--instruct`, `--expr`, `--expr-weight`, `--ml-steer`) son rechazadas explícitamente.
 
 ---
 
@@ -16,7 +16,7 @@
 | `--caps` | Inicializa el runtime con `-j`, imprime capacidades SIMD/hilos/BLAS a `stdout` y termina. | `0` |
 | `--self-test` | Ejecuta la batería numérica de kernels hacia `stdout`. | `0` si pasa, `1` si falla |
 | `--matmat-bench` | Mide `matmat` vs `B × matvec` hacia `stdout` con el `-j` activo. | `0` |
-| `--list-voices <dir>` | Lista los perfiles `.qvoice` válidos en `<dir>` (o un archivo `.qvoice` puntual). | `0` / `1` |
+| `--list-voices <dir>` | Lista los `.qvoice` de `<dir>` (o un archivo `.qvoice` puntual): por voz, archivo, nombre, idioma (`-` si no tiene), ICL (fotogramas y segundos, o `no`) y tamaño. Un archivo que el lector rechaza (por ejemplo, una versión distinta de la 4) aparece con `unsupported: <mensaje>`. La voz `default` no se lista: no es un archivo. | `0` / `1` |
 | `--delete-voice <path>` | Valida la extensión `.qvoice` y la cabecera `QVCE` antes de eliminar el archivo. | `0` / `1` |
 | `decode-dump <codes.txt> <model_dir> <out.wav>` | Subcomando posicional (sin otras flags): carga `<model_dir>` y decodifica códigos (múltiplo de 16) a WAV 24 kHz s16le. | `0` / `1` |
 
@@ -24,11 +24,10 @@
 
 | Categoría | Flag(s) | Default | Contrato y validación |
 |---|---|---:|---|
-| **Modelo y texto** | `-d, --model-dir <path>` | *(obligatorio con modelo)* | Directorio del modelo `0.6B` (`CustomVoice` o `Base`). Rechaza `1.7B` y `VoiceDesign` (`exit 1`). |
+| **Modelo y texto** | `-d, --model-dir <path>` | *(obligatorio con modelo)* | Directorio del modelo Qwen3-TTS `0.6B` Base. Rechaza `1.7B`, `VoiceDesign` y cualquier checkpoint que no sea Base (`exit 1`, con un mensaje que indica que el motor solo carga el modelo Base). |
 | | `-t, --text <string>` | `None` | Obligatorio salvo `--serve`, `--compose`, `--save-voice` sin texto (con `--ref-audio`), `--batch-test` o `--batch-bench`. |
 | | `-o, --output <path>` | `output.wav` | Ruta de salida WAV (24 kHz, PCM s16le mono). Lleva una rampa de entrada de 5 ms y otra de salida de 40 ms con y sin `--stream`. El PCM es idéntico en los dos modos (`NUMERIC_CONTRACT.md` §4). |
-| **Voz e idioma** | `-s, --speaker <name>` | `ryan` (`3061`) | Presets: `ryan`, `vivian`, `serena`, `aiden`, `eric`, `dylan`, `uncle_fu`, `ono_anna`, `sohee`. Nombre desconocido → `exit 1`. |
-| | `-l, --language <name>` | `English` (`2050`) *(o `META` en `--load-voice`)* | Acepta 12 idiomas *case-insensitive*: `english`, `german`, `spanish`, `chinese`, `japanese`, `french`, `sichuan_dialect`, `korean`, `russian`, `italian`, `portuguese`, `beijing_dialect`. Con `--load-voice`, si se omite usa `META.lang_id` si es `> 0`. Desconocido → `exit 1`. |
+| **Voz e idioma** | `-l, --language <name>` | idioma de la voz cargada o, si no tiene, `English` (`2050`) | Acepta 10 idiomas *case-insensitive*: `english`, `german`, `spanish`, `chinese`, `japanese`, `french`, `korean`, `russian`, `italian`, `portuguese`. Con `--load-voice`, si se omite usa el idioma guardado en el `.qvoice` si es distinto de `0`. Desconocido → `exit 1`. |
 | **Muestreo** | `-T, --temperature <f>` | `0.325` | Rango `[0.0, 2.0]`; `0.0` = greedy. Si hay sustitución paralingüística inline sin `-T`, usa la `T` de la etiqueta (`1.1`, o `1.0` en `[scoff]`). |
 | | `-k, --top-k <n>` | `50` | Límite de candidatos *top-k* en `[0, 3072]`. |
 | | `-p, --top-p <f>` | `1.0` | Umbral acumulado *nucleus sampling* en `[0.0, 1.0]`. |
@@ -55,28 +54,19 @@
 | `--seed-audition <N>` | `0` | Evalúa hasta `N` (`1..64`) semillas consecutivas y elige la mejor (solo modo no-streaming). |
 | `--audition-keep` | off | Conserva cada toma de `--seed-audition` como `<stem>.seed<S>.wav`. |
 
-### 1.4 Clonación de voz y expresividad `0.6B`
+### 1.4 Voces, clonación y marcado `0.6B`
 
 | Categoría | Flag(s) | Default | Contrato y validación |
 |---|---|---|---|
-| **Clonación** | `--ref-audio <path>` | `None` | Solo `0.6B-Base`. Valida cabecera `RIFF`/WAV 24 kHz mono antes de cargar el modelo; otros formatos fallan con comando `ffmpeg`. |
-| | `--ref-text <string>` | `None` | Transcripción de la referencia para activar modo ICL (o sobrescribir `ref_text` de `.qvoice`). |
+| **Clonación** | `--ref-audio <path>` | `None` | Valida cabecera `RIFF`/WAV 24 kHz mono antes de cargar el modelo; otros formatos fallan con comando `ffmpeg`. |
+| | `--ref-text <string>` | `None` | Transcripción de la referencia para activar modo ICL (o sobrescribir `ref_text` de `.qvoice`). Sin ella, la voz guarda solo el timbre (x-vector). |
 | | `--xvector-only` | off | Usa únicamente el *x-vector* (`1024 × f32`), omitiendo los códigos ICL. |
-| | `--save-voice <path>` | `None` | Guarda `.qvoice` v3 (con `--target-cv` incluye `WDLT`) o `.bin` (embedding raw). Sin `--text` ni `--serve`, crea el perfil y sale (`0`). |
-| | `--load-voice <path>` | `None` | Carga `.qvoice` v3 o `.bin`. Si el `.qvoice` incluye `WDLT` sobre pesos `Q4_0` sin `--icl-only`, falla (`exit 1`). |
-| | `--icl-only` | off | Omite la sección `WDLT` al cargar un `.qvoice` (conserva `WOVR` salvo `QWEN_GRAFT_NO_WOVR`). |
-| | `--graft` | off | Implica `--icl-only`; ignora `ref_codes` y clona vía *x-vector* + `WOVR`. |
+| | `--save-voice <path>` | `None` | Guarda `.qvoice` v4 (la extensión debe ser `.qvoice`; otra da `voice files must be .qvoice (got <ruta>)`). Con idioma `-l` lo guarda; sin `-l` guarda «sin idioma». Sin `--text` ni `--serve`, crea el perfil y sale (`0`). |
+| | `--load-voice <path>` | voz `default` incorporada | Carga `.qvoice` v4. Otra extensión o una versión distinta de la 4 → `exit 1`. Sin este flag ni `--ref-audio`, se usa la voz `default`. |
 | | `--icl-frames <n>` | `0` *(todos)* | Tope máximo de fotogramas de referencia en modo ICL. |
-| | `--voice-name <name>` | `None` | Nombre guardado en la sección `META` del `.qvoice`. |
+| | `--voice-name <name>` | `None` | Nombre guardado en el `.qvoice`; sin él, la voz clonada al vuelo se llama como el WAV (sin extensión). Al cargar, el nombre es el guardado en el archivo o, si está vacío, el nombre del archivo. |
 | | `--max-ref-duration <s>` | `30.0` | Duración máxima en segundos leída de `--ref-audio` (`0` = audio completo). |
-| | `--target-cv <dir>` | `None` | Directorio `0.6B-CustomVoice` usado para calcular deltas `WDLT` al guardar `.qvoice`. |
-| | `--voice-strength <a>` | `1.0` | Factor de mezcla aplicado sobre proyecciones de `WDLT` en las capas `vs_layers`. |
-| | `--vs-layers <a-b>` | `14-27` | Rango de capas del Talker moduladas por `--voice-strength` (`0 <= a <= b`). |
-| **Expresividad** | `--emotion <name>` | `None` | Emociones válidas: `sad`/`sadness`, `joy`/`happy`/`joyful`, `anger`/`angry`/`rage`, `fear`/`afraid`, `disgust`/`disgusted`, `surprise`/`surprised`, `contempt`/`scorn`, `awe`/`wonder`, `nostalgia`/`wistful`, `disapproval`, `remorse`/`regret`, `outrage`, `despair`. Busca `<key>_<tok>.{qvoice,bin}` junto a `--load-voice` o en `presets/emovoice/`, o `dir_<tok>.bin` sobre voz clonada (ignorado si se pasa `--compose`). |
-| | `--emotion-strength <f>` | `0.25` | Dosis de desplazamiento `dir_<tok>.bin` preservando norma L2. |
-| | `--emo-ref <path>` | `None` | Audio WAV 24 kHz mono como ancla de prosodia ICL; exige `--emo-ref-text`. |
-| | `--emo-ref-text <str>` | `None` | Transcripción de `--emo-ref`. |
-| | `--roughness <0..1>` | `0.0` | Mezcla pesos `Q2_0` en `down_proj` del Code Predictor (`[0.0, 1.0]`). |
+| **Marcado y estilo** | `--roughness <0..1>` | `0.0` | Mezcla pesos `Q2_0` en `down_proj` del Code Predictor (`[0.0, 1.0]`). |
 | | `--compose <spec>` | `None` | Síntesis multi-span no streaming con pausas `[pause:<s>]`, `[break:<s>]`, `[0.5]` o `\|`, y tags paralingüísticos inline (`[laugh]`, `[sigh]`, `[yawn]`, `[wow]`, `[giggle]`, `[scoff]`). |
 | | `--compose-pause <s>` | `0.12` | Pausa por defecto entre spans hablados en `--compose` / `--batch`. |
 | | `--no-compose` | off | Desactiva la sustitución de `[tags]` y el auto-compose en `--text`. |
@@ -116,9 +106,9 @@
 | Método y Ruta | Entrada | Respuesta exitosa | Reglas específicas |
 |---|---|---|---|
 | `GET /v1/health` | — | `200` `{"status":"ok"}` | Comprobación de disponibilidad. |
-| `GET /v1/speakers` | — | `200` `{"speakers":[...]}` | Lista los 9 presets `{name, language, gender}`. |
+| `GET /v1/voices` | — | `200` `{"voices":[{"name":"<nombre>","language":"<nombre o null>","icl":<bool>}]}` | Devuelve la voz cargada. |
 | `POST /v1/tts` | JSON TTS | `200` `audio/wav` (24 kHz s16le mono) | WAV completo con rampas de 5 ms (entrada) y 40 ms (salida); mismo PCM que `/v1/tts/stream` y que la CLI. Usa `DEFAULT_CHUNK_FRAMES = 10`; `max_tokens = 8192` en `WorkerPoolScheduler`/fallback, o `600` (y prompt `<= 512`) en `ContinuousBatchScheduler`. |
-| `POST /v1/audio/speech` | JSON OpenAI (`input`, `voice`, ...) | `200` `audio/wav` | Alias completo de `POST /v1/tts` (`input` → `text`, `voice` → `speaker`). |
+| `POST /v1/audio/speech` | JSON OpenAI (`input`, `voice`, ...) | `200` `audio/wav` | Alias completo de `POST /v1/tts` (`input` → `text`). |
 | `POST /v1/tts/stream` | JSON TTS | `200` `audio/pcm` (`Transfer-Encoding: chunked`) | Cabeceras: `X-Sample-Rate: 24000`, `X-Sample-Format: s16le`, `X-Channels: 1`. Rechaza `rate != 1.0` (`400`); `max_tokens = 8192` / `600` en *continuous batching*. |
 
 **Campos JSON aceptados en `POST`**:
@@ -126,14 +116,13 @@
 | Campo | Tipo | Default | Notas |
 |---|---|---|---|
 | `text` o `input` | `string` | *(obligatorio)* | No vacío ni solo espacios/escapes `\n`, `\t`, `\r`; `<= 8192` bytes. |
-| `speaker` o `voice` | `string` | `ryan` (o voz clonada) | Debe existir en `PRESET_SPEAKERS` si se envía (con voz clonada se mantiene la identidad clonada). |
-| `language` | `string` | `English` (`None` en clon HTTP) | Debe existir en `lookup_language`. En HTTP con voz clonada, si se omite no fuerza idioma (`CODEC_NO_THINK`). |
+| `voice` | `string` | *(opcional)* | Si viene, debe coincidir (sin distinguir mayúsculas) con el nombre de la voz cargada; si no, `400` con `voice '<x>' is not loaded (loaded: '<nombre>')`. |
+| `language` | `string` | idioma de la voz cargada (`None` si no tiene) | Debe existir en `lookup_language`. Si se omite y la voz no tiene idioma, no fuerza idioma (`CODEC_NO_THINK`). |
 | `temperature` | `number` | `0.325` | Rango válido `[0.0, 2.0]`. |
 | `top_k` | `integer` | `50` | Rango válido `[0, 3072]`. |
 | `top_p` | `number` | `1.0` | Rango válido `[0.0, 1.0]`. |
 | `rep_penalty` | `number` | `1.05` | Rango válido `[0.5, 2.0]`. |
 | `seed` | `integer` | `4` (`< 0` reloj) | Entero `0..=u32::MAX` fija semilla; omitido usa `DEFAULT_SEED = 4` (salvo sustitución paralingüística inline); negativo usa reloj; `> u32::MAX` devuelve `400`. |
-| `emotion` | `string` | `None` | Se valida el tipo `string` si se envía; no aplica steering en `0.6B` HTTP. |
 | `volume` | `number` | `1.0` | Ganancia PCM lineal; rango válido `[0.0, 10.0]`. |
 | `rate` | `number` | `1.0` | WSOLA pitch-preserving en `/v1/tts` (`[0.25, 4.0]`); prohibido `!= 1.0` en `/v1/tts/stream`. |
 | `chunk_frames` | `integer` | `10` | Solo en `/v1/tts/stream`; se acota con `clamp(2, 250)`. |
@@ -145,7 +134,8 @@ Toda petición se valida en `ValidatedTtsRequest::parse` antes de planificar o e
 
 - Cuerpo JSON inválido, no objeto, `Content-Length` inválido o tamaño mayor que `1 MiB` → `400`.
 - `text`/`input` ausente, vacío, solo whitespace (o `\n`/`\t`/`\r` escapados) o `> 8192` bytes → `400`.
-- `language` o `speaker`/`voice` desconocidos → `400`.
+- `language` desconocido, o `voice` distinto de la voz cargada → `400`.
+- Los campos desconocidos se ignoran (no dan `400`).
 - `temperature` fuera de `[0.0, 2.0]`, `top_k` fuera de `[0, 3072]`, `top_p` fuera de `[0.0, 1.0]`, `rep_penalty` fuera de `[0.5, 2.0]`, `volume` fuera de `[0.0, 10.0]`, `rate` fuera de `[0.25, 4.0]` o `seed > u32::MAX` → `400`.
 - `rate != 1.0` en `/v1/tts/stream` → `400`.
 - `voice_design` activo → `400`.
@@ -179,7 +169,7 @@ let load_opts = ModelLoadOptions {
     ..Default::default()
 };
 let model = Arc::new(Model06B::load(
-    Path::new("models/qwen3-tts-0.6b"),
+    Path::new("models/qwen3-tts-0.6b-base"),
     &runtime,
     load_opts,
 )?);
@@ -190,18 +180,17 @@ let model = Arc::new(Model06B::load(
 
 ### 3.2 Preparación de `VoiceBindings` y `SessionScratch`
 
-- **Voz preset**:
+- **Voz `default` incorporada** (la voz por defecto del motor):
   ```rust
-  use qwen_core::lookup_speaker;
   use qwen_engine::{SessionScratch, VoiceBindings};
 
-  let speaker_id = lookup_speaker("ryan").map(|s| s.id).unwrap_or(3061);
-  let voice = Arc::new(VoiceBindings::preset(speaker_id));
+  let voice = Arc::new(VoiceBindings::default_voice()); // nombre: "default"
   let mut scratch = SessionScratch::new(); // reutilizable entre peticiones secuenciales
   ```
-- **Voz clonada desde WAV o archivo `.qvoice`/`.bin`**:
-  - `build_voice_from_ref_audio(&runtime, &model, ref_wav_path, save_path_opt, &SaveVoiceOptions::default())` requiere `model.config.is_base_model == true`.
-  - `load_voice_from_file(&runtime, &mut model_mut, voice_path, ref_text_override, &VoiceLoadOptions::default())` carga `.qvoice` v3 o `.bin`; si el archivo contiene `WDLT`, debe llamarse sobre `&mut Model06B` antes de envolverlo en `Arc`.
+- **Identidad de voz**: `VoiceIdentity::{XVector(Vec<f32>), Icl { speaker_embedding, ref_text, ref_codes }}`. `VoiceBindings` lleva `identity`, `name` (`String`) e `icl_frames_cap`.
+- **Voz clonada desde WAV o archivo `.qvoice`**:
+  - `build_voice_from_ref_audio(&runtime, &model, ref_wav_path, save_path_opt, &SaveVoiceOptions::default())` extrae el x-vector (y el ICL si hay `ref_text`); `save_path_opt` debe terminar en `.qvoice` (v4).
+  - `load_voice_from_file(voice_path, ref_text_override, &VoiceLoadOptions::default())` carga un `.qvoice` v4 sin tocar el modelo y devuelve `(VoiceBindings, Option<i32>)` con el id de idioma de la voz.
 
 ### 3.3 Síntesis en memoria (`synthesize_to_samples`) y streaming (`synthesize_to_sink`)
 
@@ -214,7 +203,6 @@ use qwen_engine::{
 
 // A) Síntesis completa a Vec<f32> (24 kHz mono)
 let exec = RequestExecution::new(RequestConfig {
-    speaker_id: 3061,
     language_id: Some(2050), // English
     temperature: 0.325,
     seed: 4,
@@ -276,8 +264,7 @@ Sinks incluidos en `qwen_engine`: `MemorySink`, `WavStreamSink`, `StdoutRawSink`
 | `QWEN_SPK_SCALE` | Prefill | `1.0` | Factor multiplicador sobre la norma L2 del *speaker embedding* clonado. |
 | `QWEN_ICL_FRAMES` | Prefill ICL | `voice.icl_frames_cap` | Sobrescribe el límite de fotogramas de referencia ICL. |
 | `QWEN_ICL_TRIM_FRAMES` | Pipeline ICL | `2` | Fotogramas recortados al inicio del audio generado en modo ICL (`2 × 1920` muestras). |
-| `QWEN_NO_REF_TRIM` | Audio ref | off | Si está definida, desactiva `trim_trailing_silence` sobre `--ref-audio` / `--emo-ref`. |
-| `QWEN_GRAFT_NO_WOVR` | Carga `.qvoice` | off | Si está definida, omite la sección `WOVR` al cargar `.qvoice`. |
+| `QWEN_NO_REF_TRIM` | Audio ref | off | Si está definida, desactiva `trim_trailing_silence` sobre `--ref-audio`. |
 | `QWEN_DUMP_CODES` | Pipeline | `None` | Ruta de archivo donde volcar los 16 codebooks por fotograma (`decode-dump`). |
 | `QWEN_BATCH_B` | `--batch-test` / `--batch-bench` / `--matmat-bench` | `8` | Tamaño de lote `B` en microbenchmarks (`1..=64`; valores fuera de rango usan `8`). |
 
@@ -292,6 +279,7 @@ Los tests y scripts de operación esperan las siguientes líneas exactas en `std
 
 - **Carga de Code Predictor** (`model.rs`):
   `  Code Predictor: 5 layers loaded, q_dim=2048 kv_dim=1024 [BF16|INT8|Q4_0|INT8+Q4_0-FFN]`
+- **Voz cargada** (`main.rs`, salvo con `-S`): `Voice: <nombre>` (`default`, el nombre guardado en el `.qvoice`, el nombre del archivo o el del WAV clonado).
 - **Semilla resuelta** (`main.rs`):
   `seed: <u32>` *(o `seed: <u32> (auto/time-based)`)*
 - **Generación en pipeline** (`pipeline.rs`):

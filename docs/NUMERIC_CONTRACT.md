@@ -96,32 +96,24 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | **Kernels `bf16`** (`--self-test`) | `matvec_bf16` vs `f32` ref | `max_rel < 1e-2` |
 | | `matmat_bf16(B=8)` vs `B × matvec_bf16` | `L2_rel < 1e-4` |
 | **Speech Decoder aislado** | Streaming vs decodificación completa | **`SNR >= 100 dB`** |
-| **Pipeline E2E** (misma semilla/params) | 2 corridas independientes | **Bit-idéntico** entre corridas y entre los cuatro modos: CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream` dan el mismo PCM (mismo calendario de fragmentos y mismas rampas de borde, invariantes 3 y 5). Comprobado en 12 combinaciones de voz, idioma y longitud, y es igual con y sin carga. |
+| **Pipeline E2E** (misma semilla/params) | 2 corridas independientes | **Bit-idéntico** entre corridas y entre los cuatro modos: CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream` dan el mismo PCM (mismo calendario de fragmentos y mismas rampas de borde, invariantes 3 y 5). Comprobado en las 4 combinaciones de idioma y longitud de la tabla de referencia. |
 
 ### Audio de referencia (x86-64)
 
-Tras cualquier cambio que no deba tocar el audio, el PCM tiene que coincidir con esta tabla. Se mide en Windows x86_64 (Ryzen 7 5825U, ruta `avx2`, OpenBLAS de MSYS2 UCRT64) con `--quant-mixed -j 4 --seed 4` y la temperatura por defecto (0,325). El hash es el de `scripts/ci-comun.sh` (`pcm_hash`): los 16 primeros dígitos hexadecimales del SHA-256 del PCM, sin la cabecera WAV de 44 bytes. Es el mismo en los cuatro modos (CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream`), en todas las corridas y con y sin carga.
+Tras cualquier cambio que no deba tocar el audio, el PCM tiene que coincidir con esta tabla. Se mide en Windows x86_64 (Ryzen 7 5825U, ruta `avx2`, OpenBLAS de MSYS2 UCRT64) con `--quant-mixed -j 4 --seed 4` y la temperatura por defecto (0,325). El hash es el de `scripts/ci-comun.sh` (`pcm_hash`): los 16 primeros dígitos hexadecimales del SHA-256 del PCM, sin la cabecera WAV de 44 bytes. Es el mismo en los cuatro modos (CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream`) y en todas las corridas. El idioma se indica con `-l` (`Spanish` o `English`).
 
-- **Voces**: `ryan` y `vivian`, presets del modelo CustomVoice (`-s`); `default`, voz clonada del modelo Base a partir de `assets/Speech Sampler.wav` (perfil `default.qvoice` sin referencia ICL, SHA-256 `02488C75BBCFA749…`, cargado con `--load-voice … --graft`). El audio y el perfil no se versionan.
+- **Voz**: `default`, la voz incorporada en el binario (x-vector de 4096 bytes, SHA-256 `d2ceafbb7c5f75c488ecf60eef8e5cafc4a76e8e5e240e7339d44bec80543b94`), sin `--load-voice`, con el modelo Base (`-d models/qwen3-tts-0.6b-base`).
 - **Textos** (los de inglés son `TEXT_short` y `TEXT_long` de `scripts/ci-comun.sh`):
   - inglés, corta: `Hello world, this is a quick baseline test.`
   - inglés, larga: `In this long synthesis benchmark, we measure sustained memory bandwidth, Talker latency, Code Predictor throughput, and streaming Speech Decoder stability across multiple seconds of continuous speech generation.`
   - español, corta: `Hola mundo, esta es una prueba rápida de referencia.`
   - español, larga: `En esta prueba de síntesis larga medimos el ancho de banda de memoria sostenido, la latencia del Talker, el rendimiento del Code Predictor y la estabilidad del decodificador de voz en streaming durante varios segundos de generación continua.`
 
-| Voz | Idioma | Frase | Duración (s) | Hash del PCM |
+| Voz | `-l` | Frase | Duración (s) | Hash del PCM |
 |---|---|---|---|---|
-| `ryan` | en | corta | 4,48 | `5483a06201f29d02` |
-| `ryan` | en | larga | 15,60 | `e5be5a8e2d4990e8` |
-| `ryan` | es | corta | 5,28 | `fcbd68e794d54409` |
-| `ryan` | es | larga | 16,72 | `31f57166277afec4` |
-| `vivian` | en | corta | 3,92 | `307ac8884c8f7dd0` |
-| `vivian` | en | larga | 15,04 | `6a240edcbb34b2b8` |
-| `vivian` | es | corta | 4,08 | `759f0ba666da7769` |
-| `vivian` | es | larga | 16,64 | `1ebabf1a687e194b` |
-| `default` | en | corta | 2,48 | `43731630d57d8880` |
-| `default` | en | larga | 12,40 | `1ba4589f273942be` |
-| `default` | es | corta | 4,48 | `848092132a0a9547` |
-| `default` | es | larga | 14,64 | `b9adc5cf06585e61` |
+| `default` | English | corta | 2,88 | `0002d3b1ae511917` |
+| `default` | English | larga | 12,40 | `e32b61667f9dd29c` |
+| `default` | Spanish | corta | 4,64 | `3559b8998d4938a4` |
+| `default` | Spanish | larga | 15,04 | `84a0bd04327a6376` |
 
 Cambian esta tabla, y exigen regenerarla: el tamaño de bloque del prefill, cualquier cambio de redondeo en el Talker o el Code Predictor, el calendario de fragmentos y las rampas de borde. En ARM64 el audio se compara con la ruta escalar de la misma máquina (`QWEN_KERNELS=scalar`), no con esta tabla (§2.4).
