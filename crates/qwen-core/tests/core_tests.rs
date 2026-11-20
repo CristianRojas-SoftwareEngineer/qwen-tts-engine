@@ -337,7 +337,7 @@ fn test_markup_sampling_and_lookups() {
     assert_eq!(lookup_language("Italian"), Some(2070));
     assert!(lookup_language("Klingon").is_none());
 
-    let sub = MarkupPlanner::para_substitute("Oh! [laugh] Great!");
+    let sub = MarkupPlanner::paralinguistic_substitute("Oh! [laugh] Great!");
     assert!(sub.did_substitute);
     assert_eq!(sub.seed, 2024);
     assert!((sub.temperature - 1.1).abs() < 1e-6);
@@ -365,7 +365,7 @@ fn test_markup_sampling_and_lookups() {
     }
     // `[laugh]` (onomatopeya) y `|` siguen funcionando
     assert!(MarkupPlanner::has_markup("Oh [laugh] great"));
-    assert!(qwen_core::is_para_event_tag("sigh"));
+    assert!(qwen_core::is_paralinguistic_event_tag("sigh"));
 
     let mut sampler = Sampler::new();
     let mut rng1 = LcgRng::new(42);

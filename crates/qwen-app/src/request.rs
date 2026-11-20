@@ -57,13 +57,13 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScrip
         greedy_warmup: cli.greedy_warmup,
         ..SamplingParams::default()
     };
-    let sampling = resolve_sampling(base, cli.seed, cli.temperature, planned.para);
+    let sampling = resolve_sampling(base, cli.seed, cli.temperature, planned.paralinguistic);
 
     if !cli.silent {
-        if let Some((para_seed, _)) = planned.para {
+        if let Some((paralinguistic_seed, _)) = planned.paralinguistic {
             let shown_seed = match cli.seed {
                 SeedChoice::Fixed(s) => s,
-                _ => para_seed,
+                _ => paralinguistic_seed,
             };
             eprintln!(
                 "Paralinguistics: inline [tag]->onomatopoeia (seed {}, T{:.1}): \"{}\"",
@@ -117,7 +117,7 @@ pub fn from_http(
         rep_penalty: vreq.rep_penalty,
         ..SamplingParams::default()
     };
-    let sampling = resolve_sampling(base, vreq.seed, vreq.temperature, planned.para);
+    let sampling = resolve_sampling(base, vreq.seed, vreq.temperature, planned.paralinguistic);
 
     let req = SynthesisRequest {
         language_id: effective_language(vreq.language_id, voice.language_id),
@@ -184,12 +184,15 @@ mod tests {
 
     #[test]
     fn http_seed_and_temperature_precedence() {
-        let (para, _) = from_http(
+        let (tagged, _) = from_http(
             &parse(r#"{"text":"Hola [laugh] mundo."}"#, false),
             &voice(None),
             false,
         );
-        assert_eq!((para.sampling.seed, para.sampling.temperature), (2024, 1.1));
+        assert_eq!(
+            (tagged.sampling.seed, tagged.sampling.temperature),
+            (2024, 1.1)
+        );
         let body = r#"{"text":"Hola [laugh] mundo.","seed":4,"temperature":0.5}"#;
         let (user, _) = from_http(&parse(body, false), &voice(None), false);
         assert_eq!((user.sampling.seed, user.sampling.temperature), (4, 0.5));

@@ -227,7 +227,7 @@ let pcm: Vec<u8> = sink.into_writer();
   abort.cancel();
   // `synthesize` retorna `Err(EngineError::Aborted)`.
   ```
-- **Marcado y multi-span**: `plan_script(text, mode)` devuelve un `PlannedScript` con el `Script` y la etiqueta paralingüística (semilla y temperatura propias), que `resolve_sampling(base, seed, temperature, para)` combina con lo que pidió el usuario (primero lo explícito, después la etiqueta, por último el valor por defecto). `Synthesizer::synthesize` compone los tramos con `compose_pause_s` entre ellos. Una composición sin nada que hablar (solo pausas) es un error.
+- **Marcado y multi-span**: `plan_script(text, mode)` devuelve un `PlannedScript` con el `Script` y la etiqueta paralingüística (semilla y temperatura propias), que `resolve_sampling(base, seed, temperature, paralinguistic)` combina con lo que pidió el usuario (primero lo explícito, después la etiqueta, por último el valor por defecto). `Synthesizer::synthesize` compone los tramos con `compose_pause_s` entre ellos. Una composición sin nada que hablar (solo pausas) es un error.
 
 ---
 

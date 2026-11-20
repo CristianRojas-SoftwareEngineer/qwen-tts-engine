@@ -186,7 +186,7 @@ fn test_voice_file_extension_and_version_errors() {
 fn test_markup_with_default_voice_texts() {
     // `[sad]` ya no es marcado: queda como texto y no activa el modo compose
     let plan = plan_script("Devo andare [sad] Ciao.", MarkupMode::Auto);
-    assert!(plan.para.is_none());
+    assert!(plan.paralinguistic.is_none());
     let Script::Plain(text) = &plan.script else {
         panic!("expected Plain");
     };
@@ -194,7 +194,7 @@ fn test_markup_with_default_voice_texts() {
 
     // Pausas y `[laugh]` siguen funcionando
     let plan = plan_script("Oh! [laugh] [pause:0.5] Great!", MarkupMode::Auto);
-    assert!(plan.para.is_some());
+    assert!(plan.paralinguistic.is_some());
     let Script::Spans(spans) = &plan.script else {
         panic!("expected Spans");
     };
@@ -403,7 +403,7 @@ fn test_clone_from_default_voice_e2e() {
         "Che bella notizia! [pause:400ms] Devo andare... [sigh] Ciao.",
         MarkupMode::Auto,
     );
-    assert!(plan.para.is_some());
+    assert!(plan.paralinguistic.is_some());
     let Script::Spans(spans) = &plan.script else {
         panic!("expected Spans");
     };
@@ -411,7 +411,7 @@ fn test_clone_from_default_voice_e2e() {
         SamplingParams::default(),
         SeedChoice::Fixed(DEFAULT_SEED),
         None,
-        plan.para,
+        plan.paralinguistic,
     );
     assert!(spans.len() >= 3);
     let compose_req = SynthesisRequest {

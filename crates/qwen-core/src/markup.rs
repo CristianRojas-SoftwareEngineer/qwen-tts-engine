@@ -41,7 +41,7 @@ pub enum Script {
 pub struct PlannedScript {
     pub script: Script,
     /// Semilla y temperatura de la primera etiqueta paralingüística sustituida, si hubo.
-    pub para: Option<(u32, f32)>,
+    pub paralinguistic: Option<(u32, f32)>,
     /// Texto tras la sustitución paralingüística (solo para registros).
     pub text: String,
 }
@@ -51,23 +51,23 @@ pub fn plan_script(text: &str, mode: MarkupMode) -> PlannedScript {
     match mode {
         MarkupMode::Literal => PlannedScript {
             script: Script::Plain(text.to_string()),
-            para: None,
+            paralinguistic: None,
             text: text.to_string(),
         },
         // `--compose`: igual que el texto normal (sustitución paralingüística), pero siempre
         // como lista de tramos.
         MarkupMode::Compose => {
-            let sub = MarkupPlanner::para_substitute(text);
-            let para = sub.did_substitute.then_some((sub.seed, sub.temperature));
+            let sub = MarkupPlanner::paralinguistic_substitute(text);
+            let paralinguistic = sub.did_substitute.then_some((sub.seed, sub.temperature));
             PlannedScript {
                 script: Script::Spans(MarkupPlanner::parse_spans(&sub.text)),
-                para,
+                paralinguistic,
                 text: sub.text,
             }
         }
         MarkupMode::Auto => {
-            let sub = MarkupPlanner::para_substitute(text);
-            let para = sub.did_substitute.then_some((sub.seed, sub.temperature));
+            let sub = MarkupPlanner::paralinguistic_substitute(text);
+            let paralinguistic = sub.did_substitute.then_some((sub.seed, sub.temperature));
             let script = if MarkupPlanner::has_markup(&sub.text) {
                 Script::Spans(MarkupPlanner::parse_spans(&sub.text))
             } else {
@@ -75,7 +75,7 @@ pub fn plan_script(text: &str, mode: MarkupMode) -> PlannedScript {
             };
             PlannedScript {
                 script,
-                para,
+                paralinguistic,
                 text: sub.text,
             }
         }
@@ -88,14 +88,15 @@ pub fn resolve_sampling(
     base: SamplingParams,
     seed: SeedChoice,
     temperature: Option<f32>,
-    para: Option<(u32, f32)>,
+    paralinguistic: Option<(u32, f32)>,
 ) -> SamplingParams {
     let seed = match seed {
         SeedChoice::Fixed(s) => s,
         SeedChoice::Clock => time_based_seed(),
-        SeedChoice::Default => para.map_or(base.seed, |(s, _)| s),
+        SeedChoice::Default => paralinguistic.map_or(base.seed, |(s, _)| s),
     };
-    let temperature = temperature.unwrap_or_else(|| para.map_or(base.temperature, |(_, t)| t));
+    let temperature =
+        temperature.unwrap_or_else(|| paralinguistic.map_or(base.temperature, |(_, t)| t));
     SamplingParams {
         temperature,
         seed,
@@ -131,7 +132,7 @@ const COMPOSE_MACROS: &[ComposeMacro] = &[
     ComposeMacro { tag: "ugh", text: "Ugh...", rate: 1.00, volume: 0.78 },
 ];
 
-fn para_pick_06b(tag: &str) -> Option<(&'static str, u32, f32)> {
+fn pick_paralinguistic_06b(tag: &str) -> Option<(&'static str, u32, f32)> {
     match tag.to_ascii_lowercase().as_str() {
         "laugh" | "laughs" => Some(("\u{54c8}\u{54c8}\u{54c8}", 2024, 1.1)),
         "sigh" | "sighs" => Some(("\u{5509}", 42, 1.1)),
@@ -143,11 +144,11 @@ fn para_pick_06b(tag: &str) -> Option<(&'static str, u32, f32)> {
     }
 }
 
-pub fn is_para_event_tag(tag: &str) -> bool {
-    para_pick_06b(tag).is_some()
+pub fn is_paralinguistic_event_tag(tag: &str) -> bool {
+    pick_paralinguistic_06b(tag).is_some()
 }
 
-pub struct ParaSubResult {
+pub struct ParalinguisticSubstitution {
     pub text: String,
     pub did_substitute: bool,
     pub seed: u32,
@@ -160,7 +161,7 @@ impl MarkupPlanner {
     /// Sustitución paralingüística inline para `0.6B`.
     /// Reemplaza `[laugh]`, `[sigh]`, etc. por onomatopeyas delimitadas por comas
     /// en una única generación, fijando la semilla y temperatura de la primera etiqueta.
-    pub fn para_substitute(text: &str) -> ParaSubResult {
+    pub fn paralinguistic_substitute(text: &str) -> ParalinguisticSubstitution {
         let mut out = String::with_capacity(text.len() + 48);
         let mut did = false;
         let mut seed = 7u32;
@@ -176,7 +177,7 @@ impl MarkupPlanner {
                     if tl < 32 {
                         if let Ok(raw_tag) = std::str::from_utf8(&bytes[p + 1..close]) {
                             let tag = raw_tag.trim();
-                            if let Some((onom, sd, td)) = para_pick_06b(tag) {
+                            if let Some((onom, sd, td)) = pick_paralinguistic_06b(tag) {
                                 while out.ends_with(' ') {
                                     out.pop();
                                 }
@@ -216,7 +217,7 @@ impl MarkupPlanner {
             p += ch.len_utf8();
         }
 
-        ParaSubResult {
+        ParalinguisticSubstitution {
             text: out,
             did_substitute: did,
             seed,
@@ -241,7 +242,7 @@ impl MarkupPlanner {
                     if t.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
                         return true;
                     }
-                    if is_para_event_tag(t) {
+                    if is_paralinguistic_event_tag(t) {
                         return true;
                     }
                     if COMPOSE_MACROS.iter().any(|m| m.tag == tl) {
@@ -369,14 +370,14 @@ mod tests {
     fn plan_script_modes() {
         let lit = plan_script("Hola [laugh] mundo.", MarkupMode::Literal);
         assert_eq!(lit.script, Script::Plain("Hola [laugh] mundo.".to_string()));
-        assert!(lit.para.is_none());
+        assert!(lit.paralinguistic.is_none());
 
         let auto = plan_script("Hola [laugh] mundo.", MarkupMode::Auto);
-        assert_eq!(auto.para, Some((2024, 1.1)));
+        assert_eq!(auto.paralinguistic, Some((2024, 1.1)));
         assert!(matches!(auto.script, Script::Plain(_)));
 
         let plain = plan_script("Hola.", MarkupMode::Auto);
-        assert!(plain.para.is_none());
+        assert!(plain.paralinguistic.is_none());
         assert_eq!(plain.script, Script::Plain("Hola.".to_string()));
 
         let pause = plan_script("Hola. [pause:0.4] Adiós.", MarkupMode::Auto);
@@ -384,7 +385,7 @@ mod tests {
 
         // `Compose` aplica la paralingüística como el texto normal: `[laugh]` es onomatopeya.
         let comp = plan_script("Hola. [laugh] Adiós.", MarkupMode::Compose);
-        assert_eq!(comp.para, Some((2024, 1.1)));
+        assert_eq!(comp.paralinguistic, Some((2024, 1.1)));
         assert_eq!(
             comp.text,
             plan_script("Hola. [laugh] Adiós.", MarkupMode::Auto).text
@@ -401,7 +402,7 @@ mod tests {
 
         // `[hmm]` sigue siendo muletilla; `[yawn]` se sustituye; `[pause]` es una pausa.
         let mix = plan_script("Uno [hmm] dos [yawn] tres [pause:0.2]", MarkupMode::Compose);
-        assert_eq!(mix.para, Some((42, 1.1)));
+        assert_eq!(mix.paralinguistic, Some((42, 1.1)));
         let Script::Spans(spans) = mix.script else {
             panic!("expected Spans");
         };
@@ -414,22 +415,22 @@ mod tests {
     #[test]
     fn resolve_sampling_precedence() {
         let base = SamplingParams::default();
-        let para = Some((2024, 1.1));
+        let paralinguistic = Some((2024, 1.1));
 
         let d = resolve_sampling(base, SeedChoice::Default, None, None);
         assert_eq!((d.seed, d.temperature), (DEFAULT_SEED, DEFAULT_TEMPERATURE));
 
-        let p = resolve_sampling(base, SeedChoice::Default, None, para);
+        let p = resolve_sampling(base, SeedChoice::Default, None, paralinguistic);
         assert_eq!((p.seed, p.temperature), (2024, 1.1));
 
-        let u = resolve_sampling(base, SeedChoice::Fixed(9), Some(0.5), para);
+        let u = resolve_sampling(base, SeedChoice::Fixed(9), Some(0.5), paralinguistic);
         assert_eq!((u.seed, u.temperature), (9, 0.5));
 
-        let mixed = resolve_sampling(base, SeedChoice::Fixed(9), None, para);
+        let mixed = resolve_sampling(base, SeedChoice::Fixed(9), None, paralinguistic);
         assert_eq!((mixed.seed, mixed.temperature), (9, 1.1));
 
         // `Clock` manda sobre la etiqueta; el resto de campos viene de `base`.
-        let c = resolve_sampling(base, SeedChoice::Clock, None, para);
+        let c = resolve_sampling(base, SeedChoice::Clock, None, paralinguistic);
         assert_eq!(c.top_k, base.top_k);
         assert_eq!(c.temperature, 1.1);
     }
