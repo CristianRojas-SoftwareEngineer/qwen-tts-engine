@@ -18,6 +18,7 @@ mod prompt;
 pub mod request;
 pub mod speech_decoder;
 pub mod speech_encoder;
+pub mod synth;
 pub mod talker;
 pub mod voice;
 pub mod voice_clone;
@@ -27,19 +28,19 @@ pub use audio::{
     tail_glitch_score, tail_trim, time_stretch, trim_trailing_silence,
     validate_wav_path_or_header, write_wav, AudioSink, EdgeRampSink, MemorySink, PcmWrite, StdoutWriter, WavFileWriter,
 };
-pub use compose::{render_spans_buffer, render_spans_stream};
 pub use error::EngineError;
 pub use model::{
     AbortHandle, Bf16Weight, CodePredictorWeights, F32Weight, Model06B, ModelLoadOptions,
     SessionScratch, SpeechDecoderWeights, SynthesisTiming,
     TalkerWeights,
 };
-pub use pipeline::{finish_full_delivery, synthesize_to_samples, synthesize_to_sink};
+pub use pipeline::finish_full_delivery;
 pub use request::{
     LogLevel, SynthesisRequest, DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES,
 };
 pub use speech_decoder::{speech_decoder_decode, speech_decoder_decode_streaming};
 pub use speech_encoder::{speech_encoder_encode, SpeechEncoderWeights};
+pub use synth::{synthesize, Delivery, SynthesisOutput};
 pub use voice::{
     clone_voice, ensure_qvoice_path, CloneOptions, IclPrompt, Voice, VoiceLoadOptions,
     DEFAULT_VOICE_NAME,

@@ -18,10 +18,10 @@ use std::thread;
 use qwen_core::config::{language_name, lookup_language, FRAME_RATE, SAMPLE_RATE};
 use qwen_core::{QVoiceFile, Script};
 use qwen_engine::{
-    clone_voice, ensure_qvoice_path, finish_full_delivery, render_spans_buffer, synthesize_to_samples,
-    synthesize_to_sink, tail_glitch_score, validate_wav_path_or_header, write_wav, AbortHandle,
-    CloneOptions, EdgeRampSink, Model06B, ModelLoadOptions, SessionScratch, StdoutWriter,
-    SynthesisRequest, Voice, VoiceLoadOptions, WavFileWriter,
+    clone_voice, ensure_qvoice_path, finish_full_delivery, synthesize, tail_glitch_score,
+    validate_wav_path_or_header, write_wav, AbortHandle, CloneOptions, Delivery, EdgeRampSink,
+    Model06B, ModelLoadOptions, SessionScratch, StdoutWriter, SynthesisRequest, Voice,
+    VoiceLoadOptions, WavFileWriter,
 };
 use qwen_kernels::bench::run_matmat_bench;
 use qwen_kernels::selftest::run_kernel_selftest;
@@ -268,7 +268,7 @@ fn run_seed_audition(
     voice: &Voice,
     scratch: &mut SessionScratch,
     req: &SynthesisRequest,
-    active_text: &str,
+    script: &Script,
 ) -> Result<Vec<f32>, String> {
     let n_takes = cfg.seed_audition.min(64);
     let mut candidates: Vec<(Vec<f32>, u32, f32)> = Vec::with_capacity(n_takes);
@@ -279,9 +279,17 @@ fn run_seed_audition(
         ccfg.sampling.seed = req.sampling.seed.wrapping_add(i as u32);
         ccfg.tail_trim = false;
         ccfg.onset_fade_ms = 0.0;
-        if let Ok((a, _)) =
-            synthesize_to_samples(runtime, model, voice, scratch, &ccfg, &abort, active_text)
-        {
+        if let Ok(out) = synthesize(
+            runtime,
+            model,
+            voice,
+            scratch,
+            &ccfg,
+            &abort,
+            script,
+            Delivery::Buffer,
+        ) {
+            let a = out.samples.unwrap_or_default();
             if !a.is_empty() {
                 let (g, _) = tail_glitch_score(&a, SAMPLE_RATE);
                 if !cfg.silent {
@@ -449,20 +457,27 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
 
     let mut scratch = SessionScratch::new();
 
-    // Modo compose (sin streaming)
-    let active_text = match planned.script {
-        Script::Spans(spans) => {
-            if !cfg.silent {
-                eprintln!("Compose mode: rendering spans...");
-            }
-            let (audio, _) =
-                render_spans_buffer(&runtime, &model, &voice, &mut scratch, &req, &abort, &spans)
-                    .map_err(|e| e.to_string())?;
-            write_output_wav(&cfg, &audio)?;
-            return Ok(0);
+    let script = planned.script;
+
+    // Marcado o `--compose`: siempre entrega completa y WAV en `-o` (también con --stream/--stdout).
+    if matches!(script, Script::Spans(_)) {
+        if !cfg.silent {
+            eprintln!("Compose mode: rendering spans...");
         }
-        Script::Plain(text) => text,
-    };
+        let out = synthesize(
+            &runtime,
+            &model,
+            &voice,
+            &mut scratch,
+            &req,
+            &abort,
+            &script,
+            Delivery::Buffer,
+        )
+        .map_err(|e| e.to_string())?;
+        write_output_wav(&cfg, &out.samples.unwrap_or_default())?;
+        return Ok(0);
+    }
 
     // Modo CLI en streaming (--stream / --stdout)
     if cfg.stream {
@@ -480,38 +495,38 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         }
         if cfg.stdout_pcm {
             let mut sink = EdgeRampSink::new(StdoutWriter, SAMPLE_RATE as u32);
-            synthesize_to_sink(
+            synthesize(
                 &runtime,
                 &model,
                 &voice,
                 &mut scratch,
                 &req,
                 &abort,
-                &active_text,
-                &mut sink,
+                &script,
+                Delivery::Stream(&mut sink),
             )
             .map_err(|e| e.to_string())?;
         } else {
             let writer = WavFileWriter::create(Path::new(&cfg.output), SAMPLE_RATE as u32)
                 .map_err(|e| e.to_string())?;
             let mut sink = EdgeRampSink::new(writer, SAMPLE_RATE as u32);
-            let timing = synthesize_to_sink(
+            let out = synthesize(
                 &runtime,
                 &model,
                 &voice,
                 &mut scratch,
                 &req,
                 &abort,
-                &active_text,
-                &mut sink,
+                &script,
+                Delivery::Stream(&mut sink),
             )
             .map_err(|e| e.to_string())?;
             if !cfg.silent {
                 eprintln!(
                     "Wrote {} ({} samples, {:.2}s) [streamed]",
                     cfg.output,
-                    timing.samples_produced,
-                    timing.samples_produced as f64 / SAMPLE_RATE as f64
+                    out.timing.samples_produced,
+                    out.timing.samples_produced as f64 / SAMPLE_RATE as f64
                 );
             }
         }
@@ -525,23 +540,25 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
 
     let audio = if cfg.seed_audition > 1 {
         let mut chosen =
-            run_seed_audition(&cfg, &runtime, &model, &voice, &mut scratch, &req, &active_text)?;
+            run_seed_audition(&cfg, &runtime, &model, &voice, &mut scratch, &req, &script)?;
         // Las tomas no llevan acabado: `tail_trim` y `onset_fade` van solo a la elegida.
         finish_full_delivery(&mut chosen, &req);
         chosen
     } else {
-        // `synthesize_to_samples` ya aplica el acabado tras `time_stretch`.
-        let (a, _) = synthesize_to_samples(
+        // `synthesize` ya aplica el acabado tras `time_stretch`.
+        synthesize(
             &runtime,
             &model,
             &voice,
             &mut scratch,
             &req,
             &abort,
-            &active_text,
+            &script,
+            Delivery::Buffer,
         )
-        .map_err(|e| e.to_string())?;
-        a
+        .map_err(|e| e.to_string())?
+        .samples
+        .unwrap_or_default()
     };
 
     write_output_wav(&cfg, &audio)?;

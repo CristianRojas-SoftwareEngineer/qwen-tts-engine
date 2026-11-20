@@ -11,9 +11,10 @@ use qwen_core::config::{
 use qwen_engine::model::{DecoderWorkspace, SdStreamState};
 use qwen_engine::{
     encode_wav_bytes, speech_decoder_decode, speech_decoder_decode_streaming,
-    synthesize_to_samples, synthesize_to_sink, EngineError, MemorySink, Model06B, ModelLoadOptions,
-    AbortHandle, LogLevel, SessionScratch, SynthesisRequest, Voice,
+    synthesize, AbortHandle, Delivery, EngineError, LogLevel, MemorySink, Model06B,
+    ModelLoadOptions, SessionScratch, SynthesisRequest, Voice,
 };
+use qwen_core::Script;
 use qwen_kernels::ComputeRuntime;
 
 fn repo_root() -> PathBuf {
@@ -145,29 +146,34 @@ fn test_e2e_determinism_and_abort() {
 
     let abort = AbortHandle::new();
     let mut scratch1 = SessionScratch::new();
-    let (s1, t1) = synthesize_to_samples(
+    let script = Script::Plain("Hola, ¿cómo estás?".to_string());
+    let out1 = synthesize(
         &runtime,
         &model,
         &voice,
         &mut scratch1,
         &req,
         &abort,
-        "Hola, ¿cómo estás?",
+        &script,
+        Delivery::Buffer,
     )
     .unwrap();
+    let (s1, t1) = (out1.samples.unwrap(), out1.timing);
     assert!(t1.frames >= 10 && !s1.is_empty());
 
     let mut scratch2 = SessionScratch::new();
-    let (s2, t2) = synthesize_to_samples(
+    let out2 = synthesize(
         &runtime,
         &model,
         &voice,
         &mut scratch2,
         &req,
         &abort,
-        "Hola, ¿cómo estás?",
+        &script,
+        Delivery::Buffer,
     )
     .unwrap();
+    let (s2, t2) = (out2.samples.unwrap(), out2.timing);
     assert_eq!(t1.frames, t2.frames);
     assert_eq!(
         encode_wav_bytes(&s1, SAMPLE_RATE as u32),
@@ -179,17 +185,18 @@ fn test_e2e_determinism_and_abort() {
     let abort_now = AbortHandle::new();
     abort_now.cancel();
     let mut sink = MemorySink::new(0);
-    let err = synthesize_to_sink(
+    let err = synthesize(
         &runtime,
         &model,
         &voice,
         &mut scratch2,
         &req,
         &abort_now,
-        "Hola, ¿cómo estás?",
-        &mut sink,
+        &script,
+        Delivery::Stream(&mut sink),
     )
-    .unwrap_err();
+    .err()
+    .unwrap();
     assert!(matches!(err, EngineError::Aborted));
 
     // Rechazo explícito de buffers de códigos truncados en SpeechDecoder

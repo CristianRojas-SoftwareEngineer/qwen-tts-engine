@@ -9,12 +9,12 @@ use std::path::PathBuf;
 use qwen_core::config::{DEFAULT_SEED, ENC_DIM, SAMPLE_RATE};
 use qwen_core::{
     plan_script, resolve_sampling, MarkupMode, QVoiceFile, SamplingParams, Script, SeedChoice,
+    SpanSpec,
 };
 use qwen_engine::{
     clone_voice, encode_wav_bytes, mel_spectrogram, AbortHandle,
-    read_wav_24khz, render_spans_buffer, render_spans_stream,
-    synthesize_to_samples, trim_trailing_silence, validate_wav_path_or_header, write_wav,
-    CloneOptions, LogLevel, MemorySink, Model06B, ModelLoadOptions, SessionScratch,
+    read_wav_24khz, synthesize, trim_trailing_silence, validate_wav_path_or_header, write_wav,
+    CloneOptions, Delivery, LogLevel, MemorySink, Model06B, ModelLoadOptions, SessionScratch,
     SynthesisRequest, Voice, VoiceLoadOptions,
 };
 use qwen_kernels::ComputeRuntime;
@@ -240,16 +240,18 @@ fn test_clone_from_default_voice_e2e() {
         ..Default::default()
     };
     let abort = AbortHandle::new();
-    let (ref_samples, t_ref) = synthesize_to_samples(
+    let out_ref = synthesize(
         &runtime,
         &model,
         &default_voice,
         &mut scratch,
         &req(2050),
         &abort,
-        ref_text,
+        &Script::Plain(ref_text.to_string()),
+        Delivery::Buffer,
     )
     .unwrap();
+    let (ref_samples, t_ref) = (out_ref.samples.unwrap(), out_ref.timing);
     assert!(t_ref.frames >= 10 && !ref_samples.is_empty());
     write_wav(&ref_wav, &ref_samples, SAMPLE_RATE as u32).unwrap();
 
@@ -368,16 +370,20 @@ fn test_clone_from_default_voice_e2e() {
     assert_eq!(capped_icl.ref_codes[..], icl_file.ref_codes[..3 * 16]);
 
     for voice in [&icl_voice, &xvec_voice] {
-        let (samples, t) = synthesize_to_samples(
+        let out = synthesize(
             &runtime,
             &model,
             voice,
             &mut scratch,
             &req(2050),
             &abort,
-            "Hello, this is a test of the cloned voice running with the new engine.",
+            &Script::Plain(
+                "Hello, this is a test of the cloned voice running with the new engine.".to_string(),
+            ),
+            Delivery::Buffer,
         )
         .unwrap();
+        let (samples, t) = (out.samples.unwrap(), out.timing);
         assert!(t.frames >= 10 && !samples.is_empty());
     }
 
@@ -411,22 +417,29 @@ fn test_clone_from_default_voice_e2e() {
         log: LogLevel::Silent,
         ..Default::default()
     };
-    let (composed, n_spoken) = render_spans_buffer(
+    let n_spoken = spans
+        .iter()
+        .filter(|sp| matches!(sp, SpanSpec::Utterance { .. }))
+        .count();
+    let composed = synthesize(
         &runtime,
         &model,
         &default_voice,
         &mut scratch,
         &compose_req,
         &abort,
-        spans,
+        &plan.script,
+        Delivery::Buffer,
     )
+    .unwrap()
+    .samples
     .unwrap();
     assert!(n_spoken >= 2 && composed.len() > SAMPLE_RATE);
     let _ = encode_wav_bytes(&composed, SAMPLE_RATE as u32);
 
-    // `render_spans_stream` entrega muestras sin aplicar doble ganancia base
+    // La entrega en streaming de los tramos no aplica doble ganancia base
     let mut stream_sink = MemorySink::new(composed.len());
-    let n_streamed = render_spans_stream(
+    let streamed = synthesize(
         &runtime,
         &model,
         &default_voice,
@@ -437,10 +450,10 @@ fn test_clone_from_default_voice_e2e() {
             ..compose_req
         },
         &abort,
-        spans,
-        &mut stream_sink,
+        &plan.script,
+        Delivery::Stream(&mut stream_sink),
     )
     .unwrap();
-    assert_eq!(n_streamed, n_spoken);
+    assert!(streamed.samples.is_none());
     assert!(!stream_sink.samples.is_empty());
 }

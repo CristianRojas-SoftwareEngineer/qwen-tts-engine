@@ -10,15 +10,13 @@ use std::sync::{Condvar, Mutex};
 use std::time::Instant;
 
 use qwen_core::config::{
-    CODEBOOK_SIZE, CODEC_EOS, CODEC_VOCAB_SIZE, FRAME_RATE, HIDDEN_SIZE, HOP_SAMPLES,
+    CODEBOOK_SIZE, CODEC_EOS, CODEC_VOCAB_SIZE, FRAME_RATE, HIDDEN_SIZE,
     NUM_CODEBOOKS, SAMPLE_RATE,
 };
 use qwen_core::LcgRng;
 use qwen_kernels::{ftz_on, ComputeRuntime, KernelDispatch};
 
-use crate::audio::{
-    apply_gain, onset_fade, tail_trim, time_stretch, AudioSink, MemorySink,
-};
+use crate::audio::{apply_gain, onset_fade, tail_trim, AudioSink};
 use crate::code_predictor::cp_predict;
 use crate::error::EngineError;
 use crate::model::{
@@ -181,18 +179,32 @@ pub(crate) fn next_stream_chunk_target(
     (target, ramped)
 }
 
-/// Ejecuta la síntesis completa y entrega progresivamente los fragmentos de audio PCM a `sink`.
-#[allow(clippy::too_many_arguments)]
-pub fn synthesize_to_sink(
-    runtime: &ComputeRuntime,
-    model: &Model06B,
-    voice: &Voice,
+/// Datos fijos de una ejecución de texto plano: lo que `generate_to_sink` necesita además del
+/// espacio de trabajo, el texto y el destino.
+#[derive(Clone, Copy)]
+pub(crate) struct Run<'a> {
+    pub runtime: &'a ComputeRuntime,
+    pub model: &'a Model06B,
+    pub voice: &'a Voice,
+    pub req: &'a SynthesisRequest,
+    pub abort: &'a AbortHandle,
+}
+
+/// Ejecuta la síntesis de un texto plano y entrega progresivamente los fragmentos de audio PCM a
+/// `sink`, con la ganancia ya aplicada.
+pub(crate) fn generate_to_sink(
+    job: &Run<'_>,
     scratch: &mut SessionScratch,
-    req: &SynthesisRequest,
-    abort: &AbortHandle,
     text: &str,
     sink: &mut (dyn AudioSink + Send),
 ) -> Result<SynthesisTiming, EngineError> {
+    let Run {
+        runtime,
+        model,
+        voice,
+        req,
+        abort,
+    } = *job;
     let t_start = Instant::now();
     scratch.rng = LcgRng::new(req.sampling.seed);
 
@@ -615,30 +627,6 @@ pub fn finish_full_delivery(samples: &mut Vec<f32>, req: &SynthesisRequest) {
             eprintln!("Onset-fade: {} ms over the real attack", req.onset_fade_ms);
         }
     }
-}
-
-/// Ejecuta la síntesis completa y devuelve el buffer mono `f32` a 24 kHz junto con las métricas.
-///
-/// Orden del buffer: ganancia, `time_stretch` y, al final, `tail_trim` y `onset_fade`.
-pub fn synthesize_to_samples(
-    runtime: &ComputeRuntime,
-    model: &Model06B,
-    voice: &Voice,
-    scratch: &mut SessionScratch,
-    req: &SynthesisRequest,
-    abort: &AbortHandle,
-    text: &str,
-) -> Result<(Vec<f32>, SynthesisTiming), EngineError> {
-    let mut sink = MemorySink::new(req.max_frames.min(1024) * HOP_SAMPLES);
-    let mut timing = synthesize_to_sink(runtime, model, voice, scratch, req, abort, text, &mut sink)?;
-    // `synthesize_to_sink` ya aplicó la ganancia, antes de `time_stretch`.
-    let mut samples = sink.samples;
-    if (req.rate - 1.0).abs() > 1e-4 {
-        samples = time_stretch(&samples, req.rate);
-    }
-    finish_full_delivery(&mut samples, req);
-    timing.samples_produced = samples.len();
-    Ok((samples, timing))
 }
 
 #[cfg(test)]

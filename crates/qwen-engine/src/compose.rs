@@ -10,7 +10,8 @@ use qwen_kernels::ComputeRuntime;
 use crate::audio::{apply_gain, AudioSink};
 use crate::error::EngineError;
 use crate::model::{AbortHandle, Model06B, SessionScratch};
-use crate::pipeline::{finish_full_delivery, synthesize_to_samples};
+use crate::pipeline::{finish_full_delivery, Run};
+use crate::synth::plain_buffer;
 use crate::request::SynthesisRequest;
 use crate::voice::Voice;
 
@@ -52,8 +53,14 @@ fn synth_one_span_06b(
         };
     }
     // Cada span compuesto ejecuta prefill frío hacia MemorySink y luego DSP.
-    let (samples, _) =
-        synthesize_to_samples(runtime, model, voice, scratch, &span_req, abort, span_text)?;
+    let job = Run {
+        runtime,
+        model,
+        voice,
+        req: &span_req,
+        abort,
+    };
+    let (samples, _) = plain_buffer(&job, scratch, span_text)?;
     if samples.is_empty() {
         return Err(EngineError::Runtime(format!(
             "Compose: synthesis failed for span {idx}"
@@ -73,7 +80,7 @@ fn pause_sample_count(seconds: f32) -> usize {
 
 /// Síntesis multi-span hacia un único buffer `f32` mono a 24 kHz.
 /// Aplica pausas entre spans, DSP WSOLA de velocidad/volumen y fundido cruzado de 45 ms en muletillas.
-pub fn render_spans_buffer(
+pub(crate) fn render_spans_buffer(
     runtime: &ComputeRuntime,
     model: &Model06B,
     voice: &Voice,
@@ -171,7 +178,7 @@ pub fn render_spans_buffer(
 
 /// Síntesis multi-span en streaming entregando las muestras PCM progresivamente a `sink`.
 #[allow(clippy::too_many_arguments)]
-pub fn render_spans_stream(
+pub(crate) fn render_spans_stream(
     runtime: &ComputeRuntime,
     model: &Model06B,
     voice: &Voice,

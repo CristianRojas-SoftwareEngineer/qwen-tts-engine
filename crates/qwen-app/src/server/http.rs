@@ -11,9 +11,8 @@ use std::time::{Duration, Instant};
 use qwen_core::config::{language_name, SAMPLE_RATE};
 use qwen_core::Script;
 use qwen_engine::{
-    encode_wav_bytes, render_spans_buffer, render_spans_stream, synthesize_to_samples,
-    synthesize_to_sink, AbortHandle, EdgeRampSink, EngineError, MemorySink, Model06B, PcmWrite,
-    SessionScratch, SynthesisTiming, Voice,
+    encode_wav_bytes, synthesize, AbortHandle, Delivery, EdgeRampSink, EngineError, MemorySink,
+    Model06B, PcmWrite, SessionScratch, SynthesisTiming, Voice,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -374,15 +373,15 @@ pub fn warm_up_session(
     let abort = AbortHandle::new();
     let mut sink = MemorySink::new(0);
     let t0 = Instant::now();
-    match synthesize_to_sink(
+    match synthesize(
         runtime,
         model,
         voice,
         scratch,
         &req,
         &abort,
-        &planned.text,
-        &mut sink,
+        &Script::Plain(planned.text),
+        Delivery::Stream(&mut sink),
     ) {
         Ok(_) => eprintln!("[HTTP] Calentamiento: {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0),
         Err(e) => eprintln!("[HTTP] Calentamiento fallido (sin efecto en las peticiones): {e}"),
@@ -418,23 +417,33 @@ pub fn handle_tts_full(
     let t0 = Instant::now();
     let mut timing_opt: Option<SynthesisTiming> = None;
     let res = match &planned.script {
-        Script::Spans(spans) => {
-            if !spans.is_empty() {
+        Script::Spans(spans) if spans.is_empty() => {
+            Err(EngineError::InvalidArg("markup parse failed".to_string()))
+        }
+        script => {
+            if let Script::Spans(spans) = script {
                 eprintln!(
                     "[HTTP] inline markup -> per-sentence compose ({} spans)",
                     spans.len()
                 );
-                render_spans_buffer(runtime, model, voice, scratch, &req, &guard.abort, spans)
-                    .map(|(buf, _)| buf)
-            } else {
-                Err(EngineError::InvalidArg("markup parse failed".to_string()))
             }
+            synthesize(
+                runtime,
+                model,
+                voice,
+                scratch,
+                &req,
+                &guard.abort,
+                script,
+                Delivery::Buffer,
+            )
+            .map(|out| {
+                if matches!(script, Script::Plain(_)) {
+                    timing_opt = Some(out.timing);
+                }
+                out.samples.unwrap_or_default()
+            })
         }
-        Script::Plain(text) => synthesize_to_samples(runtime, model, voice, scratch, &req, &guard.abort, text)
-            .map(|(buf, timing)| {
-                timing_opt = Some(timing);
-                buf
-            }),
     };
 
     let samples = match res {
@@ -504,43 +513,31 @@ pub fn handle_tts_stream(
 
     let mut timing_opt: Option<SynthesisTiming> = None;
     let gen_res: Result<(), EngineError> = match &planned.script {
-        Script::Spans(spans) => {
-            if !spans.is_empty() {
+        Script::Spans(spans) if spans.is_empty() => {
+            Err(EngineError::InvalidArg("markup parse failed".to_string()))
+        }
+        script => {
+            if let Script::Spans(spans) = script {
                 eprintln!(
                     "[HTTP] inline markup -> per-sentence compose stream ({} spans)",
                     spans.len()
                 );
-                render_spans_stream(
-                    runtime,
-                    model,
-                    voice,
-                    scratch,
-                    &req,
-                    &guard.abort,
-                    spans,
-                    &mut chunk_sink,
-                )
-                .map(|_| ())
-            } else {
-                Err(EngineError::InvalidArg("markup parse failed".to_string()))
             }
-        }
-        Script::Plain(text) => {
-            synthesize_to_sink(
+            synthesize(
                 runtime,
                 model,
                 voice,
                 scratch,
                 &req,
                 &guard.abort,
-                text,
-                &mut chunk_sink,
+                script,
+                Delivery::Stream(&mut chunk_sink),
             )
-            .map(
-                |t| {
-                    timing_opt = Some(t);
-                },
-            )
+            .map(|out| {
+                if matches!(script, Script::Plain(_)) {
+                    timing_opt = Some(out.timing);
+                }
+            })
         }
     };
 
