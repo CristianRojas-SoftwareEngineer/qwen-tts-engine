@@ -201,7 +201,7 @@ impl MmapStore {
         let data = &shard[loc.byte_offset..loc.byte_offset + loc.byte_len];
         if !data.len().is_multiple_of(2) || !(data.as_ptr() as usize).is_multiple_of(2) {
             return Err(CoreError::Safetensors(format!(
-                "Tensor '{name}' BF16 data is not 2-byte aligned"
+                "Los datos BF16 del tensor '{name}' no están alineados a 2 bytes"
             )));
         }
         Ok((shard, loc.byte_offset, loc.byte_len / 2))
@@ -236,7 +236,7 @@ impl MmapStore {
             Dtype::F32 => {
                 if !data.len().is_multiple_of(4) {
                     return Err(CoreError::Safetensors(format!(
-                        "Tensor '{name}' F32 byte length invalid"
+                        "Longitud en bytes F32 no válida en el tensor '{name}'"
                     )));
                 }
                 if (data.as_ptr() as usize).is_multiple_of(4) {
@@ -256,7 +256,7 @@ impl MmapStore {
             Dtype::BF16 => {
                 if !data.len().is_multiple_of(2) {
                     return Err(CoreError::Safetensors(format!(
-                        "Tensor '{name}' BF16 byte length invalid"
+                        "Longitud en bytes BF16 no válida en el tensor '{name}'"
                     )));
                 }
                 let out: Vec<f32> = data
@@ -269,7 +269,7 @@ impl MmapStore {
                 Ok(F32DataView::Owned(out))
             }
             other => Err(CoreError::Safetensors(format!(
-                "Tensor '{name}' dtype {other:?} cannot be read as F32"
+                "El tensor '{name}' de dtype {other:?} no se puede leer como F32"
             ))),
         }
     }

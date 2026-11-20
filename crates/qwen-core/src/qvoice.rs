@@ -162,7 +162,7 @@ impl QVoiceFile {
         }
         if ref_text.is_empty() != (n_frames == 0) {
             return Err(corrupt(
-                "inconsistent ICL data (ref_text and ref_codes must both be present or both empty)",
+                "datos ICL incoherentes (ref_text y ref_codes deben estar ambos presentes o ambos vacíos)",
             ));
         }
 
@@ -179,7 +179,7 @@ impl QVoiceFile {
         let err = |what: &str| CoreError::QVoice(format!("{}: {what}", path.display()));
         if self.speaker_embedding.len() != ENC_DIM {
             return Err(err(&format!(
-                "speaker embedding must have {ENC_DIM} values, got {}",
+                "el x-vector debe tener {ENC_DIM} valores, tiene {}",
                 self.speaker_embedding.len()
             )));
         }
@@ -201,7 +201,7 @@ impl QVoiceFile {
         }
         if self.ref_text.is_empty() != (n_frames == 0) {
             return Err(err(
-                "inconsistent ICL data (ref_text and ref_codes must both be present or both empty)",
+                "datos ICL incoherentes (ref_text y ref_codes deben estar ambos presentes o ambos vacíos)",
             ));
         }
 

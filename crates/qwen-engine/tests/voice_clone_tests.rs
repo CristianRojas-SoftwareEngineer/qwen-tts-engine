@@ -309,10 +309,7 @@ fn test_clone_from_default_voice_e2e() {
     assert_eq!(fs::metadata(&xvec_path).unwrap().len() as usize, 4124);
     let xvec_file = QVoiceFile::read_from_file(&xvec_path).unwrap();
     assert!(!xvec_file.has_icl());
-    assert_eq!(
-        xvec_file.lang_id, 0,
-        "clonar sin -l no guarda idioma"
-    );
+    assert_eq!(xvec_file.lang_id, 0, "clonar sin -l no guarda idioma");
     assert_eq!(xvec_file.voice_name, "");
 
     // 4. Carga de cada voz y síntesis de un texto corto

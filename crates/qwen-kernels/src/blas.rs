@@ -152,7 +152,10 @@ fn handle_zero_k_sgemm(m: usize, n: usize, beta: f32, c: &mut [f32], ldc: usize)
             .checked_mul(ldc)
             .and_then(|v| v.checked_add(n))
             .expect("sgemm: desbordamiento del tamaño de c con k = 0");
-        assert!(ldc >= n && c.len() >= req, "sgemm: límites de c no válidos con k = 0");
+        assert!(
+            ldc >= n && c.len() >= req,
+            "sgemm: límites de c no válidos con k = 0"
+        );
         for row in 0..m {
             let slice = &mut c[row * ldc..row * ldc + n];
             if beta == 0.0 {

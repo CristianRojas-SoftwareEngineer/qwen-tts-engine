@@ -20,7 +20,7 @@ use crate::cli::CliArgs;
 use crate::request;
 
 /// Imprime una línea por voz: archivo, nombre, idioma, ICL y tamaño. Un archivo que el lector
-/// rechaza se muestra con `unsupported: <mensaje del lector>`.
+/// rechaza se muestra con `no compatible: <mensaje del lector>`.
 fn print_qvoice_info(path: &Path) {
     let basename = path
         .file_name()
@@ -49,7 +49,7 @@ fn print_qvoice_info(path: &Path) {
                 size as f32 / 1024.0
             );
         }
-        Err(e) => println!("  {basename:<30}  unsupported: {e}"),
+        Err(e) => println!("  {basename:<30}  no compatible: {e}"),
     }
 }
 

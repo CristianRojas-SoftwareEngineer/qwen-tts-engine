@@ -247,7 +247,7 @@ pub fn print_usage(prog: &str) {
     eprintln!("  -S, --silent               Suprime los logs de stderr");
     eprintln!("  -D, --debug                Diagnósticos internos detallados");
     eprintln!("  --caps                     Imprime las capacidades de CPU/SIMD/BLAS y termina");
-    eprintln!("  --self-test                Ejecuta el autotest numérico de los kernels y termina");
+    eprintln!("  --self-test                Ejecuta la autoprueba numérica de los kernels y termina");
     eprintln!(
         "  --matmat-bench             Ejecuta el microbenchmark matmat frente a B*matvec y termina"
     );
