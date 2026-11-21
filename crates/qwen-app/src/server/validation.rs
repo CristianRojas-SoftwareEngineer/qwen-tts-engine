@@ -291,17 +291,16 @@ mod tests {
         assert!(parse(r#"{"text":"Hi."}"#, false).is_ok());
         assert!(parse(r#"{"text":"Hi.","voice":"default"}"#, false).is_ok());
         assert!(parse(r#"{"text":"Hi.","voice":"DEFAULT"}"#, false).is_ok());
-        let err = parse(r#"{"text":"Hi.","voice":"ryan"}"#, false).unwrap_err();
-        assert_eq!(err, "la voz 'ryan' no está cargada (cargada: 'default')");
+        let err = parse(r#"{"text":"Hi.","voice":"otra"}"#, false).unwrap_err();
+        assert_eq!(err, "la voz 'otra' no está cargada (cargada: 'default')");
         assert!(parse(r#"{"text":"Hi.","voice":5}"#, false).is_err());
     }
 
     #[test]
     fn test_unknown_fields_are_rejected() {
-        let err = parse(r#"{"text":"Hi.","speaker":"ryan","emotion":"sad"}"#, false).unwrap_err();
+        let err = parse(r#"{"text":"Hi.","foo":"x","bar":1}"#, false).unwrap_err();
         assert!(err.starts_with("campo desconocido '"), "{err}");
-        assert!(parse(r#"{"text":"Hi.","input":"x"}"#, false).is_err());
-        assert!(parse(r#"{"input":"Hi."}"#, false).is_err());
+        assert!(parse(r#"{"foo":"Hi."}"#, false).is_err());
         // `null` cuenta como ausente
         assert!(parse(r#"{"text":"Hi.","seed":null}"#, false).is_ok());
     }

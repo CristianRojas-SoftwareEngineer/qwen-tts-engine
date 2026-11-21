@@ -95,7 +95,7 @@ pub(crate) fn build_prompt(
     text: &str,
     scratch: &mut SessionScratch,
 ) -> Result<Prompt, EngineError> {
-    let text_tokens = model.tokenizer.encode_para(text);
+    let text_tokens = model.tokenizer.encode(text);
     if text_tokens.is_empty() {
         return Err(EngineError::InvalidArg(
             "La tokenización del texto produjo 0 tokens".to_string(),

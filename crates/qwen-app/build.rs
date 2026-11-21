@@ -16,51 +16,27 @@ fn main() {
         return;
     }
 
-    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let rc_path = manifest_dir.join("qwen_app_manifest.rc");
-    let manifest_path = manifest_dir.join("qwen_app.exe.manifest");
+    let res_obj = PathBuf::from(env::var("OUT_DIR").unwrap()).join("qwen_app_manifest.o");
 
-    if target_env == "msvc" {
-        println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
-        println!(
-            "cargo:rustc-link-arg=/MANIFESTINPUT:{}",
-            manifest_path.display()
+    // El manifiesto fija UTF-8 como página de códigos del proceso: sin él, los argumentos y
+    // las rutas con tildes llegan mal. `windres` viene con binutils de MSYS2 UCRT64.
+    let ok = Command::new("windres")
+        .arg("-i")
+        .arg(&rc_path)
+        .arg("-o")
+        .arg(&res_obj)
+        .arg("-O")
+        .arg("coff")
+        .current_dir(&manifest_dir)
+        .status()
+        .is_ok_and(|st| st.success());
+    if !ok {
+        panic!(
+            "no se pudo compilar el manifiesto de Windows con `windres`: instala \
+             mingw-w64-ucrt-x86_64-binutils y pon C:\\msys64\\ucrt64\\bin en el PATH"
         );
-        return;
     }
-
-    // GNU / MinGW: compila .rc a objeto COFF .o usando windres
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let res_obj = out_dir.join("qwen_app_manifest.o");
-
-    let candidates = [
-        env::var("WINDRES").ok(),
-        Some("windres".to_string()),
-        Some("x86_64-w64-mingw32-windres".to_string()),
-        Some("llvm-windres".to_string()),
-        Some(r"C:\msys64\ucrt64\bin\windres.exe".to_string()),
-    ];
-
-    for cand in candidates.into_iter().flatten() {
-        let status = Command::new(&cand)
-            .arg("-i")
-            .arg(&rc_path)
-            .arg("-o")
-            .arg(&res_obj)
-            .arg("-O")
-            .arg("coff")
-            .current_dir(&manifest_dir)
-            .status();
-        if let Ok(st) = status {
-            if st.success() {
-                println!("cargo:rustc-link-arg={}", res_obj.display());
-                return;
-            }
-        }
-    }
-
-    println!(
-        "cargo:warning=windres no encontrado; no se incrustó el manifiesto UTF-8 de Windows"
-    );
+    println!("cargo:rustc-link-arg={}", res_obj.display());
 }

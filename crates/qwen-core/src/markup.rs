@@ -23,7 +23,7 @@ pub enum SpanSpec {
 pub enum MarkupMode {
     /// Sustitución paralingüística y composición si queda marcado.
     Auto,
-    /// `--no-compose`: los tags pasan literales al modelo.
+    /// `--no-compose`: el texto pasa tal cual y los tags se leen como texto.
     Literal,
     /// `--compose`: el texto es una especificación de tramos.
     Compose,
@@ -112,8 +112,6 @@ struct ComposeMacro {
 }
 
 const COMPOSE_MACROS: &[ComposeMacro] = &[
-    ComposeMacro { tag: "sigh", text: "Hah...", rate: 1.12, volume: 0.67 },
-    ComposeMacro { tag: "sighs", text: "Hah...", rate: 1.12, volume: 0.67 },
     ComposeMacro { tag: "ahh", text: "Haaa...", rate: 0.90, volume: 0.70 },
     ComposeMacro { tag: "relief", text: "Haaa...", rate: 0.90, volume: 0.70 },
     ComposeMacro { tag: "phew", text: "Uao...", rate: 1.00, volume: 0.82 },
@@ -122,8 +120,6 @@ const COMPOSE_MACROS: &[ComposeMacro] = &[
     ComposeMacro { tag: "hmpf", text: "Hmpf...", rate: 1.00, volume: 0.75 },
     ComposeMacro { tag: "mah", text: "Mah...", rate: 0.95, volume: 0.78 },
     ComposeMacro { tag: "uhm", text: "Uhm...", rate: 0.95, volume: 0.72 },
-    ComposeMacro { tag: "laugh", text: "Eheh...", rate: 0.95, volume: 0.78 },
-    ComposeMacro { tag: "laughs", text: "Eheh...", rate: 0.95, volume: 0.78 },
     ComposeMacro { tag: "haha", text: "Haha!", rate: 1.00, volume: 0.80 },
     ComposeMacro { tag: "heh", text: "Hehhh...", rate: 0.95, volume: 0.70 },
     ComposeMacro { tag: "ouch", text: "Ouch!", rate: 1.00, volume: 0.85 },
@@ -132,7 +128,7 @@ const COMPOSE_MACROS: &[ComposeMacro] = &[
     ComposeMacro { tag: "ugh", text: "Ugh...", rate: 1.00, volume: 0.78 },
 ];
 
-fn pick_paralinguistic_06b(tag: &str) -> Option<(&'static str, u32, f32)> {
+fn pick_paralinguistic(tag: &str) -> Option<(&'static str, u32, f32)> {
     match tag.to_ascii_lowercase().as_str() {
         "laugh" | "laughs" => Some(("\u{54c8}\u{54c8}\u{54c8}", 2024, 1.1)),
         "sigh" | "sighs" => Some(("\u{5509}", 42, 1.1)),
@@ -145,7 +141,7 @@ fn pick_paralinguistic_06b(tag: &str) -> Option<(&'static str, u32, f32)> {
 }
 
 pub fn is_paralinguistic_event_tag(tag: &str) -> bool {
-    pick_paralinguistic_06b(tag).is_some()
+    pick_paralinguistic(tag).is_some()
 }
 
 pub struct ParalinguisticSubstitution {
@@ -158,7 +154,7 @@ pub struct ParalinguisticSubstitution {
 pub struct MarkupPlanner;
 
 impl MarkupPlanner {
-    /// Sustitución paralingüística en línea para `0.6B`.
+    /// Sustitución paralingüística en línea.
     /// Reemplaza `[laugh]`, `[sigh]`, etc. por onomatopeyas delimitadas por comas
     /// en una única generación, fijando la semilla y temperatura del primer tag.
     pub fn paralinguistic_substitute(text: &str) -> ParalinguisticSubstitution {
@@ -177,7 +173,7 @@ impl MarkupPlanner {
                     if tl < 32 {
                         if let Ok(raw_tag) = std::str::from_utf8(&bytes[p + 1..close]) {
                             let tag = raw_tag.trim();
-                            if let Some((onom, sd, td)) = pick_paralinguistic_06b(tag) {
+                            if let Some((onom, sd, td)) = pick_paralinguistic(tag) {
                                 while out.ends_with(' ') {
                                     out.pop();
                                 }

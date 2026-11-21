@@ -560,7 +560,6 @@ pub struct CpBuffers {
     pub dec_gate: AlignedBuf<f32>,
     pub dec_ffn_out: AlignedBuf<f32>,
     pub x1in: AlignedBuf<f32>,
-    pub emb_buf: AlignedBuf<f32>,
     // Scratch preasignado para prefill B=2
     pub p2_x2: AlignedBuf<f32>,
     pub p2_q2: AlignedBuf<f32>,
@@ -588,7 +587,6 @@ impl CpBuffers {
             dec_gate: AlignedBuf::new_zeroed(2 * CP_INTERMEDIATE_SIZE),
             dec_ffn_out: AlignedBuf::new_zeroed(CP_HIDDEN_SIZE),
             x1in: AlignedBuf::new_zeroed(CP_HIDDEN_SIZE),
-            emb_buf: AlignedBuf::new_zeroed(HIDDEN_SIZE),
             p2_x2: AlignedBuf::new_zeroed(2 * CP_HIDDEN_SIZE),
             p2_q2: AlignedBuf::new_zeroed(2 * CP_Q_DIM),
             p2_k2: AlignedBuf::new_zeroed(2 * CP_KV_DIM),
@@ -1048,7 +1046,6 @@ pub(crate) fn compute_text_proj_token(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn embed_one_text_token_compute(
     dispatch: &KernelDispatch,
     pool: &qwen_kernels::ComputePool,

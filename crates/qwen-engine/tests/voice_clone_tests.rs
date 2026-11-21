@@ -168,32 +168,32 @@ fn test_voice_file_extension_and_version_errors() {
         )
     );
 
-    // Un .qvoice v3 se rechaza nombrando la ruta
-    let v3 = dir.join("old.qvoice");
+    // Un .qvoice de otra versión se rechaza nombrando la ruta
+    let other = dir.join("other_version.qvoice");
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"QVCE");
-    bytes.extend_from_slice(&3u32.to_le_bytes());
+    bytes.extend_from_slice(&5u32.to_le_bytes());
     bytes.extend_from_slice(&1024u32.to_le_bytes());
-    fs::write(&v3, bytes).unwrap();
-    let err = Voice::load(&v3, &opts)
+    fs::write(&other, bytes).unwrap();
+    let err = Voice::load(&other, &opts)
         .err()
         .unwrap()
         .to_string();
     assert!(
-        err.contains("version 3") && err.contains("old.qvoice"),
+        err.contains("version 5") && err.contains("other_version.qvoice"),
         "se obtuvo: {err}"
     );
 }
 
 #[test]
 fn test_markup_with_default_voice_texts() {
-    // `[sad]` ya no es marcado: queda como texto y no activa el modo compose
-    let plan = plan_script("Devo andare [sad] Ciao.", MarkupMode::Auto);
+    // Un tag desconocido no es marcado: queda como texto y no activa el modo compose
+    let plan = plan_script("Devo andare [xyz] Ciao.", MarkupMode::Auto);
     assert!(plan.paralinguistic.is_none());
     let Script::Plain(text) = &plan.script else {
         panic!("se esperaba Plain");
     };
-    assert!(text.contains("[sad]"));
+    assert!(text.contains("[xyz]"));
 
     // Pausas y `[laugh]` siguen funcionando
     let plan = plan_script("Oh! [laugh] [pause:0.5] Great!", MarkupMode::Auto);

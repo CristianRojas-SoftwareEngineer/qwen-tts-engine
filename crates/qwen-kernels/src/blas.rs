@@ -54,7 +54,7 @@ extern "C" {
     #[cfg(not(target_os = "macos"))]
     fn openblas_get_corename() -> *const std::ffi::c_char;
 
-    #[cfg(all(windows, target_env = "gnu"))]
+    #[cfg(windows)]
     fn _putenv(envstring: *const std::ffi::c_char) -> c_int;
 }
 
@@ -165,7 +165,7 @@ fn user_fixed_threads() -> bool {
 /// `_putenv` actualiza la tabla de entorno de la CRT, que es la que lee `getenv`. En el resto
 /// de plataformas no hace nada: Linux no cobra la memoria comprometida (*commit*) por adelantado y macOS usa Accelerate.
 pub fn set_initial_openblas_threads(n: usize) {
-    #[cfg(all(windows, target_env = "gnu"))]
+    #[cfg(windows)]
     {
         // Invariante: `user_fixed_threads` se evalúa siempre antes de cualquier `_putenv`, que
         // actualiza también el entorno del proceso; evaluada después, vería la variable que fija
@@ -181,7 +181,7 @@ pub fn set_initial_openblas_threads(n: usize) {
             _putenv(var.as_ptr());
         }
     }
-    #[cfg(not(all(windows, target_env = "gnu")))]
+    #[cfg(not(windows))]
     {
         let _ = n;
     }

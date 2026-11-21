@@ -542,7 +542,6 @@ impl KernelDispatch {
         (self.rms_norm_per_head_fn)(x, weight, seq, n_heads, head_dim, eps);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn parallel_qkv_split<F>(
         pool: &ComputePool,
         q: &mut [f32],
@@ -1243,7 +1242,6 @@ impl KernelDispatch {
         (self.f32_matvec_accum_fn)(y, w, x, rows, cols);
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// Convierte `src` (BF16) a `dst` (F32) repartiendo el trabajo entre los hilos de `pool`.
     pub fn bf16_to_f32_par(&self, pool: &ComputePool, dst: &mut [f32], src: &[u16]) {
         let total = dst.len();

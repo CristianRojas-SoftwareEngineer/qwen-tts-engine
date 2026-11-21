@@ -38,7 +38,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
 /// Corre en `.CRT$XCT`: dentro de `_initterm`, con la CRT ya iniciada y antes de los
 /// constructores (`.ctors`) de OpenBLAS. Ver [`qwen_kernels::set_initial_openblas_threads`].
 /// Si los argumentos no se pueden leer o no son válidos, no hace nada: `main` informa del error.
-#[cfg(all(windows, target_env = "gnu"))]
+#[cfg(windows)]
 mod openblas_preinit {
     extern "C" fn set_initial_threads() {
         let Ok(args) = std::env::args_os()

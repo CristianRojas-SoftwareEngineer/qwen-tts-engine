@@ -492,7 +492,6 @@ fn cs_convt(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn cs_dwconv(
     out: &mut AlignedBuf<f32>,
     input: &[f32],

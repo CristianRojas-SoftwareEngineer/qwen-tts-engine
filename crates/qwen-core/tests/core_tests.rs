@@ -51,10 +51,10 @@ fn test_config_only_base_loads_and_rejects_others() {
 
     // Todo rechazo lleva el prefijo genérico seguido de la comprobación que falló
     let prefix = "Este motor solo carga Qwen3-TTS 0.6B Base: ";
-    let err = load_synthetic("cv", &synthetic_config("custom_voice", false)).unwrap_err();
+    let err = load_synthetic("not_base", &synthetic_config("not_base", false)).unwrap_err();
     assert_eq!(
         err.to_string(),
-        format!("{prefix}tts_model_type 'custom_voice' no soportado (se esperaba 'base')")
+        format!("{prefix}tts_model_type 'not_base' no soportado (se esperaba 'base')")
     );
     // Un checkpoint sin `tts_model_type` tampoco es Base
     let no_type = synthetic_config("base", true).replace("\"tts_model_type\":\"base\",", "");
@@ -270,18 +270,18 @@ fn test_qvoice_v4_rejects_invalid_files() {
     let good = qvoice_v4_bytes("v", 2050, "text", 2);
     assert!(read_qvoice_bytes("good", &good).is_ok());
 
-    // v3 (y cualquier versión distinta de 4) se rechaza con un mensaje que pide clonar de nuevo
-    let mut v3 = Vec::new();
-    v3.extend_from_slice(b"QVCE");
-    v3.extend_from_slice(&3u32.to_le_bytes());
-    v3.extend_from_slice(&1024u32.to_le_bytes());
-    let err = read_qvoice_bytes("v3", &v3).unwrap_err().to_string();
+    // Cualquier versión distinta de 4 se rechaza con un mensaje que pide clonar de nuevo
+    let mut other = Vec::new();
+    other.extend_from_slice(b"QVCE");
+    other.extend_from_slice(&5u32.to_le_bytes());
+    other.extend_from_slice(&1024u32.to_le_bytes());
+    let err = read_qvoice_bytes("other_version", &other).unwrap_err().to_string();
     assert!(
-        err.contains("version 3") && err.contains("version 4"),
+        err.contains("version 5") && err.contains("version 4"),
         "se obtuvo: {err}"
     );
     assert!(
-        err.contains("qwen_core_qv4_v3.qvoice"),
+        err.contains("qwen_core_qv4_other_version.qvoice"),
         "el mensaje debe nombrar la ruta: {err}"
     );
 
@@ -363,8 +363,8 @@ fn test_markup_sampling_and_lookups() {
         }
     );
 
-    // Un tag que ya no es de marcado (`[sad]`) queda como texto, igual que `[xyz]`
-    for tag in ["[sad]", "[neutral]", "[xyz]"] {
+    // Un tag desconocido no es marcado y queda como texto
+    for tag in ["[xyz]", "[abc]"] {
         let text = format!("Devo andare {tag} Ciao.");
         assert!(!MarkupPlanner::has_markup(&text), "{tag} no debe contar como marcado");
         let spans = MarkupPlanner::parse_spans(&text);

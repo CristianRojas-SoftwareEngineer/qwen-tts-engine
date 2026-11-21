@@ -213,7 +213,7 @@ pub fn print_usage(prog: &str) {
     eprintln!("  --delete-voice <path>      Borra un archivo .qvoice");
     eprintln!("  --compose <spec>           Síntesis de varios tramos con marcado en línea");
     eprintln!("  --compose-pause <s>        Pausa por defecto entre tramos hablados (por defecto: {DEFAULT_COMPOSE_PAUSE_S})");
-    eprintln!("  --no-compose               Pasa los [tags] literalmente al modelo");
+    eprintln!("  --no-compose               Pasa el texto tal cual: los [tags] se leen como texto");
     eprintln!("  --serve <port>             Inicia el servidor HTTP en el puerto indicado");
     eprintln!("  --host <ipv4>              Dirección IPv4 de enlace (por defecto: 127.0.0.1)");
     eprintln!("  --watch-stdin              Termina de inmediato cuando stdin llega a EOF");

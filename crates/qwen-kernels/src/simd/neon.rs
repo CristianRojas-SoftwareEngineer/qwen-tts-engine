@@ -200,7 +200,6 @@ macro_rules! q4_0_int8_kernels {
         /// cada columna se acumula con la misma secuencia que `q4_0_block`, así que el resultado es
         /// bit a bit el de `NB` llamadas a `matvec`.
         #[inline]
-        #[allow(clippy::too_many_arguments)]
         #[$feat]
         unsafe fn q4_0_matmat_row<const NB: usize>(
             yr: *mut f32,
@@ -856,7 +855,6 @@ unsafe fn scale_vec(o: *mut f32, s: f32, n: usize) {
 /// Una fila de salida de la atención causal con *online softmax*, como en AVX2: claves y valores
 /// de la fila `j` en `k_at(j)` y `v_at(j)`.
 #[inline]
-#[allow(clippy::too_many_arguments)]
 unsafe fn attn_row<R: Row>(
     o_row: *mut f32,
     q_row: *const f32,
