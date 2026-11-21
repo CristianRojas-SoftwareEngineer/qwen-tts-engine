@@ -9,7 +9,7 @@
 
 ## Contexto
 
-El uso objetivo es **local**: una síntesis a la vez en un equipo modesto (laptop, solo CPU, Windows, Linux y macOS), por ejemplo un servidor residente que narra los mensajes de un agente por `POST /v1/tts/stream`. Las optimizaciones que solo rinden con varios clientes concurrentes están en [`ROADMAP.md`](../../ROADMAP.md).
+El uso objetivo es **local**: una síntesis a la vez en un equipo modesto (laptop, solo CPU, Windows, Linux y macOS), por ejemplo un servidor residente que narra los mensajes de un agente por `POST /v1/tts/stream`. Las optimizaciones que solo rinden con varios clientes concurrentes quedan fuera de alcance ([ADR-006](006-single-synthesis-path.md)).
 
 El tiempo de una síntesis sigue el modelo:
 

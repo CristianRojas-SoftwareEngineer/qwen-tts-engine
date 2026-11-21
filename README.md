@@ -63,7 +63,7 @@ Notas sobre estos requisitos:
 
 | Plataforma | Toolchain y bibliotecas | Notas |
 |---|---|---|
-| **Windows (`x86_64-pc-windows-gnu`)** | Rust estable (`x86_64-pc-windows-gnu`) + MSYS2 UCRT64 (`mingw-w64-ucrt-x86_64-gcc`, `make`, `mingw-w64-ucrt-x86_64-binutils`) en `PATH` (`C:\msys64\ucrt64\bin`), más el OpenBLAS propio (abajo) | El motor enlaza un OpenBLAS 0.3.34 propio, estático y sin OpenMP ni Fortran: `OPENBLAS_LIB_DIR` es obligatoria (`C:/openblas/lib`). |
+| **Windows (`x86_64-pc-windows-gnu`)** | Rust con host `x86_64-pc-windows-gnu` (`rustup set default-host x86_64-pc-windows-gnu`; no hace falta Visual Studio) + MSYS2 UCRT64 (`mingw-w64-ucrt-x86_64-gcc`, `make`, `mingw-w64-ucrt-x86_64-binutils`) en `PATH` (`C:\msys64\ucrt64\bin`), más el OpenBLAS propio (abajo) | El motor enlaza un OpenBLAS 0.3.34 propio, estático y sin OpenMP ni Fortran: `OPENBLAS_LIB_DIR` es obligatoria (`C:/openblas/lib`). |
 | **Linux** | Rust estable + OpenBLAS propio | El motor enlaza siempre un OpenBLAS propio: `scripts/build-openblas.sh "$HOME/openblas"` (OpenBLAS 0.3.34 estático, solo BLAS, `DYNAMIC_ARCH`: elige el kernel de cada CPU al arrancar; ~4–6 min en 4 vCPU ARM, medido con la 0.3.30) y `OPENBLAS_LIB_DIR="$HOME/openblas/lib" cargo build --release -p qwen-app`; `OPENBLAS_LIB_DIR` es obligatoria. El de la distribución puede traer solo el kernel genérico: Ubuntu 22.04 en ARM64 usa `armv8` y el decoder va un 30 % más lento. `qwen_tts --caps` muestra el kernel en la línea `BLAS (prefill)`. |
 | **macOS** | Rust estable + Xcode Command Line Tools | Enlaza con el framework del sistema `Accelerate`. |
 

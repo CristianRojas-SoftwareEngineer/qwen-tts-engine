@@ -69,5 +69,5 @@ El caso de uso del motor es local: una síntesis a la vez en un equipo modesto, 
 
 ### Riesgos y mitigación
 
-- Quien necesite atender varias peticiones a la vez debe ejecutar varios procesos o retomar el servidor concurrente desde el historial de git (véase [`ROADMAP.md`](../../ROADMAP.md)).
+- Quien necesite atender varias peticiones a la vez debe ejecutar varios procesos o retomar el servidor concurrente desde el historial de git.
 - El audio de la entrega completa y el del *streaming* solo coinciden mientras compartan el generador; la prueba de equivalencia entre entregas lo vigila.

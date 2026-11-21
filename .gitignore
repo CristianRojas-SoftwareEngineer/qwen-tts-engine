@@ -1,11 +1,8 @@
 # Rust / Cargo
 /target/
-/.cargo/config.toml
-**/*.rs.bk
 
 # Audio y salidas de pruebas locales
 *.wav
-*.raw
 *.pcm
 
 # Modelos, voces y recursos locales grandes (compartidos, nunca se commitean)
@@ -17,7 +14,6 @@
 # SO / editor / temporales
 .DS_Store
 Thumbs.db
-server_stderr.log
 
 # Cuadernos operativos locales y artefactos de línea base
 /.work/
