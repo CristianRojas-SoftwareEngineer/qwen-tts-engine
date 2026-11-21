@@ -11,14 +11,12 @@ use crate::error::CoreError;
 
 struct ByteTables {
     byte_to_cp: [u32; 256],
-    cp_to_byte: [u8; 512],
 }
 
 fn byte_tables() -> &'static ByteTables {
     static TABLES: OnceLock<ByteTables> = OnceLock::new();
     TABLES.get_or_init(|| {
         let mut byte_to_cp = [0u32; 256];
-        let mut cp_to_byte = [0u8; 512];
         let mut is_good = [false; 256];
 
         for b in b'!'..=b'~' {
@@ -41,16 +39,7 @@ fn byte_tables() -> &'static ByteTables {
                 extra += 1;
             }
         }
-        for (b, &cp_u32) in byte_to_cp.iter().enumerate() {
-            let cp = cp_u32 as usize;
-            if cp < cp_to_byte.len() {
-                cp_to_byte[cp] = b as u8;
-            }
-        }
-        ByteTables {
-            byte_to_cp,
-            cp_to_byte,
-        }
+        ByteTables { byte_to_cp }
     })
 }
 
@@ -260,8 +249,6 @@ fn pre_tokenize(bytes: &[u8]) -> Vec<&[u8]> {
 pub struct BpeTokenizer {
     vocab: HashMap<String, i32>,
     merges: HashMap<String, i32>,
-    id_to_token: Vec<Option<String>>,
-    max_id: i32,
 }
 
 impl BpeTokenizer {
@@ -274,20 +261,6 @@ impl BpeTokenizer {
             CoreError::Tokenizer(format!("No se puede leer {}: {e}", vocab_path.display()))
         })?;
         let vocab: HashMap<String, i32> = serde_json::from_str(&vocab_str)?;
-        let max_id = vocab.values().copied().max().unwrap_or(0).max(0);
-        let table_len = (max_id as usize)
-            .checked_add(1)
-            .filter(|&n| n <= 16_777_216)
-            .ok_or_else(|| {
-                CoreError::Tokenizer(format!("max_id={max_id} del vocabulario fuera de rango"))
-            })?;
-        let mut id_to_token = vec![None; table_len];
-        for (k, &id) in &vocab {
-            if id >= 0 && (id as usize) < id_to_token.len() {
-                id_to_token[id as usize] = Some(k.clone());
-            }
-        }
-
         let merges_str = std::fs::read_to_string(merges_path).map_err(|e| {
             CoreError::Tokenizer(format!("No se puede leer {}: {e}", merges_path.display()))
         })?;
@@ -310,12 +283,7 @@ impl BpeTokenizer {
             }
         }
 
-        Ok(Self {
-            vocab,
-            merges,
-            id_to_token,
-            max_id,
-        })
+        Ok(Self { vocab, merges })
     }
 
     pub fn encode(&self, text: &str) -> Vec<i32> {
@@ -433,33 +401,5 @@ impl BpeTokenizer {
             ids.extend_from_slice(&self.encode_bytes(&bytes[seg..p]));
         }
         ids
-    }
-
-    pub fn decode_bytes(&self, tokens: &[i32]) -> Vec<u8> {
-        let tables = byte_tables();
-        let mut gpt2_str = String::new();
-        for &id in tokens {
-            if id >= 0 && id <= self.max_id {
-                if let Some(Some(t)) = self.id_to_token.get(id as usize) {
-                    gpt2_str.push_str(t);
-                }
-            }
-        }
-        let mut out = Vec::with_capacity(gpt2_str.len());
-        for ch in gpt2_str.chars() {
-            let cp = ch as u32;
-            if (cp as usize) < tables.cp_to_byte.len() {
-                out.push(tables.cp_to_byte[cp as usize]);
-            } else {
-                let mut buf = [0u8; 4];
-                let s = ch.encode_utf8(&mut buf);
-                out.extend_from_slice(s.as_bytes());
-            }
-        }
-        out
-    }
-
-    pub fn decode(&self, tokens: &[i32]) -> String {
-        String::from_utf8_lossy(&self.decode_bytes(tokens)).into_owned()
     }
 }

@@ -378,10 +378,9 @@ pub fn warm_up(synth: &Synthesizer<'_>, scratch: &mut SessionScratch) {
 fn prepare(
     ctx: &ServerContext,
     vreq: &ValidatedTtsRequest,
-    stream: bool,
     label: &str,
 ) -> (SynthesisRequest, PlannedScript) {
-    let (req, planned) = from_http(vreq, &ctx.voice, stream);
+    let (req, planned) = from_http(vreq, &ctx.voice);
     eprintln!(
         "[HTTP] {label}: \"{}\" (voz={}, idioma={}, semilla={})",
         planned.text, ctx.voice.name, req.language_id, req.sampling.seed
@@ -437,7 +436,7 @@ fn handle_tts_full(
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
-    let (req, planned) = prepare(ctx, vreq, false, "TTS");
+    let (req, planned) = prepare(ctx, vreq, "TTS");
     let Some(guard) = abort_guard(stream) else {
         return;
     };
@@ -494,7 +493,7 @@ fn handle_tts_stream(
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
-    let (req, planned) = prepare(ctx, vreq, true, "TTS stream");
+    let (req, planned) = prepare(ctx, vreq, "TTS stream");
     let Some(guard) = abort_guard(stream) else {
         return;
     };
@@ -545,8 +544,7 @@ fn handle_tts_stream(
     }
 }
 
-/// Único manejo de rutas: `/v1/health`, `/v1/voices`, `/v1/tts`, `/v1/tts/stream` y
-/// `/v1/audio/speech`.
+/// Único manejo de rutas: `/v1/health`, `/v1/voices`, `/v1/tts` y `/v1/tts/stream`.
 pub fn handle_connection(
     ctx: &ServerContext,
     scratch: &mut SessionScratch,
@@ -580,7 +578,7 @@ pub fn handle_connection(
     let is_stream = match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/v1/health") => return handle_health(&mut stream),
         ("GET", "/v1/voices") => return handle_voices(&mut stream, &ctx.voice),
-        ("POST", "/v1/tts") | ("POST", "/v1/audio/speech") => false,
+        ("POST", "/v1/tts") => false,
         ("POST", "/v1/tts/stream") => true,
         _ => return send_error(&mut stream, 404, "no encontrado"),
     };

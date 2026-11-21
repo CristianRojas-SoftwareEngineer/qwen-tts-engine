@@ -7,7 +7,6 @@ use crate::aligned::AlignedBuf;
 
 pub const QWEN_QACT_MAX: usize = 8192;
 pub const Q4_0_BLOCK_SIZE: usize = 32;
-pub const Q2_0_BLOCK_SIZE: usize = 32;
 pub const QWEN_INT8_PF_DIST: usize = 5120;
 pub const QWEN_LONG_ROW_COLS: usize = 2048;
 
@@ -19,15 +18,6 @@ pub struct Q4_0Block {
 }
 
 const _: () = assert!(std::mem::size_of::<Q4_0Block>() == 18);
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Default)]
-pub struct Q2_0Block {
-    pub scale: f32,
-    pub qs: [u8; 8],
-}
-
-const _: () = assert!(std::mem::size_of::<Q2_0Block>() == 12);
 
 #[inline]
 pub fn bf16_to_f32(bf: u16) -> f32 {
@@ -233,86 +223,6 @@ pub fn quantize_bf16_to_q4_0_into(
             }
         }
     }
-}
-
-/// Cuantización Q2_0 (12 bytes / 32 pesos) usada con `--roughness > 0` en `down_proj` del Code Predictor.
-pub fn quantize_bf16_to_q2_0(src_bf16: &[u16], rows: usize, cols: usize) -> AlignedBuf<Q2_0Block> {
-    assert_eq!(cols % Q2_0_BLOCK_SIZE, 0);
-    let bpr = cols / Q2_0_BLOCK_SIZE;
-    let mut dst = AlignedBuf::<Q2_0Block>::new_zeroed(rows * bpr);
-    for r in 0..rows {
-        let row = &src_bf16[r * cols..(r + 1) * cols];
-        let drow = &mut dst[r * bpr..(r + 1) * bpr];
-        for (b, block_out) in drow.iter_mut().enumerate() {
-            let blk = &row[b * Q2_0_BLOCK_SIZE..(b + 1) * Q2_0_BLOCK_SIZE];
-            let mut vals = [0.0f32; Q2_0_BLOCK_SIZE];
-            let mut amax = 0.0f32;
-            for i in 0..Q2_0_BLOCK_SIZE {
-                vals[i] = bf16_to_f32(blk[i]);
-                let a = vals[i].abs();
-                if a > amax {
-                    amax = a;
-                }
-            }
-            let scale = amax / 1.5f32;
-            block_out.scale = scale;
-            let inv = if scale > 0.0 { 1.0f32 / scale } else { 0.0 };
-            block_out.qs = [0u8; 8];
-            for (i, &val) in vals.iter().enumerate().take(Q2_0_BLOCK_SIZE) {
-                let code = ((val * inv + 1.5f32).round_ties_even() as i32).clamp(0, 3) as u8;
-                block_out.qs[i >> 2] |= code << ((i & 3) * 2);
-            }
-        }
-    }
-    dst
-}
-
-pub fn interleave_gate_up_bf16(
-    dst: &mut [u16],
-    gate: &[u16],
-    up: &[u16],
-    rows: usize,
-    cols: usize,
-) {
-    assert!(
-        dst.len() >= 2 * rows * cols && gate.len() >= rows * cols && up.len() >= rows * cols,
-        "interleave_gate_up_bf16: los límites de los slices no coinciden"
-    );
-    for r in 0..rows {
-        dst[2 * r * cols..(2 * r + 1) * cols].copy_from_slice(&gate[r * cols..(r + 1) * cols]);
-        dst[(2 * r + 1) * cols..(2 * r + 2) * cols].copy_from_slice(&up[r * cols..(r + 1) * cols]);
-    }
-}
-
-pub fn quantize_gate_up_int8(
-    gate: &[u16],
-    up: &[u16],
-    rows: usize,
-    cols: usize,
-) -> (AlignedBuf<i8>, AlignedBuf<f32>) {
-    assert!(
-        gate.len() >= rows * cols && up.len() >= rows * cols,
-        "quantize_gate_up_int8: los límites de los slices no coinciden"
-    );
-    let mut dst_int8 = AlignedBuf::<i8>::new_zeroed(2 * rows * cols);
-    let mut dst_scale = AlignedBuf::<f32>::new_zeroed(2 * rows);
-    for r in 0..rows {
-        quantize_bf16_to_int8_into(
-            &gate[r * cols..(r + 1) * cols],
-            1,
-            cols,
-            &mut dst_int8[2 * r * cols..(2 * r + 1) * cols],
-            &mut dst_scale[2 * r..2 * r + 1],
-        );
-        quantize_bf16_to_int8_into(
-            &up[r * cols..(r + 1) * cols],
-            1,
-            cols,
-            &mut dst_int8[(2 * r + 1) * cols..(2 * r + 2) * cols],
-            &mut dst_scale[2 * r + 1..2 * r + 2],
-        );
-    }
-    (dst_int8, dst_scale)
 }
 
 pub fn quantize_gate_up_q4_0(

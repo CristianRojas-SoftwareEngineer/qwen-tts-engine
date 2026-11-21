@@ -16,8 +16,6 @@ pub enum CliMode {
     Caps,
     /// `--self-test`.
     SelfTest,
-    /// `--matmat-bench`.
-    MatmatBench,
     /// `--list-voices <carpeta|archivo>`.
     ListVoices(String),
     /// `--delete-voice <archivo>`.
@@ -34,7 +32,7 @@ pub enum CliMode {
 }
 
 impl CliMode {
-    /// Precedencia: diagnóstico (`--caps`, `--self-test`, `--matmat-bench`), `--list-voices`,
+    /// Precedencia: diagnóstico (`--caps`, `--self-test`), `--list-voices`,
     /// `--delete-voice`, crear voz, servidor y síntesis.
     pub fn resolve(cfg: &CliArgs) -> Self {
         if cfg.show_caps {
@@ -42,9 +40,6 @@ impl CliMode {
         }
         if cfg.self_test {
             return Self::SelfTest;
-        }
-        if cfg.matmat_bench {
-            return Self::MatmatBench;
         }
         if let Some(dir) = &cfg.list_voices_dir {
             return Self::ListVoices(dir.clone());
@@ -86,10 +81,6 @@ pub struct CliArgs {
     pub seed: SeedChoice,
     pub greedy_warmup: usize,
 
-    pub use_int8: bool,
-    pub use_int4: bool,
-    pub quant_mixed: bool,
-
     pub stream: bool,
     pub stdout_pcm: bool,
     pub stream_chunk: usize,
@@ -104,8 +95,6 @@ pub struct CliArgs {
     pub icl_frames: usize,
     pub voice_name: Option<String>,
     pub max_ref_duration: f32,
-
-    pub roughness: f32,
 
     pub compose_spec: Option<String>,
     pub compose_pause: f32,
@@ -125,7 +114,6 @@ pub struct CliArgs {
 
     pub show_caps: bool,
     pub self_test: bool,
-    pub matmat_bench: bool,
     pub list_voices_dir: Option<String>,
     pub delete_voice_path: Option<String>,
 }
@@ -148,9 +136,6 @@ impl Default for CliArgs {
             threads: None,
             seed: SeedChoice::Default,
             greedy_warmup: sampling.greedy_warmup,
-            use_int8: false,
-            use_int4: false,
-            quant_mixed: false,
             stream: false,
             stdout_pcm: false,
             stream_chunk: DEFAULT_CHUNK_FRAMES,
@@ -164,7 +149,6 @@ impl Default for CliArgs {
             icl_frames: 0,
             voice_name: None,
             max_ref_duration: 30.0,
-            roughness: 0.0,
             compose_spec: None,
             compose_pause: DEFAULT_COMPOSE_PAUSE_S,
             no_compose: false,
@@ -179,7 +163,6 @@ impl Default for CliArgs {
             audition_keep: false,
             show_caps: false,
             self_test: false,
-            matmat_bench: false,
             list_voices_dir: None,
             delete_voice_path: None,
         }
@@ -206,9 +189,6 @@ pub fn print_usage(prog: &str) {
     eprintln!("  -r, --rep-penalty <float>  Penalización por repetición (por defecto: 1.05)");
     eprintln!("  -m, --max-tokens <int>     Máximo de tokens (por defecto: {DEFAULT_MAX_FRAMES})");
     eprintln!("  -j, --threads <int>        Número de hilos (0=automático)");
-    eprintln!("  --int8                     Talker + Code Predictor cuantizados a INT8");
-    eprintln!("  --int4                     Talker + Code Predictor cuantizados a Q4_0");
-    eprintln!("  --quant-mixed              Talker + CP en Q4_0 con atención INT8 y FFN Q4_0");
     eprintln!("  --stream                   Escribe el audio al WAV de forma progresiva");
     eprintln!(
         "  --stdout                   Escribe PCM s16le sin cabecera por stdout (implica --stream)"
@@ -231,7 +211,6 @@ pub fn print_usage(prog: &str) {
     eprintln!("  --max-ref-duration <secs>  Segundos máximos del audio de referencia (por defecto: 30, 0=todo)");
     eprintln!("  --list-voices <dir>        Lista los archivos .qvoice de un directorio");
     eprintln!("  --delete-voice <path>      Borra un archivo .qvoice");
-    eprintln!("  --roughness <0..1>         Mezcla Q2_0 de down_proj del Code Predictor");
     eprintln!("  --compose <spec>           Síntesis de varios tramos con marcado en línea");
     eprintln!("  --compose-pause <s>        Pausa por defecto entre tramos hablados (por defecto: {DEFAULT_COMPOSE_PAUSE_S})");
     eprintln!("  --no-compose               Pasa los [tags] literalmente al modelo");
@@ -248,9 +227,6 @@ pub fn print_usage(prog: &str) {
     eprintln!("  -D, --debug                Diagnósticos internos detallados");
     eprintln!("  --caps                     Imprime las capacidades de CPU/SIMD/BLAS y termina");
     eprintln!("  --self-test                Ejecuta la autoprueba numérica de los kernels y termina");
-    eprintln!(
-        "  --matmat-bench             Ejecuta el microbenchmark matmat frente a B*matvec y termina"
-    );
     eprintln!("  -h, --help                 Muestra esta ayuda y termina");
 }
 
@@ -405,12 +381,6 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                 let s = take_val(args, &mut i, inline_val, flag)?;
                 out.max_duration = Some(parse_finite_f32(&s, "max-duration")?);
             }
-            "--int8" => out.use_int8 = true,
-            "--int4" => out.use_int4 = true,
-            "--quant-mixed" => {
-                out.use_int4 = true;
-                out.quant_mixed = true;
-            }
             "--stream" => out.stream = true,
             "--stdout" => {
                 out.stdout_pcm = true;
@@ -450,10 +420,6 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
             "--max-ref-duration" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
                 out.max_ref_duration = parse_finite_f32(&s, "max-ref-duration")?;
-            }
-            "--roughness" => {
-                out.roughness =
-                    take_bounded_f32(args, &mut i, inline_val, flag, "roughness", 0.0, 1.0)?;
             }
             "--compose" => {
                 out.compose_spec = Some(take_val(args, &mut i, inline_val, flag)?);
@@ -501,7 +467,6 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
             "--audition-keep" => out.audition_keep = true,
             "--caps" => out.show_caps = true,
             "--self-test" => out.self_test = true,
-            "--matmat-bench" => out.matmat_bench = true,
             "--list-voices" => {
                 out.list_voices_dir = Some(take_val(args, &mut i, inline_val, flag)?);
             }
@@ -525,17 +490,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_reject_17b_flags_and_invalid_host() {
-        let a = vec!["qwen_tts".to_string(), "--voice-design".to_string()];
-        assert!(parse_cli(&a).is_err());
-
-        let b = vec![
-            "qwen_tts".to_string(),
-            "--instruct".to_string(),
-            "angry".to_string(),
-        ];
-        assert!(parse_cli(&b).is_err());
-
+    fn test_reject_invalid_host_and_values() {
         let c = vec![
             "qwen_tts".to_string(),
             "--host".to_string(),
@@ -550,34 +505,6 @@ mod tests {
         ];
         assert!(parse_cli(&d).is_err());
 
-        for removed in [
-            vec!["qwen_tts", "-s", "ryan"],
-            vec!["qwen_tts", "--speaker", "ryan"],
-            vec!["qwen_tts", "--graft"],
-            vec!["qwen_tts", "--icl-only"],
-            vec!["qwen_tts", "--target-cv", "x"],
-            vec!["qwen_tts", "--voice-strength", "0.5"],
-            vec!["qwen_tts", "--vs-layers", "1-2"],
-            vec!["qwen_tts", "--emotion", "sad"],
-            vec!["qwen_tts", "--emotion-strength", "0.5"],
-            vec!["qwen_tts", "--emo-ref", "x.wav"],
-            vec!["qwen_tts", "--emo-ref-text", "x"],
-            vec!["qwen_tts", "--batch-size", "2"],
-            vec!["qwen_tts", "--workers", "2"],
-            vec!["qwen_tts", "--batch"],
-            vec!["qwen_tts", "--batch-words", "16"],
-            vec!["qwen_tts", "--batch-dry"],
-            vec!["qwen_tts", "--batch-multi-test", "2"],
-            vec!["qwen_tts", "--batch-test"],
-            vec!["qwen_tts", "--batch-bench"],
-        ] {
-            let args: Vec<String> = removed.into_iter().map(str::to_string).collect();
-            assert!(
-                parse_cli(&args).is_err(),
-                "se esperaba un error para {args:?}"
-            );
-        }
-
         for bad in [
             vec!["qwen_tts", "--temperature", "3.0"],
             vec!["qwen_tts", "--top-k", "4000"],
@@ -585,7 +512,6 @@ mod tests {
             vec!["qwen_tts", "--rep-penalty", "0.2"],
             vec!["qwen_tts", "--volume", "-0.5"],
             vec!["qwen_tts", "--rate", "0.1"],
-            vec!["qwen_tts", "--roughness", "1.2"],
             vec!["qwen_tts", "--seed", "99999999999"],
             vec!["qwen_tts", "--max-tokens", "0"],
         ] {
@@ -633,14 +559,6 @@ mod tests {
         assert_eq!(
             mode_of(&["--list-voices", "d", "--delete-voice", "a.qvoice"]),
             CliMode::ListVoices("d".to_string())
-        );
-        assert_eq!(
-            mode_of(&["--matmat-bench", "--list-voices", "d"]),
-            CliMode::MatmatBench
-        );
-        assert_eq!(
-            mode_of(&["--self-test", "--matmat-bench"]),
-            CliMode::SelfTest
         );
         assert_eq!(
             mode_of(&["--caps", "--self-test", "-t", "x"]),

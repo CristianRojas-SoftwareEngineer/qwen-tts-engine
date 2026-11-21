@@ -7,12 +7,9 @@ use qwen_core::config::{
     CODEBOOK_SIZE, CODEC_VOCAB_SIZE, CP_HEAD_DIM, CP_HIDDEN_SIZE, CP_INTERMEDIATE_SIZE,
     CP_KV_DIM, CP_NUM_HEADS, CP_NUM_KV_HEADS, CP_NUM_LAYERS, CP_Q_DIM, HIDDEN_SIZE,
 };
-use qwen_kernels::quant::quantize_bf16_to_q2_0;
 use qwen_kernels::{AlignedBuf, ComputeRuntime, KernelDispatch};
 
-use crate::model::{
-    lookup_codec_embed, Model06B, QuantWeight, SessionScratch, TransformerLayerWeights,
-};
+use crate::model::{lookup_codec_embed, Model06B, SessionScratch};
 
 #[inline]
 fn cp_ilv2(dst: &mut [f32], a: &[f32], b: &[f32], n: usize) {
@@ -29,22 +26,6 @@ fn cp_dcol2(dst: &mut [f32], src: &[f32], n: usize, p: usize) {
     }
 }
 
-fn cp_mm2(
-    runtime: &ComputeRuntime,
-    w: &QuantWeight,
-    x2: &[f32],
-    y2: &mut [f32],
-    rows: usize,
-    cols: usize,
-) {
-    let d = runtime.dispatch;
-    let pool = &runtime.pool;
-    match w {
-        QuantWeight::Q4_0(q4) => d.matmat_q4_0(pool, y2, q4, x2, rows, cols, 2),
-        QuantWeight::Int8 { data, scale } => d.matmat_int8(pool, y2, data, scale, x2, rows, cols, 2),
-    }
-}
-
 /// Pasada de 2 posiciones consecutivas del Code Predictor (5 capas) que lee cada matriz de
 /// pesos una sola vez para ambas columnas (`matmat` con `B = 2`).
 ///
@@ -57,6 +38,7 @@ fn cp_step2(runtime: &ComputeRuntime, model: &Model06B, scratch: &mut SessionScr
     let eps = model.config.rms_norm_eps;
     let attn_scale = 1.0f32 / (CP_HEAD_DIM as f32).sqrt();
     let d = runtime.dispatch;
+    let pool = &runtime.pool;
     let kv_max = scratch.cp_kv.max_pos;
     let cb = &mut scratch.cp_bufs;
     let swiglu_tmp = &mut scratch.talker_bufs.swiglu_tmp[..CP_INTERMEDIATE_SIZE];
@@ -66,29 +48,35 @@ fn cp_step2(runtime: &ComputeRuntime, model: &Model06B, scratch: &mut SessionScr
         d.rms_norm(&mut cb.p2_xn1, &cb.x1in, &l.input_norm, 1, CP_HIDDEN_SIZE, eps);
         cp_ilv2(&mut cb.p2_x2, &cb.p2_xn0, &cb.p2_xn1, CP_HIDDEN_SIZE);
 
-        cp_mm2(
-            runtime,
-            l.wq_q.as_ref().expect("wq cuantizado del Code Predictor"),
-            &cb.p2_x2,
+        d.matmat_int8(
+            pool,
             &mut cb.p2_q2,
+            &l.wq.data,
+            &l.wq.scale,
+            &cb.p2_x2,
             CP_Q_DIM,
             CP_HIDDEN_SIZE,
+            2,
         );
-        cp_mm2(
-            runtime,
-            l.wk_q.as_ref().expect("wk cuantizado del Code Predictor"),
-            &cb.p2_x2,
+        d.matmat_int8(
+            pool,
             &mut cb.p2_k2,
-            CP_KV_DIM,
-            CP_HIDDEN_SIZE,
-        );
-        cp_mm2(
-            runtime,
-            l.wv_q.as_ref().expect("wv cuantizado del Code Predictor"),
+            &l.wk.data,
+            &l.wk.scale,
             &cb.p2_x2,
-            &mut cb.p2_v2,
             CP_KV_DIM,
             CP_HIDDEN_SIZE,
+            2,
+        );
+        d.matmat_int8(
+            pool,
+            &mut cb.p2_v2,
+            &l.wv.data,
+            &l.wv.scale,
+            &cb.p2_x2,
+            CP_KV_DIM,
+            CP_HIDDEN_SIZE,
+            2,
         );
 
         let layer_base = layer_idx * kv_max * CP_KV_DIM;
@@ -144,13 +132,15 @@ fn cp_step2(runtime: &ComputeRuntime, model: &Model06B, scratch: &mut SessionScr
         }
 
         cp_ilv2(&mut cb.p2_a2, &cb.p2_attn0, &cb.dec_attn_out, CP_Q_DIM);
-        cp_mm2(
-            runtime,
-            l.wo_q.as_ref().expect("wo cuantizado del Code Predictor"),
-            &cb.p2_a2,
+        d.matmat_int8(
+            pool,
             &mut cb.p2_p2,
+            &l.wo.data,
+            &l.wo.scale,
+            &cb.p2_a2,
             CP_HIDDEN_SIZE,
             CP_Q_DIM,
+            2,
         );
         for i in 0..CP_HIDDEN_SIZE {
             cb.dec_x[i] += cb.p2_p2[2 * i];
@@ -175,15 +165,14 @@ fn cp_step2(runtime: &ComputeRuntime, model: &Model06B, scratch: &mut SessionScr
         );
         cp_ilv2(&mut cb.p2_x2, &cb.p2_xn0, &cb.p2_xn1, CP_HIDDEN_SIZE);
 
-        cp_mm2(
-            runtime,
-            l.gate_up_q
-                .as_ref()
-                .expect("gate_up cuantizado del Code Predictor"),
-            &cb.p2_x2,
+        d.matmat_q4_0(
+            pool,
             &mut cb.p2_g2,
+            &l.gate_up,
+            &cb.p2_x2,
             2 * CP_INTERMEDIATE_SIZE,
             CP_HIDDEN_SIZE,
+            2,
         );
         cp_dcol2(&mut cb.p2_g0, &cb.p2_g2, 2 * CP_INTERMEDIATE_SIZE, 0);
         cp_dcol2(&mut cb.dec_gate, &cb.p2_g2, 2 * CP_INTERMEDIATE_SIZE, 1);
@@ -196,15 +185,14 @@ fn cp_step2(runtime: &ComputeRuntime, model: &Model06B, scratch: &mut SessionScr
             CP_INTERMEDIATE_SIZE,
         );
 
-        cp_mm2(
-            runtime,
-            l.down_q
-                .as_ref()
-                .expect("down cuantizado del Code Predictor"),
-            &cb.p2_gi2,
+        d.matmat_q4_0(
+            pool,
             &mut cb.p2_d2,
+            &l.down,
+            &cb.p2_gi2,
             CP_HIDDEN_SIZE,
             CP_INTERMEDIATE_SIZE,
+            2,
         );
         for i in 0..CP_HIDDEN_SIZE {
             cb.dec_x[i] += cb.p2_d2[2 * i];
@@ -235,18 +223,17 @@ fn cp_transformer_step(
     model: &Model06B,
     scratch: &mut SessionScratch,
     pos: usize,
-    cp_roughness: f32,
 ) {
     let eps = model.config.rms_norm_eps;
     let attn_scale = 1.0f32 / (CP_HEAD_DIM as f32).sqrt();
     let d = runtime.dispatch;
+    let pool = &runtime.pool;
     let kv_max = scratch.cp_kv.max_pos;
 
     let cb = &mut scratch.cp_bufs;
     let swiglu_tmp = &mut scratch.talker_bufs.swiglu_tmp[..CP_INTERMEDIATE_SIZE];
     let x_norm = &mut cb.dec_ffn_out;
     let mut proj = [0.0f32; CP_HIDDEN_SIZE];
-    let mut proj_q2 = [0.0f32; CP_HIDDEN_SIZE];
 
     d.rms_norm(
         x_norm,
@@ -312,12 +299,12 @@ fn cp_transformer_step(
             pos,
         );
 
-        TransformerLayerWeights::dispatch_proj(
-            runtime,
-            l.wo_q.as_ref(),
-            &l.wo_bf16,
-            &cb.dec_attn_out,
+        d.matvec_int8(
+            pool,
             &mut proj,
+            &l.wo.data,
+            &l.wo.scale,
+            &cb.dec_attn_out,
             CP_HIDDEN_SIZE,
             CP_Q_DIM,
         );
@@ -331,44 +318,24 @@ fn cp_transformer_step(
             eps,
         );
 
-        if l.dispatch_gate_up(
-            runtime,
-            x_norm,
+        d.matvec_q4_0(
+            pool,
             &mut cb.dec_gate,
-            CP_INTERMEDIATE_SIZE,
+            &l.gate_up,
+            x_norm,
+            2 * CP_INTERMEDIATE_SIZE,
             CP_HIDDEN_SIZE,
-        )
-        .is_err()
-        {
-            unreachable!("gate_up_fused_bf16 del Code Predictor debe existir en modo BF16");
-        }
+        );
         d.swiglu_inplace(&mut cb.dec_gate, swiglu_tmp, CP_INTERMEDIATE_SIZE);
 
-        TransformerLayerWeights::dispatch_proj(
-            runtime,
-            l.down_q.as_ref(),
-            &l.down_bf16,
-            &cb.dec_gate[..CP_INTERMEDIATE_SIZE],
+        d.matvec_q4_0(
+            pool,
             &mut proj,
+            &l.down,
+            &cb.dec_gate[..CP_INTERMEDIATE_SIZE],
             CP_HIDDEN_SIZE,
             CP_INTERMEDIATE_SIZE,
         );
-
-        if cp_roughness > 0.0 {
-            if let Some(rough_layers) = &cb.down_q2_rough {
-                d.matvec_q2_0(
-                    &mut proj_q2,
-                    &rough_layers[layer_idx],
-                    &cb.dec_gate[..CP_INTERMEDIATE_SIZE],
-                    CP_HIDDEN_SIZE,
-                    CP_INTERMEDIATE_SIZE,
-                );
-                let r = cp_roughness;
-                for i in 0..CP_HIDDEN_SIZE {
-                    proj[i] = (1.0 - r) * proj[i] + r * proj_q2[i];
-                }
-            }
-        }
 
         if layer_idx + 1 < CP_NUM_LAYERS {
             d.rms_norm_residual(
@@ -389,36 +356,22 @@ fn cp_transformer_step(
 /// Predice los 15 codebooks acústicos (`out_codes[0..15]`) en el Code Predictor de 5 capas
 /// a partir de `talker_hidden` y `code0`.
 ///
-/// Con las capas cuantizadas, las posiciones 0 y 1 van juntas en una pasada de 2 posiciones
+/// Las posiciones 0 y 1 van juntas en una pasada de 2 posiciones
 /// (`cp_step2`). Las siguientes se calculan con verificación especulativa de 1 adivinanza: tras
 /// obtener `c[g]` se adivina `c[g + 1]` con la cabeza siguiente sobre el estado actual y una
 /// pasada de 2 posiciones calcula el código real y, si coincide con la adivinanza, el siguiente.
 /// Cada código sigue siendo el `argmax` de la misma cabeza sobre el mismo estado, así que la
 /// salida es bit-idéntica a la ejecución secuencial.
-#[allow(clippy::too_many_arguments)]
 pub fn cp_predict(
     runtime: &ComputeRuntime,
     model: &Model06B,
     scratch: &mut SessionScratch,
     talker_hidden: &[f32],
     code0: i32,
-    cp_roughness: f32,
     out_codes: &mut [i32; 15],
 ) {
     let eps = model.config.rms_norm_eps;
     let d = runtime.dispatch;
-
-    if cp_roughness > 0.0 && scratch.cp_bufs.down_q2_rough.is_none() {
-        let mut q2_layers = Vec::with_capacity(CP_NUM_LAYERS);
-        for l in &model.cp.layers {
-            q2_layers.push(quantize_bf16_to_q2_0(
-                &l.down_bf16,
-                CP_HIDDEN_SIZE,
-                CP_INTERMEDIATE_SIZE,
-            ));
-        }
-        scratch.cp_bufs.down_q2_rough = Some(q2_layers);
-    }
 
     scratch.cp_kv.len = 0;
 
@@ -429,16 +382,9 @@ pub fn cp_predict(
         scratch.cp_bufs.x1in.fill_zero();
     }
 
-    if cp_roughness <= 0.0 && model.cp.all_quantized {
-        cp_step2(runtime, model, scratch, 0);
-        let cb = &mut scratch.cp_bufs;
-        cb.dec_x[..CP_HIDDEN_SIZE].copy_from_slice(&cb.x1in[..CP_HIDDEN_SIZE]);
-    } else {
-        cp_transformer_step(runtime, model, scratch, 0, cp_roughness);
-        let cb = &mut scratch.cp_bufs;
-        cb.dec_x[..CP_HIDDEN_SIZE].copy_from_slice(&cb.x1in[..CP_HIDDEN_SIZE]);
-        cp_transformer_step(runtime, model, scratch, 1, cp_roughness);
-    }
+    cp_step2(runtime, model, scratch, 0);
+    let cb = &mut scratch.cp_bufs;
+    cb.dec_x[..CP_HIDDEN_SIZE].copy_from_slice(&cb.x1in[..CP_HIDDEN_SIZE]);
 
     let mut normed = [0.0f32; CP_HIDDEN_SIZE];
     d.rms_norm(
@@ -451,12 +397,11 @@ pub fn cp_predict(
     );
     out_codes[0] = model.cp.lm_heads[0].argmax(runtime, &normed) as i32;
 
-    let fast = cp_roughness <= 0.0 && model.cp.all_quantized;
     // Invariante: out_codes[0..=g] calculados; `normed` = h de la posición g + 1.
     let mut g = 0usize;
     while g < 14 {
         let pos = g + 2; // posición cuya entrada es el embedding de out_codes[g]
-        if fast && g + 2 <= 14 {
+        if g + 2 <= 14 {
             let guess = model.cp.lm_heads[g + 1].argmax(runtime, &normed) as i32;
             cp_code_embed(d, model, g, out_codes[g], &mut scratch.cp_bufs.dec_x);
             cp_code_embed(d, model, g + 1, guess, &mut scratch.cp_bufs.x1in);
@@ -487,7 +432,7 @@ pub fn cp_predict(
             }
         } else {
             cp_code_embed(d, model, g, out_codes[g], &mut scratch.cp_bufs.dec_x);
-            cp_transformer_step(runtime, model, scratch, pos, cp_roughness);
+            cp_transformer_step(runtime, model, scratch, pos);
             d.rms_norm(
                 &mut normed,
                 &scratch.cp_bufs.dec_x,
@@ -505,7 +450,6 @@ pub fn cp_predict(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ModelLoadOptions;
     use std::path::PathBuf;
 
     /// Carga `models/qwen3-tts-0.6b-base`; `None` (y la prueba se omite) si el modelo no está.
@@ -519,14 +463,9 @@ mod tests {
         let model = Model06B::load(
             &dir,
             &runtime,
-            ModelLoadOptions {
-                quant_mixed: true,
-                silent: true,
-                ..Default::default()
-            },
+            true,
         )
         .expect("carga del modelo");
-        assert!(model.cp.all_quantized);
         Some((runtime, model))
     }
 
@@ -572,7 +511,7 @@ mod tests {
             let code = rng.code();
             let table = (p - 2) % model.cp.codec_emb_bf16.len();
             cp_code_embed(d, model, table, code, &mut scratch.cp_bufs.dec_x);
-            cp_transformer_step(runtime, model, scratch, p, 0.0);
+            cp_transformer_step(runtime, model, scratch, p);
         }
     }
 
@@ -633,10 +572,10 @@ mod tests {
             let mut sa = SessionScratch::new();
             build_prefix(&runtime, &model, &mut sa, 77, pos);
             cp_code_embed(d, &model, 0, c0, &mut sa.cp_bufs.dec_x);
-            cp_transformer_step(&runtime, &model, &mut sa, pos, 0.0);
+            cp_transformer_step(&runtime, &model, &mut sa, pos);
             let xa0: Vec<f32> = sa.cp_bufs.dec_x[..CP_HIDDEN_SIZE].to_vec();
             cp_code_embed(d, &model, 1, c1, &mut sa.cp_bufs.dec_x);
-            cp_transformer_step(&runtime, &model, &mut sa, pos + 1, 0.0);
+            cp_transformer_step(&runtime, &model, &mut sa, pos + 1);
             let xa1: Vec<f32> = sa.cp_bufs.dec_x[..CP_HIDDEN_SIZE].to_vec();
 
             // Camino B: una pasada de 2 posiciones, con centinela NaN a partir de `pos`.
@@ -671,15 +610,15 @@ mod tests {
         cp_step2(&runtime, &model, &mut sb, pos);
         sb.cp_kv.len = pos + 1;
         cp_code_embed(d, &model, 1, c1b, &mut sb.cp_bufs.dec_x);
-        cp_transformer_step(&runtime, &model, &mut sb, pos + 1, 0.0);
+        cp_transformer_step(&runtime, &model, &mut sb, pos + 1);
 
         // Referencia: dos pasos de 1 posición con la entrada real.
         let mut sr = SessionScratch::new();
         build_prefix(&runtime, &model, &mut sr, 91, pos);
         cp_code_embed(d, &model, 0, c0, &mut sr.cp_bufs.dec_x);
-        cp_transformer_step(&runtime, &model, &mut sr, pos, 0.0);
+        cp_transformer_step(&runtime, &model, &mut sr, pos);
         cp_code_embed(d, &model, 1, c1b, &mut sr.cp_bufs.dec_x);
-        cp_transformer_step(&runtime, &model, &mut sr, pos + 1, 0.0);
+        cp_transformer_step(&runtime, &model, &mut sr, pos + 1);
 
         assert_bits_equal(
             "dec_x",
@@ -721,7 +660,7 @@ mod tests {
         guesses[0] = model.cp.lm_heads[1].argmax(runtime, &normed) as i32;
         for g in 1..15 {
             cp_code_embed(d, model, g - 1, codes[g - 1], &mut scratch.cp_bufs.dec_x);
-            cp_transformer_step(runtime, model, &mut scratch, g + 1, 0.0);
+            cp_transformer_step(runtime, model, &mut scratch, g + 1);
             d.rms_norm(
                 &mut normed,
                 &scratch.cp_bufs.dec_x,
@@ -759,7 +698,6 @@ mod tests {
                 &mut scratch,
                 &hidden,
                 code0,
-                0.0,
                 &mut got,
             );
             assert_eq!(got, expected, "par {pair}: códigos distintos");

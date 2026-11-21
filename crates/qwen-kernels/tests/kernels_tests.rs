@@ -9,7 +9,7 @@ use std::sync::Arc;
 use qwen_kernels::aligned::AlignedBuf;
 use qwen_kernels::blas::Transpose;
 use qwen_kernels::quant::{
-    f16_to_f32, f32_to_bf16_round, f32_to_f16, quant_shape_check, quantize_bf16_to_q2_0,
+    f16_to_f32, f32_to_bf16_round, f32_to_f16, quant_shape_check,
 };
 use qwen_kernels::selftest::run_kernel_selftest;
 use qwen_kernels::{ComputePool, ComputeRuntime};
@@ -71,7 +71,7 @@ fn test_compute_pool_stress() {
 }
 
 #[test]
-fn test_blas_sgemm_and_q2_0() {
+fn test_blas_sgemm_quant_shape_and_f16() {
     let rt = ComputeRuntime::new(Some(2));
     // C = A[2x3] * B[3x2]
     let a = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
@@ -96,14 +96,6 @@ fn test_blas_sgemm_and_q2_0() {
     assert!((c[1] - 64.0).abs() < 1e-4);
     assert!((c[2] - 139.0).abs() < 1e-4);
     assert!((c[3] - 154.0).abs() < 1e-4);
-
-    // Prueba básica de Q2_0
-    let wb: Vec<u16> = (0..64).map(|i| f32_to_bf16_round((i as f32 - 32.0) * 0.1)).collect();
-    let wq2 = quantize_bf16_to_q2_0(&wb, 2, 32);
-    let x = vec![1.0f32; 32];
-    let mut y = [0.0f32; 2];
-    rt.dispatch.matvec_q2_0(&mut y, &wq2, &x, 2, 32);
-    assert!(y[0] < 0.0 && y[1] > 0.0);
 
     // Verificación de dimensiones y roundtrip f16
     assert!(quant_shape_check("ok", 1024).is_ok());
@@ -215,7 +207,7 @@ fn test_scalar_dispatch_parity_and_bounds() {
 
     let res_b = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut y = vec![0.0f32; 65];
-        det.matmat_bf16(&pool, &mut y, &wb, &x, 1, 64, 65);
+        det.matmat_int8(&pool, &mut y, &wi, &si, &x, 1, 64, 65);
     }));
     assert!(res_b.is_err());
 
@@ -343,13 +335,13 @@ fn test_simd_q4_0_matches_avx2_summation_order() {
 
 /// Como `test_simd_q4_0_matches_avx2_summation_order`, para los kernels de coma flotante que no
 /// usan `libm` (la atención usa `exp` y el *snake*, `exp` y `sin`, que cambian entre plataformas):
-/// normas RMS, BF16 (`matvec`, `matmat`, `argmax`), RoPE, matvec `f32` acumulado, cuantización de
+/// normas RMS, BF16 (`matvec`), RoPE, matvec `f32` acumulado, cuantización de
 /// activaciones y conversiones. Longitudes con resto para cubrir las colas escalares.
 #[test]
 fn test_simd_float_kernels_match_avx2_summation_order() {
     use qwen_kernels::{CpuCaps, KernelDispatch};
 
-    const AVX2_FINGERPRINT: u64 = 0x841cba85449e95a2;
+    const AVX2_FINGERPRINT: u64 = 0xe42cb5e10482424b;
     let pool = ComputePool::new(1);
     let fnv = |h: u64, v: &[f32]| {
         v.iter().fold(h, |h, f| (h ^ f.to_bits() as u64).wrapping_mul(0x100000001b3))
@@ -370,9 +362,6 @@ fn test_simd_float_kernels_match_avx2_summation_order() {
         h = fnv(h, &xh);
         simd.matvec_bf16(&pool, &mut y[..rows], &wb, &x, rows, cols);
         h = fnv(h, &y[..rows]);
-        simd.matmat_bf16(&pool, &mut y[..3 * rows], &wb, &x, rows, cols, 3);
-        h = fnv(h, &y[..3 * rows]);
-        h = fnv(h, &[simd.argmax_matvec_bf16(&x, &wb, cols, rows) as f32]);
         let cs: Vec<f32> = (0..4 * 64).map(|i| val(i, 53)).collect();
         let mut xr = x[..16 * 128].to_vec();
         simd.apply_rope_neox_inplace(&mut xr, 16, 128, &cs, &cs[64..], 2);
@@ -398,16 +387,12 @@ fn test_simd_float_kernels_match_avx2_summation_order() {
 
 #[test]
 fn test_spin_budget_for_cores() {
-    use qwen_kernels::pool::QWEN_POOL_SPIN_DEFAULT;
+    use qwen_kernels::pool::DEFAULT_SPIN_BUDGET;
     use qwen_kernels::spin_budget_for;
 
-    // Solo sin QWEN_POOL_SPIN: la variable tiene prioridad sobre la regla.
-    if std::env::var_os("QWEN_POOL_SPIN").is_some() {
-        return;
-    }
     assert_eq!(spin_budget_for(4, 4), 0, "los hilos llenan los núcleos");
     assert_eq!(spin_budget_for(4, 2), 0);
-    assert_eq!(spin_budget_for(4, 6), QWEN_POOL_SPIN_DEFAULT);
-    assert_eq!(spin_budget_for(4, 8), QWEN_POOL_SPIN_DEFAULT);
+    assert_eq!(spin_budget_for(4, 6), DEFAULT_SPIN_BUDGET);
+    assert_eq!(spin_budget_for(4, 8), DEFAULT_SPIN_BUDGET);
     assert_eq!(spin_budget_for(1, 0), 0, "cero núcleos cuenta como uno");
 }

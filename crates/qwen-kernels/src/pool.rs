@@ -12,7 +12,7 @@ use std::thread::{self, JoinHandle};
 
 use crate::ftz::ftz_on;
 
-pub const QWEN_POOL_SPIN_DEFAULT: usize = 4096;
+pub const DEFAULT_SPIN_BUDGET: usize = 4096;
 
 /// Hilos de cómputo efectivos: los pedidos con `-j` o, si no, [`default_num_threads`].
 pub fn resolve_num_threads(threads: Option<usize>) -> usize {
@@ -26,24 +26,9 @@ pub fn default_num_threads() -> usize {
         .max(1)
 }
 
-/// Presupuesto de spin-wait fijado con `QWEN_POOL_SPIN` (un valor no numérico cuenta como el
-/// de por defecto), o `None` si la variable no está.
-fn env_spin_budget_override() -> Option<usize> {
-    std::env::var("QWEN_POOL_SPIN").ok().map(|val| {
-        val.trim()
-            .parse::<isize>()
-            .map(|v| v.max(0) as usize)
-            .unwrap_or(QWEN_POOL_SPIN_DEFAULT)
-    })
-}
-
-fn env_spin_budget() -> usize {
-    env_spin_budget_override().unwrap_or(QWEN_POOL_SPIN_DEFAULT)
-}
-
-/// Presupuesto de spin-wait para `threads` hilos de cálculo en `cores` núcleos físicos, salvo
-/// que `QWEN_POOL_SPIN` lo fije: `0` (espera directa en `Condvar`) si esos hilos ya ocupan todos
-/// los núcleos y `QWEN_POOL_SPIN_DEFAULT` si no.
+/// Presupuesto de spin-wait para `threads` hilos de cálculo en `cores` núcleos físicos: `0`
+/// (espera directa en `Condvar`) si esos hilos ya ocupan todos los núcleos y
+/// `DEFAULT_SPIN_BUDGET` si no.
 ///
 /// Con los núcleos llenos, los hilos que esperan girando quitan CPU a los que calculan. Medido
 /// con `-j 4` (productor y decoder, 4 hilos cada uno), A/B intercalado:
@@ -52,11 +37,11 @@ fn env_spin_budget() -> usize {
 /// - **6 núcleos** (Apple M4 Pro): sin spin-wait, RTF 0,25 → 0,43; por eso solo se quita
 ///   cuando los hilos llegan a los núcleos.
 pub fn spin_budget_for(threads: usize, cores: usize) -> usize {
-    env_spin_budget_override().unwrap_or(if threads >= cores.max(1) {
+    if threads >= cores.max(1) {
         0
     } else {
-        QWEN_POOL_SPIN_DEFAULT
-    })
+        DEFAULT_SPIN_BUDGET
+    }
 }
 
 struct JobSlot {
@@ -158,7 +143,7 @@ impl Drop for WorkerCompletionGuard<'_> {
 }
 
 /// Pool de hilos persistente e instanciable (sin estado global) con spin-wait
-/// (`QWEN_POOL_SPIN=4096` + `spin_loop()`), `Condvar` y `ftz_on()` por trabajador.
+/// (presupuesto `DEFAULT_SPIN_BUDGET` + `spin_loop()`), `Condvar` y `ftz_on()` por trabajador.
 #[derive(Clone)]
 pub struct ComputePool {
     guard: Arc<PoolGuard>,
@@ -166,7 +151,7 @@ pub struct ComputePool {
 
 impl ComputePool {
     pub fn new(n_threads: usize) -> Self {
-        Self::with_spin_budget(n_threads, env_spin_budget())
+        Self::with_spin_budget(n_threads, DEFAULT_SPIN_BUDGET)
     }
 
     pub fn with_spin_budget(n_threads: usize, spin_budget: usize) -> Self {

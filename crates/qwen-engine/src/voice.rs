@@ -28,7 +28,7 @@ pub const DEFAULT_VOICE_NAME: &str = "default";
 /// Contexto ICL de una voz: transcripción y códigos del audio de referencia.
 ///
 /// Nunca está vacío y `ref_codes` ya está recortado al tope de frames con que se construyó
-/// la voz (`icl_frames_cap` o, si está definida, `QWEN_ICL_FRAMES`).
+/// la voz (`icl_frames_cap`).
 #[derive(Debug, Clone)]
 pub struct IclPrompt {
     pub ref_text: String,
@@ -54,7 +54,7 @@ pub struct VoiceLoadOptions {
     pub ref_text_override: Option<String>,
     /// Usa el contexto ICL si el archivo lo trae; `false` deja solo el x-vector.
     pub use_icl: bool,
-    /// Tope de frames ICL (0 = sin tope). `QWEN_ICL_FRAMES`, si está definida, manda.
+    /// Tope de frames ICL (0 = sin tope).
     pub icl_frames_cap: usize,
     pub log: LogLevel,
 }
@@ -88,19 +88,8 @@ pub fn ensure_qvoice_path(path: &Path) -> Result<(), EngineError> {
     }
 }
 
-/// Tope efectivo de frames ICL: `QWEN_ICL_FRAMES` si es un entero válido, si no `cap`.
-fn effective_icl_cap(cap: usize) -> usize {
-    if let Ok(v) = std::env::var("QWEN_ICL_FRAMES") {
-        if let Ok(n) = v.trim().parse::<usize>() {
-            return n;
-        }
-    }
-    cap
-}
-
-/// Recorta `ref_codes` a los primeros frames permitidos por el tope efectivo.
+/// Recorta `ref_codes` a los primeros frames permitidos por el tope.
 fn cap_ref_codes(ref_codes: &mut Vec<i32>, cap: usize) {
-    let cap = effective_icl_cap(cap);
     let n_frames = ref_codes.len() / NUM_CODEBOOKS;
     if cap > 0 && cap < n_frames {
         ref_codes.truncate(cap * NUM_CODEBOOKS);

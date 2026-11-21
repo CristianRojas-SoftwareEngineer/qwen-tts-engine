@@ -124,11 +124,6 @@ impl<T: Copy + Default, const ALIGN: usize> AlignedBuf<T, ALIGN> {
     }
 
     #[inline]
-    pub fn capacity(&self) -> usize {
-        self.cap
-    }
-
-    #[inline]
     pub fn as_ptr(&self) -> *const T {
         self.ptr.as_ptr()
     }

@@ -25,7 +25,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
     match &cfg.mode {
         CliMode::Caps => Ok(diag::caps(&cfg)),
         CliMode::SelfTest => Ok(diag::self_test(&cfg)),
-        CliMode::MatmatBench => Ok(diag::matmat_bench(&cfg)),
         CliMode::ListVoices(dir) => Ok(voice_cmd::list_voices(dir)),
         CliMode::DeleteVoice(path) => Ok(voice_cmd::delete_voice(path)),
         CliMode::CreateVoice | CliMode::Serve(_) | CliMode::Synthesize | CliMode::NoJob => {
@@ -62,22 +61,6 @@ mod openblas_preinit {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("decode-dump") {
-        if args.len() != 5 {
-            eprintln!(
-                "Uso: {} decode-dump <codes.txt> <model_dir> <out.wav>",
-                args[0]
-            );
-            process::exit(1);
-        }
-        match diag::decode_dump(&args[2], &args[3], &args[4]) {
-            Ok(code) => process::exit(code),
-            Err(msg) => {
-                eprintln!("{msg}");
-                process::exit(1);
-            }
-        }
-    }
     let prog = args.first().map(String::as_str).unwrap_or("qwen_tts");
     let cfg = match parse_cli(&args) {
         Ok(ParseOutcome::Help) => {

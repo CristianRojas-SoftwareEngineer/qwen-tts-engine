@@ -11,7 +11,7 @@ use crate::blas::FfiBlas;
 use crate::caps::CpuCaps;
 use crate::ftz::ftz_on;
 use crate::pool::{resolve_num_threads, spin_budget_for, ComputePool};
-use crate::quant::{Q2_0Block, Q4_0Block, Q2_0_BLOCK_SIZE, Q4_0_BLOCK_SIZE, QWEN_QACT_MAX};
+use crate::quant::{Q4_0Block, Q4_0_BLOCK_SIZE, QWEN_QACT_MAX};
 use crate::simd::scalar;
 
 #[cfg(target_arch = "x86_64")]
@@ -28,12 +28,10 @@ type RmsNormFn = fn(&mut [f32], &[f32], &[f32], usize, usize, f32);
 type RmsNormResidualFn = fn(&mut [f32], &mut [f32], &[f32], &[f32], usize, f32);
 type RmsNormPerHeadFn = fn(&mut [f32], &[f32], usize, usize, usize, f32);
 type Bf16MatvecSliceFn = fn(&mut [f32], &[f32], &[u16], usize, usize);
-type Bf16MatmatSliceFn = fn(&mut [f32], &[u16], &[f32], usize, usize, usize, usize);
 type Int8MatvecSliceFn = fn(&mut [f32], &[i8], f32, &[i8], &[f32], usize, usize);
 type Int8MatmatSliceFn = fn(&mut [f32], &[i8], &[f32], &[i8], &[f32], usize, usize, usize, usize);
 type Q4MatvecSliceFn = fn(&mut [f32], &[i8], f32, &[Q4_0Block], usize, usize);
 type Q4MatmatSliceFn = fn(&mut [f32], &[Q4_0Block], &[i8], &[f32], usize, usize, usize, usize);
-type ArgmaxBf16Fn = fn(&[f32], &[u16], usize, usize) -> usize;
 type AttnF32Fn =
     fn(&mut [f32], &[f32], &[f32], &[f32], usize, usize, usize, usize, usize, f32, usize, usize);
 type AttnBf16KvFn = fn(
@@ -96,15 +94,6 @@ impl<T> SendMutPtr<T> {
     }
 }
 
-/// Lee `QWEN_BATCH_B` validando el rango `[1, max_b]` (usando `default_b` si falta o es inválido).
-pub fn env_batch_b(default_b: usize, max_b: usize) -> usize {
-    std::env::var("QWEN_BATCH_B")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&v| (1..=max_b).contains(&v))
-        .unwrap_or(default_b)
-}
-
 /// Tabla de punteros a kernels SIMD resuelta en tiempo de ejecución según `CpuCaps`.
 pub struct KernelDispatch {
     /// Nombre de la ruta: `scalar`, `avx2`, `neon` o `neon-dotprod`.
@@ -114,13 +103,11 @@ pub struct KernelDispatch {
     rms_norm_residual_fn: RmsNormResidualFn,
     rms_norm_per_head_fn: RmsNormPerHeadFn,
     bf16_matvec_slice_fn: Bf16MatvecSliceFn,
-    bf16_matmat_slice_fn: Bf16MatmatSliceFn,
     int8_matvec_slice_fn: Int8MatvecSliceFn,
     int8_matmat_slice_fn: Int8MatmatSliceFn,
     q4_0_matvec_slice_fn: Q4MatvecSliceFn,
     q4_0_matvec_qkv_slice_fn: Q4MatvecSliceFn,
     q4_0_matmat_slice_fn: Q4MatmatSliceFn,
-    argmax_bf16_fn: ArgmaxBf16Fn,
     attn_f32_fn: AttnF32Fn,
     attn_bf16kv_fn: AttnBf16KvFn,
     /// Atención BF16 de las cabezas `[h_begin, h_end)` sobre un puntero de salida compartido: la
@@ -141,13 +128,11 @@ static SCALAR_DISPATCH: KernelDispatch = KernelDispatch {
     rms_norm_residual_fn: scalar::rms_norm_residual,
     rms_norm_per_head_fn: scalar::rms_norm_per_head,
     bf16_matvec_slice_fn: scalar::bf16_matvec_slice,
-    bf16_matmat_slice_fn: scalar::bf16_matmat_slice,
     int8_matvec_slice_fn: scalar::int8_matvec_slice,
     int8_matmat_slice_fn: scalar::int8_matmat_slice,
     q4_0_matvec_slice_fn: scalar::q4_0_matvec_slice,
     q4_0_matvec_qkv_slice_fn: scalar::q4_0_matvec_slice,
     q4_0_matmat_slice_fn: scalar::q4_0_matmat_slice,
-    argmax_bf16_fn: scalar::argmax_matvec_bf16,
     attn_f32_fn: scalar::causal_attention_f32_heads,
     attn_bf16kv_fn: scalar::causal_attention_bf16kv_heads,
     attn_bf16kv_ptr_fn: scalar::causal_attention_bf16kv_heads_ptr,
@@ -190,17 +175,6 @@ mod avx2_wrappers {
     }
     pub fn bf16_matvec_slice(y: &mut [f32], x: &[f32], w: &[u16], cols: usize, rows: usize) {
         unsafe { avx2::bf16_matvec_slice(y, x, w, cols, rows) }
-    }
-    pub fn bf16_matmat_slice(
-        y: &mut [f32],
-        w: &[u16],
-        x: &[f32],
-        r0: usize,
-        r1: usize,
-        cols: usize,
-        b_dim: usize,
-    ) {
-        unsafe { avx2::bf16_matmat_slice(y, w, x, r0, r1, cols, b_dim) }
     }
     pub fn int8_matvec_slice(
         y: &mut [f32],
@@ -259,9 +233,6 @@ mod avx2_wrappers {
         b_dim: usize,
     ) {
         unsafe { avx2::q4_0_matmat_slice(y, w, qxt, sx, r0, r1, cols, b_dim) }
-    }
-    pub fn argmax_bf16(x: &[f32], w_bf16: &[u16], in_dim: usize, out_dim: usize) -> usize {
-        unsafe { avx2::argmax_matvec_bf16(x, w_bf16, in_dim, out_dim) }
     }
     #[allow(clippy::too_many_arguments)]
     pub fn attn_f32(
@@ -342,13 +313,11 @@ static AVX2_DISPATCH: KernelDispatch = KernelDispatch {
     rms_norm_residual_fn: avx2_wrappers::rms_norm_residual,
     rms_norm_per_head_fn: avx2_wrappers::rms_norm_per_head,
     bf16_matvec_slice_fn: avx2_wrappers::bf16_matvec_slice,
-    bf16_matmat_slice_fn: avx2_wrappers::bf16_matmat_slice,
     int8_matvec_slice_fn: avx2_wrappers::int8_matvec_slice,
     int8_matmat_slice_fn: avx2_wrappers::int8_matmat_slice,
     q4_0_matvec_slice_fn: avx2_wrappers::q4_0_matvec_slice,
     q4_0_matvec_qkv_slice_fn: avx2_wrappers::q4_0_matvec_qkv_slice,
     q4_0_matmat_slice_fn: avx2_wrappers::q4_0_matmat_slice,
-    argmax_bf16_fn: avx2_wrappers::argmax_bf16,
     attn_f32_fn: avx2_wrappers::attn_f32,
     attn_bf16kv_fn: avx2_wrappers::attn_bf16kv,
     attn_bf16kv_ptr_fn: avx2::causal_attention_bf16kv_heads_ptr,
@@ -372,13 +341,11 @@ macro_rules! neon_dispatch {
             rms_norm_residual_fn: neon::rms_norm_residual,
             rms_norm_per_head_fn: neon::rms_norm_per_head,
             bf16_matvec_slice_fn: neon::bf16_matvec_slice,
-            bf16_matmat_slice_fn: neon::bf16_matmat_slice,
             int8_matvec_slice_fn: neon::$m::int8_matvec_slice,
             int8_matmat_slice_fn: neon::$m::int8_matmat_slice,
             q4_0_matvec_slice_fn: neon::$m::q4_0_matvec_slice,
             q4_0_matvec_qkv_slice_fn: neon::$m::q4_0_matvec_qkv_slice,
             q4_0_matmat_slice_fn: neon::$m::q4_0_matmat_slice,
-            argmax_bf16_fn: neon::argmax_matvec_bf16,
             attn_f32_fn: neon::causal_attention_f32_heads,
             attn_bf16kv_fn: neon::causal_attention_bf16kv_heads,
             attn_bf16kv_ptr_fn: neon::causal_attention_bf16kv_heads_ptr,
@@ -735,71 +702,6 @@ impl KernelDispatch {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn matmat_bf16(
-        &self,
-        pool: &ComputePool,
-        y: &mut [f32],
-        w: &[u16],
-        x: &[f32],
-        rows: usize,
-        cols: usize,
-        b_dim: usize,
-    ) {
-        if b_dim == 0 || rows == 0 {
-            return;
-        }
-        assert!(b_dim <= 64, "matmat_bf16: b_dim={b_dim} supera 64");
-        assert!(y.len() >= rows * b_dim && x.len() >= cols * b_dim && w.len() >= rows * cols);
-        let f = self.bf16_matmat_slice_fn;
-        Self::parallel_rows(pool, y, rows, b_dim, |y_slice, r0, r1| {
-            f(y_slice, &w[r0 * cols..r1 * cols], x, 0, r1 - r0, cols, b_dim);
-        });
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn matvec_bf16_qkv(
-        &self,
-        pool: &ComputePool,
-        q: &mut [f32],
-        k: &mut [f32],
-        v: &mut [f32],
-        wq: &[u16],
-        wk: &[u16],
-        wv: &[u16],
-        x: &[f32],
-        in_dim: usize,
-        q_dim: usize,
-        kv_dim: usize,
-    ) {
-        assert!(
-            q.len() >= q_dim
-                && k.len() >= kv_dim
-                && v.len() >= kv_dim
-                && x.len() >= in_dim
-                && wq.len() >= q_dim * in_dim
-                && wk.len() >= kv_dim * in_dim
-                && wv.len() >= kv_dim * in_dim
-        );
-        let f = self.bf16_matvec_slice_fn;
-        let x_ref = &x[..in_dim];
-        let total_dim = q_dim + 2 * kv_dim;
-        if pool.n_threads() > 1 && total_dim >= 256 {
-            Self::parallel_qkv_split(pool, q, k, v, q_dim, kv_dim, |seg, out, local, len| {
-                let w = match seg {
-                    0 => wq,
-                    1 => wk,
-                    _ => wv,
-                };
-                f(out, x_ref, &w[local * in_dim..(local + len) * in_dim], in_dim, len);
-            });
-            return;
-        }
-        f(&mut q[..q_dim], x_ref, wq, in_dim, q_dim);
-        f(&mut k[..kv_dim], x_ref, wk, in_dim, kv_dim);
-        f(&mut v[..kv_dim], x_ref, wv, in_dim, kv_dim);
-    }
-
-    #[allow(clippy::too_many_arguments)]
     pub fn matvec_int8(
         &self,
         pool: &ComputePool,
@@ -1067,54 +969,6 @@ impl KernelDispatch {
             };
             f(out, qx_ref, sx, &w[local * nb..(local + len) * nb], in_dim, len);
         });
-    }
-
-    pub fn argmax_matvec_q4_0(
-        &self,
-        pool: &ComputePool,
-        x: &[f32],
-        w: &[Q4_0Block],
-        in_dim: usize,
-        out_dim: usize,
-    ) -> usize {
-        Self::argmax_with_tls(out_dim, |y| {
-            self.matvec_q4_0(pool, y, w, x, out_dim, in_dim);
-        })
-    }
-
-    #[inline]
-    pub fn matvec_q2_0(&self, y: &mut [f32], w: &[Q2_0Block], x: &[f32], rows: usize, cols: usize) {
-        if rows == 0 {
-            return;
-        }
-        assert!(
-            cols > 0 && cols.is_multiple_of(Q2_0_BLOCK_SIZE),
-            "matvec_q2_0: cols={cols} no válido"
-        );
-        let bpr = cols / Q2_0_BLOCK_SIZE;
-        assert!(
-            y.len() >= rows && w.len() >= rows * bpr && x.len() >= cols,
-            "matvec_q2_0: los límites de los slices no coinciden"
-        );
-        scalar::q2_0_matvec(y, w, x, rows, cols);
-    }
-
-    #[inline]
-    pub fn argmax_matvec_bf16(
-        &self,
-        x: &[f32],
-        w_bf16: &[u16],
-        in_dim: usize,
-        out_dim: usize,
-    ) -> usize {
-        if out_dim == 0 {
-            return 0;
-        }
-        assert!(
-            x.len() >= in_dim && w_bf16.len() >= out_dim * in_dim,
-            "argmax_matvec_bf16: los límites de los slices no coinciden"
-        );
-        (self.argmax_bf16_fn)(x, w_bf16, in_dim, out_dim)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1517,20 +1371,15 @@ impl ComputeRuntime {
         let caps = CpuCaps::detect();
         let dispatch = KernelDispatch::for_caps(&caps);
         let nt = resolve_num_threads(threads);
-        let sd_nt = std::env::var("QWEN_SD_THREADS")
-            .ok()
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .filter(|&v| v > 0)
-            .unwrap_or(nt);
         let (pool, sd_pool) = match cores {
             Some(cores) => {
                 let spin = spin_budget_for(nt, cores);
                 (
                     Arc::new(ComputePool::with_spin_budget(nt, spin)),
-                    Arc::new(ComputePool::with_spin_budget(sd_nt, spin)),
+                    Arc::new(ComputePool::with_spin_budget(nt, spin)),
                 )
             }
-            None => (Arc::new(ComputePool::new(nt)), Arc::new(ComputePool::new(sd_nt))),
+            None => (Arc::new(ComputePool::new(nt)), Arc::new(ComputePool::new(nt))),
         };
         let blas = FfiBlas;
         blas.set_threads(nt);

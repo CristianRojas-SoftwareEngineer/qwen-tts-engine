@@ -7,7 +7,7 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 ![Rust: Stable](https://img.shields.io/badge/Rust-stable-orange.svg)
 ![Model: Qwen3--TTS 0.6B](https://img.shields.io/badge/Model-Qwen3--TTS%200.6B-informational.svg)
 
-**Qwen TTS Engine** convierte texto en audio PCM de 24 kHz directamente en CPU mediante un binario CLI (`qwen_tts`), un servidor HTTP compatible con OpenAI (`--serve`) y una biblioteca Rust embebida (`qwen-engine`).
+**Qwen TTS Engine** convierte texto en audio PCM de 24 kHz directamente en CPU mediante un binario CLI (`qwen_tts`), un servidor HTTP (`--serve`) y una biblioteca Rust embebida (`qwen-engine`).
 
 ---
 
@@ -26,11 +26,11 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 
 ## Alcance y capacidades
 
-- **Síntesis local en CPU**: ejecuta **Qwen3-TTS `0.6B`** con cuantización recomendada `--quant-mixed` (`Q4_0` + `INT8`), despacho en runtime de kernels `AVX2 + FMA` en x86-64 y NEON en ARM64 (con `SDOT` si la CPU tiene `dotprod`; ver [requisitos mínimos](#requisitos-mínimos-recomendados-síntesis-en-tiempo-real)) y *streaming* progresivo.
-- **Una sola forma de voz: la clonada**: el motor trae incorporada la voz `default` y cualquier otra la creas clonándola desde un audio de referencia (x-vector `ECAPA-TDNN` y, con `--ref-text`, contexto ICL con códigos RVQ). Las voces se guardan como perfiles `.qvoice` v4 de unos pocos KB. Además: `--roughness` (`Q2_0`) y marcado en línea (`[laugh]`, `[sigh]`, pausas).
+- **Síntesis local en CPU**: ejecuta **Qwen3-TTS `0.6B`** con cuantización fija (`Q4_0` + `INT8`), despacho en runtime de kernels `AVX2 + FMA` en x86-64 y NEON en ARM64 (con `SDOT` si la CPU tiene `dotprod`; ver [requisitos mínimos](#requisitos-mínimos-recomendados-síntesis-en-tiempo-real)) y *streaming* progresivo.
+- **Una sola forma de voz: la clonada**: el motor trae incorporada la voz `default` y cualquier otra la creas clonándola desde un audio de referencia (x-vector `ECAPA-TDNN` y, con `--ref-text`, contexto ICL con códigos RVQ). Las voces se guardan como perfiles `.qvoice` v4 de unos pocos KB. Además: marcado en línea (`[laugh]`, `[sigh]`, pausas).
 - **Tres interfaces de integración**:
   - **CLI (`qwen_tts`)**: síntesis directa a WAV, *streaming* a WAV o `stdout` PCM crudo y creación de voces.
-  - **Servidor HTTP (`--serve`)**: rutas `/v1/audio/speech` (compatible con OpenAI), `/v1/tts` y `/v1/tts/stream`, una síntesis a la vez.
+  - **Servidor HTTP (`--serve`)**: rutas `/v1/tts` y `/v1/tts/stream`, una síntesis a la vez.
   - **Biblioteca Rust (`qwen-engine`)**: API segura (`#![forbid(unsafe_code)]`) para incrustar el motor compartiendo `Arc<Model06B>` entre hilos.
 
 > **Modelo soportado (`Qwen3-TTS 0.6B Base`)**: este motor ejecuta exclusivamente el checkpoint **Qwen3-TTS `0.6B` Base**; cualquier otro se rechaza al cargar. Al cargar un modelo, `config.json` valida automáticamente esta geometría (`HIDDEN_SIZE=1024`, `28` capas Talker, `5` capas Code Predictor).
@@ -101,7 +101,7 @@ Remove-Item Env:OPENBLAS_NUM_THREADS -ErrorAction SilentlyContinue
 
 cargo build -p qwen-app --release --target x86_64-pc-windows-gnu
 .\target\x86_64-pc-windows-gnu\release\qwen_tts.exe --caps
-.\target\x86_64-pc-windows-gnu\release\qwen_tts.exe -d models\qwen3-tts-0.6b-base -j 4 --seed 4 -l English --quant-mixed --text "Hello, world!" -o output.wav
+.\target\x86_64-pc-windows-gnu\release\qwen_tts.exe -d models\qwen3-tts-0.6b-base -j 4 --seed 4 -l English --text "Hello, world!" -o output.wav
 ```
 
 #### Linux / macOS
@@ -109,10 +109,10 @@ cargo build -p qwen-app --release --target x86_64-pc-windows-gnu
 ```bash
 cargo build -p qwen-app --release
 ./target/release/qwen_tts --caps
-./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 --seed 4 -l English --quant-mixed --text "Hello, world!" -o output.wav
+./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 --seed 4 -l English --text "Hello, world!" -o output.wav
 ```
 
-> **Nota**: sin `--load-voice` ni `--ref-audio`, el motor habla con la voz `default` incorporada (la CLI imprime `Voz: default` en `stderr`). Sin `-l`, el idioma es el de la voz cargada o, si no tiene, español. `--quant-mixed` es el perfil recomendado para producción en `0.6B` (los valores por defecto de muestreo son `temperature = 0.325` y `seed = 4`); añade `--stream` si necesitas escribir audio progresivamente conforme se decodifica. En Windows GNU, mantén `OPENBLAS_NUM_THREADS`, `GOTO_NUM_THREADS` y `OMP_NUM_THREADS` sin definir para que el motor ajuste los hilos entre *prefill* y generación.
+> **Nota**: sin `--load-voice` ni `--ref-audio`, el motor habla con la voz `default` incorporada (la CLI imprime `Voz: default` en `stderr`). Sin `-l`, el idioma es el de la voz cargada o, si no tiene, español. Los valores por defecto de muestreo son `temperature = 0.325` y `seed = 4`; añade `--stream` si necesitas escribir audio progresivamente conforme se decodifica. En Windows GNU, mantén `OPENBLAS_NUM_THREADS`, `GOTO_NUM_THREADS` y `OMP_NUM_THREADS` sin definir para que el motor ajuste los hilos entre *prefill* y generación.
 
 ### 2. Clonación de voz
 
@@ -120,21 +120,21 @@ Con solo el audio, el perfil guarda el timbre (x-vector); con `--ref-text` (la t
 
 ```bash
 # 1. Extraer perfil .qvoice reutilizable y sintetizar el primer audio
-./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 --quant-mixed \
+./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 \
   --ref-audio ref_24k.wav --ref-text "Texto exacto del audio de referencia." \
   --save-voice mi_voz.qvoice -l Spanish --text "Hola, esta es mi voz clonada." -o clon.wav
 
 # 2. Reutilizar el perfil guardado (sin volver a codificar la referencia)
-./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 --quant-mixed \
+./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 \
   --load-voice mi_voz.qvoice -l Spanish --text "Segunda frase con la misma voz." -o clon2.wav
 ```
 
-### 3. Servidor HTTP compatible con OpenAI (`--serve`)
+### 3. Servidor HTTP (`--serve`)
 
 Inicia el servidor en `127.0.0.1:8080` con 4 hilos:
 
 ```bash
-./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 --quant-mixed --serve 8080
+./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 --serve 8080
 ```
 
 El servidor sin `--load-voice` usa la voz `default`; con `--load-voice mi_voz.qvoice` usa esa voz. El campo `voice` de las peticiones es opcional y, si viene, debe coincidir con el nombre de la voz cargada (si no, responde `400`); `GET /v1/voices` devuelve la voz cargada.
@@ -142,10 +142,10 @@ El servidor sin `--load-voice` usa la voz `default`; con `--load-voice mi_voz.qv
 Envía peticiones síncronas (WAV completo) o en *streaming* (PCM `s16le` 24 kHz mono):
 
 ```bash
-# WAV completo (compatible con OpenAI)
-curl -X POST http://127.0.0.1:8080/v1/audio/speech \
+# WAV completo
+curl -X POST http://127.0.0.1:8080/v1/tts \
   -H "Content-Type: application/json" \
-  -d '{"input":"Hello from Qwen TTS Engine!","voice":"default","language":"English"}' \
+  -d '{"text":"Hello from Qwen TTS Engine!","voice":"default","language":"English"}' \
   --output speech.wav
 
 # Streaming PCM s16le 24 kHz mono (Transfer-Encoding: chunked)
@@ -172,15 +172,14 @@ Ejemplo mínimo de síntesis directa en memoria:
 use std::path::Path;
 use qwen_core::Script;
 use qwen_engine::{
-    write_wav, AbortHandle, Delivery, Model06B, ModelLoadOptions, SessionScratch,
+    write_wav, AbortHandle, Delivery, Model06B, SessionScratch,
     SynthesisRequest, Synthesizer, Voice,
 };
 use qwen_kernels::ComputeRuntime;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = ComputeRuntime::new(Some(4));
-    let opts = ModelLoadOptions { quant_mixed: true, ..Default::default() };
-    let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, opts)?;
+    let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, true)?; // `true`: sin trazas por stderr
 
     let voice = Voice::builtin_default(); // voz incorporada, idioma español
     let synth = Synthesizer { runtime: &runtime, model: &model, voice: &voice };
@@ -237,7 +236,7 @@ La documentación sigue el modelo **Diátaxis** para separar guías prácticas, 
 |---|---|---|---|
 | [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md) | Referencia | Usuarios avanzados, integradores HTTP y Rust | Flags CLI (`qwen_tts`), endpoints HTTP (`--serve`), API Rust embebida, variables de entorno y líneas de log de referencia. |
 | [`docs/SPEC_06B.md`](docs/SPEC_06B.md) | Referencia | Ingenieros del motor y mantenedores | Geometría fija `0.6B`, mapa de tensores `safetensors`, formato `.qvoice` v4, vocabularios, *prefill* y marcado en línea. |
-| [`docs/NUMERIC_CONTRACT.md`](docs/NUMERIC_CONTRACT.md) | Referencia | Ingenieros de kernels y optimización | Cuantización `INT8`/`Q4_0`/`Q2_0`, `FTZ`/`DAZ`, reglas IEEE-754/`FMA`, determinismo de *streaming* y tolerancias. |
+| [`docs/NUMERIC_CONTRACT.md`](docs/NUMERIC_CONTRACT.md) | Referencia | Ingenieros de kernels y optimización | Cuantización `INT8`/`Q4_0`, `FTZ`/`DAZ`, reglas IEEE-754/`FMA`, determinismo de *streaming* y tolerancias. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Explicación | Desarrolladores y contribuidores | Grafo de *crates* (DAG), política `unsafe`, tiempos de vida del estado, `ComputeRuntime`, camino único de síntesis y servidor. |
 | [`docs/VERIFICATION_PLAN.md`](docs/VERIFICATION_PLAN.md) | Guía operativa | QA, contribuidores y mantenimiento de CI | Suites `cargo test`, verificación numérica de kernels, CI en CircleCI (`.circleci/config.yml`) y protocolo de medición de rendimiento. |
 | [`docs/adr/001-only-06b.md`](docs/adr/001-only-06b.md) | ADR | Mantenedores | Especialización del motor para Qwen3-TTS `0.6B`. |

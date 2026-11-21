@@ -303,10 +303,6 @@ impl<W: PcmWrite> EdgeRampSink<W> {
     pub fn total_samples(&self) -> usize {
         self.total_samples
     }
-
-    pub fn into_writer(self) -> W {
-        self.writer
-    }
 }
 
 impl<W: PcmWrite + Send> AudioSink for EdgeRampSink<W> {
@@ -742,11 +738,7 @@ pub fn read_wav_24khz(path: &Path) -> Result<Vec<f32>, EngineError> {
 }
 
 /// Recorte conservador de silencio o *fade-out* final en el audio de referencia.
-/// Se desactiva definiendo `QWEN_NO_REF_TRIM`.
 pub fn trim_trailing_silence(audio: &mut Vec<f32>, sample_rate: usize, silent: bool) {
-    if std::env::var_os("QWEN_NO_REF_TRIM").is_some() {
-        return;
-    }
     let n = audio.len();
     if n < sample_rate * 3 {
         return;
@@ -815,7 +807,7 @@ mod tests {
             sink.write_samples(&g).unwrap();
         }
         sink.finish().unwrap();
-        sink.into_writer()
+        sink.writer
     }
 
     #[test]

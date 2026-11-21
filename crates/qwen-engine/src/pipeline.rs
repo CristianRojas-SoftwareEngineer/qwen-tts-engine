@@ -3,8 +3,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::fs::File;
-use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Instant;
@@ -243,11 +241,6 @@ pub(crate) fn generate_to_sink(
     scratch.prev_tokens.clear();
     scratch.prev_tokens.reserve(max_frames);
 
-    let mut dump_codes_writer = match std::env::var("QWEN_DUMP_CODES") {
-        Ok(p) if !p.trim().is_empty() => Some(BufWriter::new(File::create(p.trim())?)),
-        _ => None,
-    };
-
     let chunk_frames = if req.chunk_frames > 0 {
         req.chunk_frames.clamp(2, 250)
     } else {
@@ -256,14 +249,7 @@ pub(crate) fn generate_to_sink(
 
     let mut trim_head_left = prompt.icl_trim_samples;
 
-    let mut gen_blas = if nt > 1 { nt - 1 } else { 1 };
-    if let Ok(v) = std::env::var("QWEN_BLAS_GEN_THREADS") {
-        if let Ok(n) = v.trim().parse::<usize>() {
-            if n > 0 {
-                gen_blas = n;
-            }
-        }
-    }
+    let gen_blas = if nt > 1 { nt - 1 } else { 1 };
     runtime.blas.set_threads(gen_blas);
 
     scratch.sd_stream.reset();
@@ -280,7 +266,6 @@ pub(crate) fn generate_to_sink(
     let mut talker_ms = 0.0f64;
     let mut cp_ms = 0.0f64;
     let mut drain_ms = 0.0f64;
-    let mut prod_err: Option<EngineError> = None;
     let mut was_aborted = false;
 
     let mut cons_sd_stream = std::mem::take(&mut scratch.sd_stream);
@@ -440,19 +425,10 @@ pub(crate) fn generate_to_sink(
                 scratch,
                 &lh_copy,
                 code0,
-                req.cp_roughness,
                 &mut cp_out,
             );
             cp_ms += t_cp.elapsed().as_secs_f64() * 1000.0;
             codes[1..16].copy_from_slice(&cp_out);
-
-            if let Some(ref mut w) = dump_codes_writer {
-                let _ = write!(w, "{}", codes[0]);
-                for &c in &codes[1..] {
-                    let _ = write!(w, " {}", c);
-                }
-                let _ = writeln!(w);
-            }
 
             scratch.codec_codes.extend_from_slice(&codes);
             queue.push_frame(&codes);
@@ -483,17 +459,13 @@ pub(crate) fn generate_to_sink(
                 );
             }
             let t_tk = Instant::now();
-            if let Err(e) = talker_step(
+            talker_step(
                 runtime,
                 model,
                 scratch,
                 &step_embed_copy,
                 &mut lh_copy,
-            ) {
-                prod_err = Some(e);
-                queue.aborted.store(true, Ordering::Release);
-                break;
-            }
+            );
             scratch.talker_bufs.last_hidden.copy_from_slice(&lh_copy);
             if debug && frame < 2 {
                 eprintln!(
@@ -519,15 +491,8 @@ pub(crate) fn generate_to_sink(
     scratch.sd_ws = cons_sd_ws;
     runtime.blas.set_threads(nt);
 
-    if let Some(ref mut w) = dump_codes_writer {
-        let _ = w.flush();
-    }
-
     if was_aborted {
         return Err(EngineError::Aborted);
-    }
-    if let Some(e) = prod_err {
-        return Err(e);
     }
     if let Some(e) = decoder_err {
         return Err(e);
@@ -633,7 +598,6 @@ pub fn finish_full_delivery(samples: &mut Vec<f32>, req: &SynthesisRequest) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ModelLoadOptions;
     use std::path::PathBuf;
 
     /// Las filas que `talker_codec_logits` no calcula no influyen en los logits tras las reglas,
@@ -672,7 +636,7 @@ mod tests {
             return;
         }
         let runtime = ComputeRuntime::new(Some(4));
-        let model = Model06B::load(&dir, &runtime, ModelLoadOptions { quant_mixed: true, silent: true, ..Default::default() })
+        let model = Model06B::load(&dir, &runtime, true)
             .expect("carga del modelo");
         let hidden: Vec<f32> = (0..HIDDEN_SIZE).map(|i| ((i * 7919 % 211) as f32 - 105.0) * 0.01).collect();
         let mut full = vec![0.0f32; CODEC_VOCAB_SIZE];

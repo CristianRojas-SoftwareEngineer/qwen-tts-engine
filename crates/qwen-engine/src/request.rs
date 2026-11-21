@@ -51,7 +51,6 @@ pub struct SynthesisRequest {
     pub max_frames: usize,
     /// Tamaño del chunk de decodificación (`0` = `DEFAULT_CHUNK_FRAMES`; se acota a `2..=250`).
     pub chunk_frames: usize,
-    pub cp_roughness: f32,
     pub volume: f32,
     pub rate: f32,
     /// Pausa entre tramos hablados de una composición, en segundos.
@@ -70,7 +69,6 @@ impl Default for SynthesisRequest {
             sampling: SamplingParams::default(),
             max_frames: DEFAULT_MAX_FRAMES,
             chunk_frames: DEFAULT_CHUNK_FRAMES,
-            cp_roughness: 0.0,
             volume: 1.0,
             rate: 1.0,
             compose_pause_s: DEFAULT_COMPOSE_PAUSE_S,

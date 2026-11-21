@@ -7,7 +7,6 @@
 //! cuantización y despacho SIMD/BLAS en runtime para `qwen-tts-engine`.
 
 pub mod aligned;
-pub mod bench;
 pub mod blas;
 pub mod caps;
 pub mod dispatch;
@@ -23,4 +22,4 @@ pub use caps::CpuCaps;
 pub use dispatch::{ComputeRuntime, KernelChoice, KernelDispatch};
 pub use ftz::ftz_on;
 pub use pool::{default_num_threads, resolve_num_threads, spin_budget_for, ComputePool};
-pub use quant::{Q2_0Block, Q4_0Block};
+pub use quant::Q4_0Block;

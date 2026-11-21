@@ -13,8 +13,7 @@ use qwen_core::{
     plan_script, resolve_sampling, MarkupMode, PlannedScript, SamplingParams, Script, SeedChoice,
 };
 use qwen_engine::{
-    LogLevel, SynthesisRequest, Voice, DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S,
-    DEFAULT_MAX_FRAMES,
+    LogLevel, SynthesisRequest, Voice, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES,
 };
 
 use crate::cli::CliArgs;
@@ -89,7 +88,6 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScrip
         sampling,
         max_frames,
         chunk_frames: cli.stream_chunk.clamp(2, 250),
-        cp_roughness: cli.roughness,
         volume: cli.volume,
         rate: cli.rate,
         compose_pause_s: cli.compose_pause,
@@ -102,13 +100,9 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScrip
 
 /// Prepara la petición HTTP. `stream` es `true` en `/v1/tts/stream`.
 ///
-/// Reglas por entrega: `chunk_frames` solo cuenta en streaming (en `/v1/tts` es el valor por
-/// defecto) y `rate` solo en la entrega completa. Idioma: `effective_language`.
-pub fn from_http(
-    vreq: &ValidatedTtsRequest,
-    voice: &Voice,
-    stream: bool,
-) -> (SynthesisRequest, PlannedScript) {
+/// `chunk_frames` y `rate` ya llevan el valor efectivo de la ruta (la validación rechaza el
+/// campo que la ruta no admite). Idioma: `effective_language`.
+pub fn from_http(vreq: &ValidatedTtsRequest, voice: &Voice) -> (SynthesisRequest, PlannedScript) {
     let planned = plan_script(&vreq.text, MarkupMode::Auto);
 
     let base = SamplingParams {
@@ -123,14 +117,9 @@ pub fn from_http(
         language_id: effective_language(vreq.language_id, voice.language_id),
         sampling,
         max_frames: DEFAULT_MAX_FRAMES,
-        chunk_frames: if stream {
-            vreq.chunk_frames
-        } else {
-            DEFAULT_CHUNK_FRAMES
-        },
-        cp_roughness: 0.0,
+        chunk_frames: vreq.chunk_frames,
         volume: vreq.volume,
-        rate: if stream { 1.0 } else { vreq.rate },
+        rate: vreq.rate,
         compose_pause_s: DEFAULT_COMPOSE_PAUSE_S,
         tail_trim: false,
         onset_fade_ms: 0.0,
@@ -142,6 +131,7 @@ pub fn from_http(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qwen_engine::DEFAULT_CHUNK_FRAMES;
 
     fn voice(language_id: Option<i32>) -> Voice {
         Voice {
@@ -159,27 +149,27 @@ mod tests {
     #[test]
     fn http_language_request_then_voice_then_spanish() {
         let v = parse(r#"{"text":"Hola."}"#, false);
-        assert_eq!(from_http(&v, &voice(Some(2050)), false).0.language_id, 2050);
-        assert_eq!(from_http(&v, &voice(None), false).0.language_id, 2054);
+        assert_eq!(from_http(&v, &voice(Some(2050))).0.language_id, 2050);
+        assert_eq!(from_http(&v, &voice(None)).0.language_id, 2054);
         let e = parse(r#"{"text":"Hola.","language":"English"}"#, false);
-        assert_eq!(from_http(&e, &voice(Some(2054)), false).0.language_id, 2050);
+        assert_eq!(from_http(&e, &voice(Some(2054))).0.language_id, 2050);
     }
 
     #[test]
     fn http_per_delivery_rules() {
-        let body = r#"{"text":"Hola.","chunk_frames":4,"rate":1.2}"#;
-        let (full, _) = from_http(&parse(body, false), &voice(None), false);
+        let body = r#"{"text":"Hola.","rate":1.2}"#;
+        let (full, _) = from_http(&parse(body, false), &voice(None));
         assert_eq!(full.chunk_frames, DEFAULT_CHUNK_FRAMES);
         assert!((full.rate - 1.2).abs() < 1e-6);
         let body = r#"{"text":"Hola.","chunk_frames":4}"#;
-        let (stream, _) = from_http(&parse(body, true), &voice(None), true);
+        let (stream, _) = from_http(&parse(body, true), &voice(None));
         assert_eq!(stream.chunk_frames, 4);
         assert_eq!(stream.rate, 1.0);
         assert_eq!(
             (stream.max_frames, stream.sampling.greedy_warmup),
             (DEFAULT_MAX_FRAMES, 0)
         );
-        assert!(stream.log == LogLevel::Silent && stream.cp_roughness == 0.0);
+        assert!(stream.log == LogLevel::Silent);
     }
 
     #[test]
@@ -187,14 +177,13 @@ mod tests {
         let (tagged, _) = from_http(
             &parse(r#"{"text":"Hola [laugh] mundo."}"#, false),
             &voice(None),
-            false,
         );
         assert_eq!(
             (tagged.sampling.seed, tagged.sampling.temperature),
             (2024, 1.1)
         );
         let body = r#"{"text":"Hola [laugh] mundo.","seed":4,"temperature":0.5}"#;
-        let (user, _) = from_http(&parse(body, false), &voice(None), false);
+        let (user, _) = from_http(&parse(body, false), &voice(None));
         assert_eq!((user.sampling.seed, user.sampling.temperature), (4, 0.5));
     }
 }

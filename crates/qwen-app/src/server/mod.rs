@@ -45,7 +45,6 @@ Endpoints:"
     );
     eprintln!("  POST /v1/tts          — genera voz (devuelve WAV)");
     eprintln!("  POST /v1/tts/stream   — genera voz (stream PCM chunked)");
-    eprintln!("  POST /v1/audio/speech — TTS compatible con OpenAI");
     eprintln!("  GET  /v1/voices       — lista la voz cargada");
     eprintln!(
         "  GET  /v1/health       — comprobación de estado

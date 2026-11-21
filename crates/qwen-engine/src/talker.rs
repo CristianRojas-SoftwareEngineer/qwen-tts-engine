@@ -9,7 +9,7 @@ use qwen_core::config::{
 use qwen_kernels::{AlignedBuf, ComputeRuntime, Transpose};
 
 use crate::error::EngineError;
-use crate::model::{Model06B, SessionScratch, TransformerLayerWeights};
+use crate::model::{Model06B, SessionScratch};
 use crate::request::LogLevel;
 
 /// Elementos F32 del bloque de pesos convertidos del *prefill* (4 MiB).
@@ -283,7 +283,7 @@ pub fn talker_step(
     scratch: &mut SessionScratch,
     embed: &[f32],
     hidden_out: &mut [f32],
-) -> Result<(), EngineError> {
+) {
     let pos = scratch.talker_kv.len;
     scratch.talker_kv.ensure_capacity(pos + 1);
     let kv_max = scratch.talker_kv.max_pos;
@@ -362,12 +362,11 @@ pub fn talker_step(
             pos,
         );
 
-        TransformerLayerWeights::dispatch_proj(
-            runtime,
-            l.wo_q.as_ref(),
-            &l.wo_bf16,
-            &tb.dec_attn_out,
+        d.matvec_q4_0(
+            pool,
             &mut tb.dec_proj_out,
+            &l.wo_q,
+            &tb.dec_attn_out,
             HIDDEN_SIZE,
             Q_DIM,
         );
@@ -381,25 +380,25 @@ pub fn talker_step(
             eps,
         );
 
-        l.dispatch_gate_up(
-            runtime,
-            &tb.dec_x_norm,
+        d.matvec_q4_0(
+            pool,
             &mut tb.dec_gate,
-            INTERMEDIATE_SIZE,
+            &l.gate_up_q,
+            &tb.dec_x_norm,
+            2 * INTERMEDIATE_SIZE,
             HIDDEN_SIZE,
-        )?;
+        );
         d.swiglu_inplace(
             &mut tb.dec_gate,
             &mut tb.swiglu_tmp[..INTERMEDIATE_SIZE],
             INTERMEDIATE_SIZE,
         );
 
-        TransformerLayerWeights::dispatch_proj(
-            runtime,
-            l.down_q.as_ref(),
-            &l.down_bf16,
-            &tb.dec_gate[..INTERMEDIATE_SIZE],
+        d.matvec_q4_0(
+            pool,
             &mut tb.dec_proj_out,
+            &l.down_q,
+            &tb.dec_gate[..INTERMEDIATE_SIZE],
             HIDDEN_SIZE,
             INTERMEDIATE_SIZE,
         );
@@ -427,5 +426,4 @@ pub fn talker_step(
         eps,
     );
     scratch.talker_kv.len = pos + 1;
-    Ok(())
 }

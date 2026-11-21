@@ -41,12 +41,11 @@ El protocolo de medición está en [`VERIFICATION_PLAN.md`](../VERIFICATION_PLAN
 | Área | Cambio | Efecto medido |
 |---|---|---|
 | RAM | Caché KV del Talker con 256 posiciones iniciales que crece bajo demanda (`KV_INITIAL_POSITIONS`) | −84 MiB por sesión |
-| RAM | *Staging* F32 de pesos del prefill local y transitorio de `talker_prefill` | Pico de memoria comprometida (*commit*): CLI −60 MiB, `--workers 4` −241 MiB |
-| RAM | KV de `BatchWorkspace` bajo demanda (`kv_cap` hasta `kv_max`) y copia compacta del KV en `generate_batch_multi` | `--batch-size 4` −377 MiB; `--batch-multi-test` −170 a −206 MiB |
+| RAM | *Staging* F32 de pesos del prefill local y transitorio de `talker_prefill` | Pico de memoria comprometida (*commit*): CLI −60 MiB (y −241 MiB con el servidor de 4 trabajadores, retirado el 2026-11-20) |
 | Hilos | El binario fija `OPENBLAS_NUM_THREADS = -j` antes de que se inicialice OpenBLAS (inicializador en `.CRT$XCT` en Windows, con el OpenBLAS propio 0.3.34, [ADR-002](002-blas-strategy.md)); `set_threads` no pide más hilos que los iniciales | Servidor arrancado sin la variable: −1 539 MiB de memoria comprometida (*commit*), RTF 0,74–0,77 → 0,66–0,69. Pedir más hilos que los iniciales colgaba la primera `sgemm` |
 | Primer audio | Prefill con conversión `BF16→F32` por bloques de 4 MiB y una `sgemm` por bloque | TTFA 618 → 493 ms (corta) y 702 → 590 ms (larga) sin carga. Cambia el audio (contrato en [`NUMERIC_CONTRACT.md`](../NUMERIC_CONTRACT.md) §3) |
 | Decoder | im2col en la `conv1` k=7 de los bloques residuales 2–3 (una `sgemm` con `K = 7 · canales`) | Decoder −3 / −7 %, drenaje hasta −38 %, SNR ≥ 104 dB |
-| Decoder | Atención del *streaming* por el mismo kernel que la decodificación completa | Rendimiento neutro; un único camino aritmético |
+| Decoder | Atención del *streaming* por `causal_attention_windowed`, el mismo kernel que usó la decodificación completa (retirada el 2026-11-21) | Rendimiento neutro; un único camino aritmético |
 | Productor | Microkernel `matmat` INT8/Q4_0 que lee cada fila de pesos una vez para hasta 8 columnas | `matmat` Q4_0 con B=2 −40 a −50 %; RTF corta 0,72 → 0,69 |
 | Productor | Verificación especulativa de 1 adivinanza en el Code Predictor (`cp_step2`) | Pasadas de pesos por frame 15 → ~11,9; con carga, CP 51,6 → 45,6 ms/f y RTF 0,95 → 0,87; audio bit-idéntico |
 | Productor | Reparto dinámico de filas entre hilos (`parallel_rows`, 4 chunks por hilo) y `codec_head` solo con las filas válidas | Con carga, productor −2,0 a −3,7 ms/f y RTF 0,87–0,88 → 0,83–0,85; audio bit-idéntico |

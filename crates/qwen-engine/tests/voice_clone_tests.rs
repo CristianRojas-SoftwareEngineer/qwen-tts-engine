@@ -14,7 +14,7 @@ use qwen_core::{
 use qwen_engine::{
     clone_voice, encode_wav_bytes, mel_spectrogram, AbortHandle,
     read_wav_24khz, trim_trailing_silence, validate_wav_path_or_header, write_wav, CloneOptions,
-    Delivery, LogLevel, MemorySink, Model06B, ModelLoadOptions, SessionScratch,
+    Delivery, LogLevel, MemorySink, Model06B, SessionScratch,
     SynthesisRequest, Synthesizer, Voice, VoiceLoadOptions,
 };
 use qwen_kernels::ComputeRuntime;
@@ -220,11 +220,7 @@ fn test_clone_from_default_voice_e2e() {
     let model = Model06B::load(
         &base_dir,
         &runtime,
-        ModelLoadOptions {
-            quant_mixed: true,
-            silent: true,
-            ..Default::default()
-        },
+        true,
     )
     .unwrap();
     let default_voice = Voice::builtin_default();
@@ -401,7 +397,7 @@ fn test_clone_from_default_voice_e2e() {
         "se obtuvo: {err}"
     );
 
-    // 6. Marcado multitramo con `--roughness` y streaming de tramos, con la voz `default`
+    // 6. Marcado multitramo y streaming de tramos, con la voz `default`
     let plan = plan_script(
         "Che bella notizia! [pause:400ms] Devo andare... [sigh] Ciao.",
         MarkupMode::Auto,
@@ -420,7 +416,6 @@ fn test_clone_from_default_voice_e2e() {
     let compose_req = SynthesisRequest {
         language_id: 2070,
         sampling,
-        cp_roughness: 0.35,
         log: LogLevel::Silent,
         ..Default::default()
     };
@@ -448,7 +443,6 @@ fn test_clone_from_default_voice_e2e() {
             &mut scratch,
             &SynthesisRequest {
                 volume: 2.0,
-                cp_roughness: 0.0,
                 ..compose_req
             },
             &abort,

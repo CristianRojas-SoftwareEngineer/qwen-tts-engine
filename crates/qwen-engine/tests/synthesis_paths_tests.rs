@@ -8,12 +8,13 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use qwen_core::config::{DEFAULT_SEED, ENC_DIM, NUM_CODEBOOKS, SAMPLE_RATE};
 use qwen_core::{plan_script, MarkupMode, QVoiceFile, SamplingParams, Script};
 use qwen_engine::{
     clone_voice, encode_wav_bytes, write_wav, AbortHandle, CloneOptions, Delivery, EdgeRampSink,
-    LogLevel, Model06B, ModelLoadOptions, SessionScratch, SynthesisRequest, Synthesizer, Voice,
+    LogLevel, Model06B, PcmWrite, SessionScratch, SynthesisRequest, Synthesizer, Voice,
     VoiceLoadOptions,
 };
 use qwen_kernels::ComputeRuntime;
@@ -36,6 +37,20 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// Destino de PCM compartido: permite leer lo escrito después de ceder el sink al motor.
+struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+impl PcmWrite for SharedBuf {
+    fn write_pcm(&mut self, b: &[u8]) -> std::io::Result<()> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(())
+    }
+
+    fn finish(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn load_model(runtime: &ComputeRuntime) -> Option<Model06B> {
     let model_dir = repo_root().join("models/qwen3-tts-0.6b-base");
     if !model_dir.exists() {
@@ -45,11 +60,7 @@ fn load_model(runtime: &ComputeRuntime) -> Option<Model06B> {
         Model06B::load(
             &model_dir,
             runtime,
-            ModelLoadOptions {
-                quant_mixed: true,
-                silent: true,
-                ..Default::default()
-            },
+            true,
         )
         .unwrap(),
     )
@@ -89,10 +100,6 @@ fn expected_qvoice_bytes(qv: &QVoiceFile) -> Vec<u8> {
         b.extend_from_slice(&c.to_le_bytes());
     }
     b
-}
-
-fn icl_cap_env_defined() -> bool {
-    std::env::var("QWEN_ICL_FRAMES").is_ok()
 }
 
 #[test]
@@ -147,11 +154,6 @@ fn test_voice_load_and_icl_cap_on_construction() {
     .unwrap();
     assert_eq!(over.icl.unwrap().ref_text, "Otra transcripción.");
 
-    // `QWEN_ICL_FRAMES` manda sobre el tope: si está definida, estas comprobaciones no aplican.
-    if icl_cap_env_defined() {
-        eprintln!("QWEN_ICL_FRAMES definida: se omite el tope de fotogramas");
-        return;
-    }
     let full_icl = full.icl.as_ref().unwrap();
     assert_eq!(full_icl.ref_text, ref_text);
     assert_eq!(full_icl.ref_codes, icl_qv.ref_codes, "tope 0 = sin recorte");
@@ -265,10 +267,8 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
     assert_eq!(built.xvector, qv.speaker_embedding);
     let built_icl = built.icl.as_ref().unwrap();
     assert_eq!(built_icl.ref_text, ref_text);
-    if !icl_cap_env_defined() {
-        assert_eq!(built_icl.ref_codes.len(), 5 * NUM_CODEBOOKS);
-        assert_eq!(built_icl.ref_codes[..], qv.ref_codes[..5 * NUM_CODEBOOKS]);
-    }
+    assert_eq!(built_icl.ref_codes.len(), 5 * NUM_CODEBOOKS);
+    assert_eq!(built_icl.ref_codes[..], qv.ref_codes[..5 * NUM_CODEBOOKS]);
     let qv_path = dir.join("clone.qvoice");
     qv.write_to_file(&qv_path).unwrap();
     assert_eq!(fs::read(&qv_path).unwrap(), expected_qvoice_bytes(&qv));
@@ -341,7 +341,8 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         // La entrega completa aplica las rampas de borde al codificar el WAV (sin cabecera: 44 B).
         let buffer_pcm = encode_wav_bytes(&buffered, SAMPLE_RATE as u32)[44..].to_vec();
 
-        let mut sink = EdgeRampSink::new(Vec::<u8>::new(), SAMPLE_RATE as u32);
+        let shared = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let mut sink = EdgeRampSink::new(SharedBuf(Arc::clone(&shared)), SAMPLE_RATE as u32);
         let streamed = synth
             .synthesize(
                 &mut scratch,
@@ -355,7 +356,7 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
             streamed.samples.is_none(),
             "{label}: Stream no devuelve muestras"
         );
-        let stream_pcm = sink.into_writer();
+        let stream_pcm = shared.lock().unwrap().clone();
 
         assert!(!buffer_pcm.is_empty(), "{label}: audio vacío");
         assert_eq!(

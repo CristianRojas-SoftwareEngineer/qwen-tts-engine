@@ -34,16 +34,16 @@ pub(crate) struct Prompt {
     pub icl_trim_samples: usize,
 }
 
+/// Muestras PCM iniciales que se recortan con contexto ICL activo: 2 frames del codec.
+const ICL_TRIM_SAMPLES: usize = 2 * HOP_SAMPLES;
+
 /// Devuelve el número de muestras PCM iniciales a recortar cuando hay contexto ICL activo.
 fn resolve_icl_trim_samples(icl_mode: bool) -> usize {
-    if !icl_mode {
-        return 0;
+    if icl_mode {
+        ICL_TRIM_SAMPLES
+    } else {
+        0
     }
-    let tf = std::env::var("QWEN_ICL_TRIM_FRAMES")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .unwrap_or(2);
-    tf.saturating_mul(HOP_SAMPLES)
 }
 
 fn embed_text_cached(
@@ -187,18 +187,11 @@ pub(crate) fn build_prompt(
             }
         } else {
             let emb_norm = spk_emb.iter().map(|&v| v * v).sum::<f32>().sqrt();
-            let mut scale = if model.spk_ref_norm > 0.1 && emb_norm > 0.1 {
+            let scale = if model.spk_ref_norm > 0.1 && emb_norm > 0.1 {
                 model.spk_ref_norm / emb_norm
             } else {
                 1.0
             };
-            if let Ok(sse) = std::env::var("QWEN_SPK_SCALE") {
-                if let Ok(f) = sse.trim().parse::<f32>() {
-                    if f.is_finite() {
-                        scale *= f;
-                    }
-                }
-            }
             for j in 0..HIDDEN_SIZE {
                 dst[j] += spk_emb[j] * scale;
             }

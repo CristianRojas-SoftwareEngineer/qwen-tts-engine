@@ -23,7 +23,7 @@ fn repo_root() -> PathBuf {
 }
 
 /// `config.json` mínimo y válido de Qwen3-TTS 0.6B; `{TYPE}` y `{SPK_ENC}` se sustituyen en cada caso.
-const CONFIG_TEMPLATE: &str = r#"{"model_type":"qwen3_tts","tts_model_size":"0b6","tts_model_type":"{TYPE}",{SPK_ENC}"talker_config":{"hidden_size":1024,"intermediate_size":3072,"num_hidden_layers":28,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"text_hidden_size":2048,"text_vocab_size":151936,"vocab_size":3072,"rms_norm_eps":1e-6,"rope_theta":1000000.0,"code_predictor_config":{"hidden_size":1024,"intermediate_size":3072,"num_hidden_layers":5,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"vocab_size":2048,"num_code_groups":16,"rms_norm_eps":1e-6}}}"#;
+const CONFIG_TEMPLATE: &str = r#"{"model_type":"qwen3_tts","tts_model_type":"{TYPE}",{SPK_ENC}"talker_config":{"hidden_size":1024,"intermediate_size":3072,"num_hidden_layers":28,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"text_hidden_size":2048,"text_vocab_size":151936,"vocab_size":3072,"rms_norm_eps":1e-6,"rope_theta":1000000.0,"code_predictor_config":{"hidden_size":1024,"intermediate_size":3072,"num_hidden_layers":5,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"vocab_size":2048,"num_code_groups":16,"rms_norm_eps":1e-6}}}"#;
 const SPK_ENC: &str = r#""speaker_encoder_config":{"enc_dim":1024,"sample_rate":24000},"#;
 
 fn synthetic_config(model_type: &str, with_speaker_encoder: bool) -> String {
@@ -49,25 +49,29 @@ fn test_config_only_base_loads_and_rejects_others() {
     assert_eq!(cfg.rms_norm_eps, qwen_core::config::RMS_NORM_EPS);
     load_synthetic("base_upper", &synthetic_config("BASE", true)).expect("BASE válida");
 
-    // CustomVoice se rechaza con el mensaje exacto
-    let msg = "Este motor solo carga Qwen3-TTS 0.6B Base; CustomVoice no está soportado";
+    // Todo rechazo lleva el prefijo genérico seguido de la comprobación que falló
+    let prefix = "Este motor solo carga Qwen3-TTS 0.6B Base: ";
     let err = load_synthetic("cv", &synthetic_config("custom_voice", false)).unwrap_err();
-    assert_eq!(err.to_string(), msg);
+    assert_eq!(
+        err.to_string(),
+        format!("{prefix}tts_model_type 'custom_voice' no soportado (se esperaba 'base')")
+    );
     // Un checkpoint sin `tts_model_type` tampoco es Base
     let no_type = synthetic_config("base", true).replace("\"tts_model_type\":\"base\",", "");
-    assert_eq!(load_synthetic("no_type", &no_type).unwrap_err().to_string(), msg);
+    let err = load_synthetic("no_type", &no_type).unwrap_err();
+    assert!(err.to_string().starts_with(prefix));
     // `base` sin encoder de locutor tampoco
     let err = load_synthetic("base_no_spk", &synthetic_config("base", false)).unwrap_err();
-    assert_eq!(err.to_string(), msg);
+    assert_eq!(err.to_string(), format!("{prefix}falta speaker_encoder_config"));
 
-    // Validación negativa: rechaza 1.7B y VoiceDesign
+    // Validación negativa: geometría distinta de la 0.6B y tipos que no son Base
     let base_ok = synthetic_config("base", true);
-    let bad_17b = base_ok.replace("\"hidden_size\":1024", "\"hidden_size\":2048");
-    let err = load_synthetic("17b", &bad_17b).unwrap_err();
-    assert!(err.to_string().contains("1.7B") || err.to_string().contains("2048"));
-    let bad_vd = base_ok.replace("\"base\"", "\"voice_design\"");
-    let err = load_synthetic("vd", &bad_vd).unwrap_err();
-    assert!(err.to_string().contains("VoiceDesign"));
+    let bad_geometry = base_ok.replace("\"hidden_size\":1024", "\"hidden_size\":2048");
+    let err = load_synthetic("geometry", &bad_geometry).unwrap_err();
+    assert!(err.to_string().starts_with(prefix) && err.to_string().contains("2048"));
+    let bad_type = base_ok.replace("\"base\"", "\"other_type\"");
+    let err = load_synthetic("bad_type", &bad_type).unwrap_err();
+    assert!(err.to_string().starts_with(prefix));
 
     // El checkpoint Base real (si está presente) carga
     let base_dir = repo_root().join("models/qwen3-tts-0.6b-base");
@@ -116,7 +120,7 @@ fn test_mmap_store_06b() {
     }
     let store = MmapStore::open_model(&model_dir).expect("abrir 0.6b model.safetensors");
     let tok_emb = store
-        .tensor_bf16("talker.model.text_embedding.weight")
+        .tensor_bf16_ref("talker.model.text_embedding.weight")
         .unwrap();
     assert_eq!(tok_emb.len(), 151_936 * TEXT_HIDDEN_SIZE);
     let norm = store.tensor_f32_ref("talker.model.norm.weight").unwrap();
@@ -182,8 +186,6 @@ fn test_bpe_golden_tokens() {
         let got = tok.encode(text);
         assert_eq!(got.as_slice(), expected, "BPE no coincide en el caso {idx}: {text}");
     }
-    assert_eq!(tok.decode(cases[0].1), cases[0].0);
-    assert_eq!(tok.decode(cases[2].1), cases[2].0);
 }
 
 fn qvoice_emb() -> Vec<f32> {

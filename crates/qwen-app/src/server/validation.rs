@@ -10,6 +10,19 @@ use serde_json::Value;
 
 pub const MAX_TTS_TEXT: usize = 8192;
 
+/// Campos que admiten ambas rutas de síntesis.
+const COMMON_FIELDS: [&str; 9] = [
+    "text",
+    "language",
+    "voice",
+    "temperature",
+    "top_k",
+    "top_p",
+    "rep_penalty",
+    "seed",
+    "volume",
+];
+
 #[derive(Debug, Clone)]
 pub struct ValidatedTtsRequest {
     pub text: String,
@@ -93,25 +106,18 @@ impl ValidatedTtsRequest {
             .as_object()
             .ok_or_else(|| "el cuerpo JSON debe ser un objeto".to_string())?;
 
-        // voice_design es exclusivo de 1.7B -> rechazar con 400
-        if let Some(vd) = obj.get("voice_design") {
-            let enabled = match vd {
-                Value::Bool(b) => *b,
-                Value::String(s) => s.eq_ignore_ascii_case("true") || s == "1",
-                Value::Number(n) => n.as_i64() == Some(1),
-                _ => false,
-            };
-            if enabled {
-                return Err("voice_design requiere el modelo VoiceDesign de 1.7B".to_string());
+        // Lista estricta de campos: `rate` solo en `/v1/tts` y `chunk_frames` solo en streaming.
+        for key in obj.keys() {
+            let known = COMMON_FIELDS.contains(&key.as_str())
+                || (!is_stream && key == "rate")
+                || (is_stream && key == "chunk_frames");
+            if !known {
+                return Err(format!("campo desconocido '{key}'"));
             }
         }
 
-        // text o input (obligatorio, no vacío, no solo espacios, <= 8192 bytes)
-        let text_raw = match extract_opt_str(obj, "text")? {
-            Some(t) => Some(t),
-            None => extract_opt_str(obj, "input")?,
-        };
-        let Some(text) = text_raw else {
+        // text (obligatorio, no vacío, no solo espacios, <= 8192 bytes)
+        let Some(text) = extract_opt_str(obj, "text")? else {
             return Err("falta 'text' o está vacío".to_string());
         };
         if text.is_empty() {
@@ -204,18 +210,19 @@ impl ValidatedTtsRequest {
             }
             None => 1.0,
         };
-        let rate = match extract_opt_f64(obj, "rate")? {
-            Some(v) => {
-                if !(0.25..=4.0).contains(&v) {
-                    return Err("'rate' fuera de rango [0.25, 4.0]".to_string());
+        let rate = if is_stream {
+            1.0
+        } else {
+            match extract_opt_f64(obj, "rate")? {
+                Some(v) => {
+                    if !(0.25..=4.0).contains(&v) {
+                        return Err("'rate' fuera de rango [0.25, 4.0]".to_string());
+                    }
+                    v as f32
                 }
-                v as f32
+                None => 1.0,
             }
-            None => 1.0,
         };
-        if is_stream && (rate - 1.0).abs() > 1e-6 {
-            return Err("'rate' no está soportado en /v1/tts/stream".to_string());
-        }
 
         // chunk_frames (acotado a 2..=250, por defecto 10)
         let chunk_frames = if is_stream {
@@ -258,14 +265,11 @@ mod tests {
         assert!(parse(r#"{"text":"Hi.","top_k":4000}"#, false).is_err());
         assert!(parse(r#"{"text":"Hi.","top_p":1.5}"#, false).is_err());
         assert!(parse(r#"{"text":"Hi.","rep_penalty":0.2}"#, false).is_err());
-        assert!(parse(r#"{"text":"Hi.","voice_design":"true"}"#, false).is_err());
-        assert!(parse(r#"{"text":"Hi.","rate":1.2}"#, true).is_err());
         assert!(parse(r#"{"text":"Hi.","rate":0.01}"#, false).is_err());
         assert!(parse(r#"{"text":"Hi.","volume":-1.0}"#, false).is_err());
         assert!(parse(r#"{"text":"Hi.","seed":99999999999}"#, false).is_err());
-        assert!(parse(r#"{"text":"Hi.","voice_design":"TRUE"}"#, false).is_err());
 
-        let ok = parse(r#"{"input":"Hello!","rate":1.2}"#, false).unwrap();
+        let ok = parse(r#"{"text":"Hello!","rate":1.2}"#, false).unwrap();
         assert_eq!(ok.text, "Hello!");
         assert_eq!(ok.temperature, None);
         assert_eq!(ok.seed, SeedChoice::Default);
@@ -293,9 +297,20 @@ mod tests {
     }
 
     #[test]
-    fn test_removed_fields_are_ignored() {
-        let r = parse(r#"{"text":"Hi.","speaker":"ryan","emotion":"sad"}"#, false).unwrap();
-        assert_eq!(r.text, "Hi.");
-        assert!(parse(r#"{"text":"Hi.","speaker":"nadie","emotion":7}"#, false).is_ok());
+    fn test_unknown_fields_are_rejected() {
+        let err = parse(r#"{"text":"Hi.","speaker":"ryan","emotion":"sad"}"#, false).unwrap_err();
+        assert!(err.starts_with("campo desconocido '"), "{err}");
+        assert!(parse(r#"{"text":"Hi.","input":"x"}"#, false).is_err());
+        assert!(parse(r#"{"input":"Hi."}"#, false).is_err());
+        // `null` cuenta como ausente
+        assert!(parse(r#"{"text":"Hi.","seed":null}"#, false).is_ok());
+    }
+
+    #[test]
+    fn test_route_specific_fields() {
+        assert!(parse(r#"{"text":"Hi.","rate":1.2}"#, true).is_err());
+        assert!(parse(r#"{"text":"Hi.","chunk_frames":4}"#, false).is_err());
+        assert!(parse(r#"{"text":"Hi.","rate":1.2}"#, false).is_ok());
+        assert!(parse(r#"{"text":"Hi.","chunk_frames":4}"#, true).is_ok());
     }
 }

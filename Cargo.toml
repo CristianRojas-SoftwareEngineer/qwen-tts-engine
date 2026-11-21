@@ -12,7 +12,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MPL-2.0"
 repository = "https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine"
-description = "Motor de inferencia independiente en Rust para CPU y servidor HTTP compatible con OpenAI para Qwen3-TTS 0.6B"
+description = "Motor de inferencia independiente en Rust para CPU y servidor HTTP para Qwen3-TTS 0.6B"
 readme = "README.md"
 
 [profile.release]

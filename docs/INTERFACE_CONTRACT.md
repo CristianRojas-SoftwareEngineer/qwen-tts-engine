@@ -2,7 +2,7 @@
 
 > Referencia normativa de las tres interfaces públicas de **Qwen TTS Engine** (`qwen-tts-engine`): binario CLI (`qwen_tts`), servidor HTTP (`--serve`) y API Rust embebida (`qwen-engine`, `qwen-core`, `qwen-kernels`), además de variables de entorno y logs operativos.
 
-> **Alcance**: Exclusivo para **Qwen3-TTS 0.6B Base**. Las opciones de `1.7B` (`--voice-design`, `-I`/`--instruct`, `--expr`, `--expr-weight`, `--ml-steer`) son rechazadas explícitamente.
+> **Alcance**: Exclusivo para **Qwen3-TTS 0.6B Base**. Cualquier otro checkpoint se rechaza al cargar; una opción que el motor no define es un error de uso.
 
 ---
 
@@ -15,16 +15,14 @@
 | `-h`, `--help` | Imprime la ayuda de uso por `stderr` y termina. | `0` |
 | `--caps` | Inicializa el runtime con `-j`, imprime capacidades SIMD/hilos/BLAS a `stdout` y termina. | `0` |
 | `--self-test` | Ejecuta la batería numérica de kernels hacia `stdout`. | `0` si pasa, `1` si falla |
-| `--matmat-bench` | Mide `matmat` frente a `B × matvec` hacia `stdout` con el `-j` activo. | `0` |
 | `--list-voices <dir>` | Lista los `.qvoice` de `<dir>` (o un archivo `.qvoice` puntual): por voz, archivo, nombre, idioma (`-` si no tiene), ICL (frames y segundos, o `no`) y tamaño. Un archivo que el lector rechaza (por ejemplo, una versión distinta de la 4) aparece con `no compatible: <mensaje>`. La voz `default` no se lista: no es un archivo. | `0` / `1` |
 | `--delete-voice <path>` | Valida la extensión `.qvoice` y la cabecera `QVCE` antes de eliminar el archivo. | `0` / `1` |
-| `decode-dump <codes.txt> <model_dir> <out.wav>` | Subcomando posicional (sin otras flags): carga `<model_dir>` y decodifica códigos (múltiplo de 16) a WAV 24 kHz s16le. | `0` / `1` |
 
-### 1.2 Flags de modelo, voz, muestreo y cuantización
+### 1.2 Flags de modelo, voz y muestreo
 
 | Categoría | Flag(s) | Por defecto | Contrato y validación |
 |---|---|---:|---|
-| **Modelo y texto** | `-d, --model-dir <path>` | *(obligatorio con modelo)* | Directorio del modelo Qwen3-TTS `0.6B` Base. Rechaza `1.7B`, `VoiceDesign` y cualquier checkpoint que no sea Base (`exit 1`, con un mensaje que indica que el motor solo carga el modelo Base). |
+| **Modelo y texto** | `-d, --model-dir <path>` | *(obligatorio con modelo)* | Directorio del modelo Qwen3-TTS `0.6B` Base. Rechaza cualquier checkpoint que no sea Base (`exit 1`, con el mensaje `Este motor solo carga Qwen3-TTS 0.6B Base: <detalle>`). |
 | | `-t, --text <string>` | `None` | Obligatorio salvo `--serve`, `--compose`, `--save-voice` sin texto (con `--ref-audio`). |
 | | `-o, --output <path>` | `output.wav` | Ruta de salida WAV (24 kHz, PCM s16le mono). Lleva una rampa de entrada de 5 ms y otra de salida de 40 ms con y sin `--stream`. El PCM es idéntico en los dos modos (`NUMERIC_CONTRACT.md` §4). |
 | **Voz e idioma** | `-l, --language <name>` | el de la voz cargada o, si no tiene, `Spanish` (`2054`) | Acepta 10 idiomas *sin distinguir mayúsculas*: `english`, `german`, `spanish`, `chinese`, `japanese`, `french`, `korean`, `russian`, `italian`, `portuguese`. Una sola regla en todos los modos: el pedido (`-l`); si no hay, el idioma guardado en la voz (si es distinto de `0`; la voz `default` declara español); si tampoco, español. Desconocido → `exit 1`. |
@@ -36,9 +34,8 @@
 | | `--max-duration <secs>` | `None` | Si es `> 0`, sobrescribe `--max-tokens` con `max(1, floor(secs * 12.5))`. |
 | | `--seed <n>` | `4` (`< 0` reloj) | Entero `0..=u32::MAX` fija semilla; omitido usa `DEFAULT_SEED = 4` (salvo sustitución paralingüística en línea); negativo usa reloj del sistema; `> u32::MAX` → `exit 1`. |
 | | `--greedy-warmup <n>` | `0` | Primeros `n` frames con `T=0.0, top_k=1`. |
-| **Cuantización** | `--int8` | off | Talker + Code Predictor en `INT8`. |
-| | `--int4` | off | Talker + Code Predictor en `Q4_0`. |
-| | `--quant-mixed` | off | **Perfil recomendado 0.6B**: Talker en `Q4_0`; Code Predictor con atención y `lm_head` en `INT8` y FFN en `Q4_0` (`[INT8+Q4_0-FFN]`). |
+
+**Cuantización**: no hay flags. El motor usa siempre el mismo perfil: Talker en `Q4_0`; Code Predictor con atención y `lm_head` en `INT8` y FFN en `Q4_0` (`[INT8+Q4_0-FFN]`).
 
 ### 1.3 Streaming, audio y post-procesado
 
@@ -66,8 +63,7 @@
 | | `--icl-frames <n>` | `0` *(todos)* | Tope máximo de frames de referencia en modo ICL. |
 | | `--voice-name <name>` | `None` | Nombre guardado en el `.qvoice`; sin él, la voz clonada al vuelo se llama como el WAV (sin extensión). Al cargar, el nombre es el guardado en el archivo o, si está vacío, el nombre del archivo. |
 | | `--max-ref-duration <s>` | `30.0` | Duración máxima en segundos leída de `--ref-audio` (`0` = audio completo). |
-| **Marcado y estilo** | `--roughness <0..1>` | `0.0` | Mezcla pesos `Q2_0` en `down_proj` del Code Predictor (`[0.0, 1.0]`). |
-| | `--compose <spec>` | `None` | Síntesis multitramo con pausas `[pause:<s>]`, `[break:<s>]`, `[0.5]` o `\|`, y tags paralingüísticos en línea (`[laugh]`, `[sigh]`, `[yawn]`, `[wow]`, `[giggle]`, `[scoff]`), que se tratan igual que en `--text`. Sirve para la entrega completa y para `--stream`/`--stdout` (mismo PCM, `NUMERIC_CONTRACT.md` §4, invariante 5). Una composición solo de pausas, sin nada que hablar, es un error (`Composición: nada que sintetizar`) en las dos entregas. |
+| **Marcado y estilo** | `--compose <spec>` | `None` | Síntesis multitramo con pausas `[pause:<s>]`, `[break:<s>]`, `[0.5]` o `\|`, y tags paralingüísticos en línea (`[laugh]`, `[sigh]`, `[yawn]`, `[wow]`, `[giggle]`, `[scoff]`), que se tratan igual que en `--text`. Sirve para la entrega completa y para `--stream`/`--stdout` (mismo PCM, `NUMERIC_CONTRACT.md` §4, invariante 5). Una composición solo de pausas, sin nada que hablar, es un error (`Composición: nada que sintetizar`) en las dos entregas. |
 | | `--compose-pause <s>` | `0.12` | Pausa por defecto entre tramos hablados en `--compose`. |
 | | `--no-compose` | off | Desactiva la sustitución de `[tags]` y la composición automática en `--text`. El marcado en `--text` (`[hmm]`, `[pause:0.4]`...) va por el mismo camino que `--compose`, con `--stream` y `--stdout` incluidos. |
 
@@ -102,14 +98,13 @@
 | `GET /v1/health` | — | `200` `{"status":"ok"}` | Comprobación de disponibilidad. |
 | `GET /v1/voices` | — | `200` `{"voices":[{"name":"<nombre>","language":"<nombre o null>","icl":<bool>}]}` | Devuelve la voz cargada. `"language"` es el idioma declarado por la voz (la voz `default` declara `"Spanish"`; `null` si una voz cargada no declara ninguno). |
 | `POST /v1/tts` | JSON TTS | `200` `audio/wav` (24 kHz s16le mono) | WAV completo con rampas de 5 ms (entrada) y 40 ms (salida); mismo PCM que `/v1/tts/stream` y que la CLI. Usa `DEFAULT_CHUNK_FRAMES = 10`; `max_tokens = 8192`. |
-| `POST /v1/audio/speech` | JSON OpenAI (`input`, `voice`, ...) | `200` `audio/wav` | Alias completo de `POST /v1/tts` (`input` → `text`). |
-| `POST /v1/tts/stream` | JSON TTS | `200` `audio/pcm` (`Transfer-Encoding: chunked`) | Cabeceras: `X-Sample-Rate: 24000`, `X-Sample-Format: s16le`, `X-Channels: 1`. Rechaza `rate != 1.0` (`400`); `max_tokens = 8192`. |
+| `POST /v1/tts/stream` | JSON TTS | `200` `audio/pcm` (`Transfer-Encoding: chunked`) | Cabeceras: `X-Sample-Rate: 24000`, `X-Sample-Format: s16le`, `X-Channels: 1`. No admite el campo `rate` (`400`); `max_tokens = 8192`. |
 
 **Campos JSON aceptados en `POST`**:
 
 | Campo | Tipo | Por defecto | Notas |
 |---|---|---|---|
-| `text` o `input` | `string` | *(obligatorio)* | No vacío ni solo espacios/escapes `\n`, `\t`, `\r`; `<= 8192` bytes. |
+| `text` | `string` | *(obligatorio)* | No vacío ni solo espacios/escapes `\n`, `\t`, `\r`; `<= 8192` bytes. |
 | `voice` | `string` | *(opcional)* | Si viene, debe coincidir (sin distinguir mayúsculas) con el nombre de la voz cargada; si no, `400` con `la voz '<x>' no está cargada (cargada: '<nombre>')`. |
 | `language` | `string` | idioma de la voz cargada o, si no tiene, `Spanish` | Debe existir en `lookup_language`. Es el idioma efectivo: el pedido, el de la voz o español, la misma regla que la CLI. El log `lang=` de las peticiones muestra el idioma efectivo. |
 | `temperature` | `number` | `0.325` | Rango válido `[0.0, 2.0]`. |
@@ -118,21 +113,20 @@
 | `rep_penalty` | `number` | `1.05` | Rango válido `[0.5, 2.0]`. |
 | `seed` | `integer` | `4` (`< 0` reloj) | Entero `0..=u32::MAX` fija semilla; omitido usa `DEFAULT_SEED = 4` (salvo sustitución paralingüística en línea); negativo usa reloj; `> u32::MAX` devuelve `400`. |
 | `volume` | `number` | `1.0` | Ganancia PCM lineal; rango válido `[0.0, 10.0]`. |
-| `rate` | `number` | `1.0` | WSOLA que preserva el tono en `/v1/tts` (`[0.25, 4.0]`); prohibido `!= 1.0` en `/v1/tts/stream`. |
-| `chunk_frames` | `integer` | `10` | Solo en `/v1/tts/stream`; se acota con `clamp(2, 250)`. |
-| `voice_design` | `bool \| string \| number` | `false` | `true`, `"true"`, `"1"` o `1` devuelven `400` (`0.6B` no soporta `VoiceDesign`). |
+| `rate` | `number` | `1.0` | Solo en `/v1/tts`: WSOLA que preserva el tono (`[0.25, 4.0]`). En `/v1/tts/stream` es un campo desconocido (`400`). |
+| `chunk_frames` | `integer` | `10` | Solo en `/v1/tts/stream`; se acota con `clamp(2, 250)`. En `/v1/tts` es un campo desconocido (`400`). |
+
+Un `null` cuenta como campo ausente. Cualquier otra clave da `400` con `campo desconocido '<clave>'`.
 
 ### 2.3 Validación HTTP `400` y valores acotados
 
 Toda petición se valida en `ValidatedTtsRequest::parse` antes de sintetizar:
 
 - Cuerpo JSON inválido, no objeto, `Content-Length` inválido o tamaño mayor que `1 MiB` → `400`.
-- `text`/`input` ausente, vacío, solo espacios en blanco (o `\n`/`\t`/`\r` escapados) o `> 8192` bytes → `400`.
+- `text` ausente, vacío, solo espacios en blanco (o `\n`/`\t`/`\r` escapados) o `> 8192` bytes → `400`.
 - `language` desconocido, o `voice` distinto de la voz cargada → `400`.
-- Los campos desconocidos se ignoran (no dan `400`).
+- Campo desconocido, o que la ruta no admite (`rate` en `/v1/tts/stream`, `chunk_frames` en `/v1/tts`) → `400` con `campo desconocido '<clave>'`.
 - `temperature` fuera de `[0.0, 2.0]`, `top_k` fuera de `[0, 3072]`, `top_p` fuera de `[0.0, 1.0]`, `rep_penalty` fuera de `[0.5, 2.0]`, `volume` fuera de `[0.0, 10.0]`, `rate` fuera de `[0.25, 4.0]` o `seed > u32::MAX` → `400`.
-- `rate != 1.0` en `/v1/tts/stream` → `400`.
-- `voice_design` activo → `400`.
 - `chunk_frames` en `/v1/tts/stream` se acota silenciosamente a `[2, 250]`.
 
 ### 2.4 Streaming *chunked*, cancelación y cierre
@@ -154,23 +148,19 @@ Los tipos de la petición viven en `qwen-core` (`Script`, `SamplingParams`, `pla
 
 ```rust
 use std::path::Path;
-use qwen_engine::{Model06B, ModelLoadOptions};
+use qwen_engine::Model06B;
 use qwen_kernels::ComputeRuntime;
 
 let runtime = ComputeRuntime::new(Some(4)); // `None` -> min(ncpus, 4)
-let load_opts = ModelLoadOptions {
-    quant_mixed: true, // Talker Q4_0 + CP [INT8+Q4_0-FFN]
-    silent: false,
-    ..Default::default()
-};
-let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, load_opts)?;
+// Último argumento: `silent` (`true` suprime las trazas de carga por `stderr`).
+let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, false)?;
 ```
 
-- `Model06B::load` valida `config.json` para `0.6B`, abre `safetensors` vía `MmapStore` y cuantiza matrices según `ModelLoadOptions` (o `QWEN_TALKER_PREC` / `QWEN_CP_PREC`). Los encoders del locutor y de voz son obligatorios: si faltan, es un error de carga.
+- `Model06B::load` valida `config.json` para `0.6B`, abre `safetensors` vía `MmapStore` y cuantiza las matrices con el perfil único (Talker `Q4_0`; Code Predictor `INT8` y `Q4_0`). Los encoders del locutor y de voz son obligatorios: si faltan, es un error de carga.
 
 ### 3.2 `Voice` y `SessionScratch`
 
-`Voice` es la única representación de una voz: `name`, `language_id: Option<i32>` (idioma declarado; `None` si no declara ninguno), `xvector: Vec<f32>` e `icl: Option<IclPrompt>`. `IclPrompt { ref_text, ref_codes }` ya está recortado al tope de frames al construir la voz (`VoiceLoadOptions::icl_frames_cap` o, si está definida, `QWEN_ICL_FRAMES`).
+`Voice` es la única representación de una voz: `name`, `language_id: Option<i32>` (idioma declarado; `None` si no declara ninguno), `xvector: Vec<f32>` e `icl: Option<IclPrompt>`. `IclPrompt { ref_text, ref_codes }` ya está recortado al tope de frames al construir la voz (`VoiceLoadOptions::icl_frames_cap`).
 
 - **Voz `default` incorporada**, que declara español (`2054`):
   ```rust
@@ -201,18 +191,18 @@ let out = synth.synthesize(
 )?;
 write_wav(Path::new("buffer.wav"), &out.samples.unwrap(), 24_000)?;
 
-// B) Streaming progresivo hacia cualquier AudioSink + Send; aquí, PCM s16le en memoria
-let mut sink = EdgeRampSink::new(Vec::<u8>::new(), 24_000);
+// B) Streaming progresivo hacia cualquier AudioSink + Send; aquí, PCM s16le hacia un
+// destino propio `mi_destino` que implementa `PcmWrite`
+let mut sink = EdgeRampSink::new(mi_destino, 24_000);
 synth.synthesize(
     &mut scratch, &req, &abort, &Script::Plain("Streaming audio!".into()),
     Delivery::Stream(&mut sink),
 )?;
-let pcm: Vec<u8> = sink.into_writer();
 ```
 
 - **`Script`**: `Plain(String)` (texto sin marcado) o `Spans(Vec<SpanSpec>)` (tramos hablados y pausas). `qwen_core::plan_script(text, MarkupMode::{Auto, Literal, Compose})` es el único sitio que decide la sustitución paralingüística y los tramos.
 - **`Delivery`**: `Buffer` devuelve todo el audio en `SynthesisOutput::samples`, con `time_stretch` (`rate`), `tail_trim` y `onset_fade`; `Stream(&mut sink)` entrega chunks al destino sin acabado y rechaza `rate != 1.0`. Los dos dan el mismo PCM (`NUMERIC_CONTRACT.md` §4, invariante 5).
-- **`SynthesisRequest`**: `language_id` (ya resuelto con `effective_language(pedido, voz)`: pedido, voz o español), `sampling: SamplingParams` (`temperature`, `top_k`, `top_p`, `rep_penalty`, `greedy_warmup`, `seed`), `max_frames`, `chunk_frames`, `cp_roughness`, `volume`, `rate`, `compose_pause_s`, `tail_trim`, `onset_fade_ms` y `log: LogLevel`. Los valores por defecto (0,325 / 50 / 1,0 / 1,05 / 0 / 4, 8192 frames, chunks de 10) están en un solo sitio.
+- **`SynthesisRequest`**: `language_id` (ya resuelto con `effective_language(pedido, voz)`: pedido, voz o español), `sampling: SamplingParams` (`temperature`, `top_k`, `top_p`, `rep_penalty`, `greedy_warmup`, `seed`), `max_frames`, `chunk_frames`, `volume`, `rate`, `compose_pause_s`, `tail_trim`, `onset_fade_ms` y `log: LogLevel`. Los valores por defecto (0,325 / 50 / 1,0 / 1,05 / 0 / 4, 8192 frames, chunks de 10) están en un solo sitio.
 - **Destinos de audio**: el trait `AudioSink` (`write_samples(&mut self, &[f32])` y `finish(&mut self)`) es el único destino del camino. `MemorySink` acumula `f32`; `EdgeRampSink<W: PcmWrite>` aplica las rampas de borde (5 ms de entrada, 40 ms de salida con retención) y convierte a PCM `s16le`, y no aplica ganancia (la aplica `synthesize` antes de escribir). `PcmWrite` (`write_pcm` y `finish`) tiene escritores incluidos —`WavFileWriter` (WAV progresivo), `StdoutWriter` y `Vec<u8>`— o uno propio.
 
 ### 3.4 Cancelación cooperativa (`AbortHandle`) y marcado
@@ -241,17 +231,6 @@ let pcm: Vec<u8> = sink.into_writer();
 | `OPENBLAS_LIB_DIR` | Compilación (`qwen-kernels`) | *(obligatoria en Linux y Windows)* | Directorio del `libopenblas.a` propio, que el motor enlaza estático (`scripts/build-openblas.sh` lo compila). Es obligatoria, sin valor por defecto, y debe contener `libopenblas.a`; si falta, la compilación falla con un mensaje que explica cómo compilarlo. En la documentación: `C:/openblas/lib` en Windows (`x86_64-pc-windows-gnu`) y `$HOME/openblas/lib` en Linux. En macOS no se usa (Accelerate). |
 | `WINDRES` | Compilación (`qwen-app`) | auto | Compilador de recursos COFF para incrustar el manifiesto UTF-8 en Windows GNU. |
 | `QWEN_KERNELS` | Runtime | `auto` | `auto`: los kernels más rápidos que soporte la CPU (AVX2 + FMA en x86-64; en aarch64, NEON en todos los kernels, con `SDOT` en Q4_0 e INT8 si la CPU tiene `dotprod`; `--caps` muestra la ruta en la línea `kernels:`). `scalar`: fuerza la ruta escalar, como referencia para comparar kernels en la misma máquina; `--caps` lo indica con `kernels: scalar (forzado por QWEN_KERNELS=scalar)`. Un valor no válido se avisa por stderr y se trata como `auto`. Cambiar de ruta cambia el redondeo y, por tanto, el audio. |
-| `QWEN_POOL_SPIN` | Runtime | `4096`, o `0` si los hilos del productor ocupan todos los núcleos físicos | Iteraciones de *spin-wait* en `ComputePool` (`0` = espera directa en `Condvar`). Sin la variable, la CLI y el servidor usan la misma regla (`spin_budget_for`): `0` cuando `-j` llega a los núcleos físicos (con 4 núcleos y `-j 4`) y `4096` si no. Con la variable, manda su valor. |
-| `QWEN_SD_THREADS` | Runtime | `-j` | Número de hilos asignados a `sd_pool` (`SpeechDecoder`). |
-| `QWEN_BLAS_GEN_THREADS` | Runtime | `max(1, nt - 1)` | Hilos BLAS durante la fase de generación paralela con `SpeechDecoder`. |
-| `QWEN_TALKER_PREC` | Carga `Model06B` | según flags | Fuerza precisión del Talker: `bf16`, `int8` o `int4`. |
-| `QWEN_CP_PREC` | Carga `Model06B` | según flags | Fuerza precisión del Code Predictor: `bf16`, `int8`, `int4` o `mixed`. |
-| `QWEN_SPK_SCALE` | Prefill | `1.0` | Factor multiplicador sobre la norma L2 del *speaker embedding* clonado. |
-| `QWEN_ICL_FRAMES` | Construcción de la voz | `icl_frames_cap` | Si está definida, sobrescribe el límite de frames de referencia ICL al construir la `Voice`. |
-| `QWEN_ICL_TRIM_FRAMES` | Pipeline ICL | `2` | Frames recortados al inicio del audio generado en modo ICL (`2 × 1920` muestras). |
-| `QWEN_NO_REF_TRIM` | Audio ref | off | Si está definida, desactiva `trim_trailing_silence` sobre `--ref-audio`. |
-| `QWEN_DUMP_CODES` | Pipeline | `None` | Ruta de archivo donde volcar los 16 codebooks por frame (`decode-dump`). |
-| `QWEN_BATCH_B` | `--matmat-bench` | `8` | Tamaño de lote `B` en microbenchmarks (`1..=64`; valores fuera de rango usan `8`). |
 
 ### 4.2 Afinidad SMT en Windows y gestión de OpenBLAS
 
@@ -263,7 +242,7 @@ let pcm: Vec<u8> = sink.into_writer();
 Formato actual de las líneas de diagnóstico que el motor escribe en `stderr`. Son texto para personas y no forman parte del contrato: pueden cambiar, y los scripts y las pruebas del repositorio que las leen se actualizan con ellas.
 
 - **Carga de Code Predictor** (`model.rs`):
-  `  Code Predictor: 5 capas cargadas, q_dim=2048 kv_dim=1024 [BF16|INT8|Q4_0|INT8+Q4_0-FFN]`
+  `  Code Predictor: 5 capas cargadas, q_dim=2048 kv_dim=1024 [INT8+Q4_0-FFN]`
 - **Voz cargada** (`modes/voice_cmd.rs`, salvo con `-S`): `Voz: <nombre>` (`default`, el nombre guardado en el `.qvoice`, el nombre del archivo o el del WAV clonado).
 - **Semilla resuelta** (`request.rs`):
   `semilla: <u32>` *(o `semilla: <u32> (automática/temporal)`)*

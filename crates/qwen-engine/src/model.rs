@@ -20,10 +20,9 @@ use qwen_core::config::{
 };
 use qwen_core::{Bf16Ref, BpeTokenizer, F32Ref, LcgRng, MmapStore, ModelConfig06B, Sampler};
 use qwen_kernels::quant::{
-    interleave_gate_up_bf16, quant_shape_check, quantize_bf16_to_int8,
-    quantize_bf16_to_q4_0, quantize_gate_up_int8, quantize_gate_up_q4_0,
+    quant_shape_check, quantize_bf16_to_int8, quantize_bf16_to_q4_0, quantize_gate_up_q4_0,
 };
-use qwen_kernels::{AlignedBuf, ComputeRuntime, KernelDispatch, Q2_0Block, Q4_0Block};
+use qwen_kernels::{AlignedBuf, ComputeRuntime, KernelDispatch, Q4_0Block};
 
 use crate::error::EngineError;
 use crate::speech_encoder::SpeechEncoderWeights;
@@ -37,36 +36,13 @@ pub const CP_KV_MAX_POS: usize = 64;
 pub const SD_ROPE_MAX_POS: usize = 8000;
 pub const EMB_CACHE_CAPACITY: usize = 2048;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum LayerQuantScheme {
-    Bf16,
-    Int8,
-    Int4,
-    Mixed,
-}
-
-/// Opciones de carga y cuantización para [`Model06B::load`].
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ModelLoadOptions {
-    pub silent: bool,
-    pub use_int8: bool,
-    pub use_int4: bool,
-    pub quant_mixed: bool,
-}
-
 #[derive(Clone)]
-pub enum Bf16Weight {
-    Mmap(Bf16Ref),
-    Owned(Arc<Vec<u16>>),
-}
+pub struct Bf16Weight(Bf16Ref);
 
 impl Bf16Weight {
     #[inline]
     pub fn as_slice(&self) -> &[u16] {
-        match self {
-            Bf16Weight::Mmap(r) => r.as_slice(),
-            Bf16Weight::Owned(v) => v.as_slice(),
-        }
+        self.0.as_slice()
     }
 }
 
@@ -79,18 +55,12 @@ impl Deref for Bf16Weight {
 }
 
 #[derive(Clone)]
-pub enum F32Weight {
-    Mmap(F32Ref),
-    Owned(Arc<Vec<f32>>),
-}
+pub struct F32Weight(F32Ref);
 
 impl F32Weight {
     #[inline]
     pub fn as_slice(&self) -> &[f32] {
-        match self {
-            F32Weight::Mmap(r) => r.as_slice(),
-            F32Weight::Owned(v) => v.as_slice(),
-        }
+        self.0.as_slice()
     }
 }
 
@@ -102,16 +72,15 @@ impl Deref for F32Weight {
     }
 }
 
-pub enum QuantWeight {
-    Int8 {
-        data: AlignedBuf<i8>,
-        scale: AlignedBuf<f32>,
-    },
-    Q4_0(AlignedBuf<Q4_0Block>),
+/// Matriz INT8 con una escala por fila.
+pub struct Int8Weight {
+    pub data: AlignedBuf<i8>,
+    pub scale: AlignedBuf<f32>,
 }
 
-/// Pesos de una capa Transformer estándar (atención GQA + MLP SwiGLU), compartida entre Talker y Code Predictor.
-pub struct TransformerLayerWeights {
+/// Pesos de una capa del Talker (atención GQA + MLP SwiGLU). Los pesos BF16 los lee el prefill y
+/// los Q4_0 el decodificado paso a paso.
+pub struct TalkerLayerWeights {
     pub wq_bf16: Bf16Weight,
     pub wk_bf16: Bf16Weight,
     pub wv_bf16: Bf16Weight,
@@ -123,27 +92,15 @@ pub struct TransformerLayerWeights {
     pub gate_bf16: Bf16Weight,
     pub up_bf16: Bf16Weight,
     pub down_bf16: Bf16Weight,
-    /// Matriz intercalada `[2*inter, hidden]`; solo presente cuando la capa corre en BF16.
-    pub gate_up_fused_bf16: Option<AlignedBuf<u16>>,
-    pub wq_q: Option<QuantWeight>,
-    pub wk_q: Option<QuantWeight>,
-    pub wv_q: Option<QuantWeight>,
-    pub wo_q: Option<QuantWeight>,
-    pub gate_up_q: Option<QuantWeight>,
-    pub down_q: Option<QuantWeight>,
+    pub wq_q: AlignedBuf<Q4_0Block>,
+    pub wk_q: AlignedBuf<Q4_0Block>,
+    pub wv_q: AlignedBuf<Q4_0Block>,
+    pub wo_q: AlignedBuf<Q4_0Block>,
+    pub gate_up_q: AlignedBuf<Q4_0Block>,
+    pub down_q: AlignedBuf<Q4_0Block>,
 }
 
-impl TransformerLayerWeights {
-    #[inline]
-    pub fn all_quantized(&self) -> bool {
-        self.wq_q.is_some()
-            && self.wk_q.is_some()
-            && self.wv_q.is_some()
-            && self.wo_q.is_some()
-            && self.gate_up_q.is_some()
-            && self.down_q.is_some()
-    }
-
+impl TalkerLayerWeights {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn dispatch_qkv(
         &self,
@@ -156,84 +113,19 @@ impl TransformerLayerWeights {
         q_dim: usize,
         kv_dim: usize,
     ) {
-        let d = runtime.dispatch;
-        let pool = &runtime.pool;
-        match (&self.wq_q, &self.wk_q, &self.wv_q) {
-            (Some(QuantWeight::Q4_0(wq)), Some(QuantWeight::Q4_0(wk)), Some(QuantWeight::Q4_0(wv))) => {
-                d.matvec_q4_0_qkv(pool, q, k, v, wq, wk, wv, x_norm, hidden, q_dim, kv_dim);
-            }
-            (
-                Some(QuantWeight::Int8 { data: wq, scale: sq }),
-                Some(QuantWeight::Int8 { data: wk, scale: sk }),
-                Some(QuantWeight::Int8 { data: wv, scale: sv }),
-            ) => {
-                d.matvec_int8_qkv(
-                    pool, q, k, v, wq, sq, wk, sk, wv, sv, x_norm, hidden, q_dim, kv_dim,
-                );
-            }
-            _ => {
-                d.matvec_bf16_qkv(
-                    pool,
-                    q,
-                    k,
-                    v,
-                    &self.wq_bf16,
-                    &self.wk_bf16,
-                    &self.wv_bf16,
-                    x_norm,
-                    hidden,
-                    q_dim,
-                    kv_dim,
-                );
-            }
-        }
-    }
-
-    pub(crate) fn dispatch_proj(
-        runtime: &ComputeRuntime,
-        q_weight: Option<&QuantWeight>,
-        bf16_weight: &[u16],
-        x: &[f32],
-        y: &mut [f32],
-        rows: usize,
-        cols: usize,
-    ) {
-        let d = runtime.dispatch;
-        let pool = &runtime.pool;
-        match q_weight {
-            Some(QuantWeight::Q4_0(w)) => d.matvec_q4_0(pool, y, w, x, rows, cols),
-            Some(QuantWeight::Int8 { data, scale }) => {
-                d.matvec_int8(pool, y, data, scale, x, rows, cols);
-            }
-            None => d.matvec_bf16(pool, y, bf16_weight, x, rows, cols),
-        }
-    }
-
-    pub(crate) fn dispatch_gate_up(
-        &self,
-        runtime: &ComputeRuntime,
-        x_norm: &[f32],
-        gate_out: &mut [f32],
-        inter: usize,
-        hidden: usize,
-    ) -> Result<(), EngineError> {
-        let d = runtime.dispatch;
-        let pool = &runtime.pool;
-        match &self.gate_up_q {
-            Some(QuantWeight::Q4_0(w)) => {
-                d.matvec_q4_0(pool, gate_out, w, x_norm, 2 * inter, hidden);
-            }
-            Some(QuantWeight::Int8 { data, scale }) => {
-                d.matvec_int8(pool, gate_out, data, scale, x_norm, 2 * inter, hidden);
-            }
-            None => {
-                let gu = self.gate_up_fused_bf16.as_deref().ok_or_else(|| {
-                    EngineError::Model("Falta gate_up_fused_bf16 en la capa BF16".to_string())
-                })?;
-                d.matvec_bf16(pool, gate_out, gu, x_norm, 2 * inter, hidden);
-            }
-        }
-        Ok(())
+        runtime.dispatch.matvec_q4_0_qkv(
+            &runtime.pool,
+            q,
+            k,
+            v,
+            &self.wq_q,
+            &self.wk_q,
+            &self.wv_q,
+            x_norm,
+            hidden,
+            q_dim,
+            kv_dim,
+        );
     }
 
     fn load(
@@ -243,7 +135,6 @@ impl TransformerLayerWeights {
         q_dim: usize,
         kv_dim: usize,
         inter: usize,
-        scheme: LayerQuantScheme,
     ) -> Result<Self, EngineError> {
         let wq_bf16 = req_bf16(store, &format!("{prefix}.self_attn.q_proj.weight"))?;
         let wk_bf16 = req_bf16(store, &format!("{prefix}.self_attn.k_proj.weight"))?;
@@ -257,53 +148,12 @@ impl TransformerLayerWeights {
         let up_bf16 = req_bf16(store, &format!("{prefix}.mlp.up_proj.weight"))?;
         let down_bf16 = req_bf16(store, &format!("{prefix}.mlp.down_proj.weight"))?;
 
-        let gate_up_fused_bf16 = if scheme == LayerQuantScheme::Bf16 {
-            let mut fused = AlignedBuf::new_zeroed(2 * inter * hidden);
-            interleave_gate_up_bf16(&mut fused, &gate_bf16, &up_bf16, inter, hidden);
-            Some(fused)
-        } else {
-            None
-        };
-
-        let (wq_q, wk_q, wv_q, wo_q, gate_up_q, down_q) = match scheme {
-            LayerQuantScheme::Bf16 => (None, None, None, None, None, None),
-            LayerQuantScheme::Int8 => {
-                let (gu_d, gu_s) = quantize_gate_up_int8(&gate_bf16, &up_bf16, inter, hidden);
-                (
-                    Some(quantize_matrix_int8(&wq_bf16, q_dim, hidden)),
-                    Some(quantize_matrix_int8(&wk_bf16, kv_dim, hidden)),
-                    Some(quantize_matrix_int8(&wv_bf16, kv_dim, hidden)),
-                    Some(quantize_matrix_int8(&wo_bf16, hidden, q_dim)),
-                    Some(QuantWeight::Int8 {
-                        data: gu_d,
-                        scale: gu_s,
-                    }),
-                    Some(quantize_matrix_int8(&down_bf16, hidden, inter)),
-                )
-            }
-            LayerQuantScheme::Int4 => {
-                let gu_q4 = quantize_gate_up_q4_0(&gate_bf16, &up_bf16, inter, hidden);
-                (
-                    Some(quantize_matrix_q4(&wq_bf16, q_dim, hidden)),
-                    Some(quantize_matrix_q4(&wk_bf16, kv_dim, hidden)),
-                    Some(quantize_matrix_q4(&wv_bf16, kv_dim, hidden)),
-                    Some(quantize_matrix_q4(&wo_bf16, hidden, q_dim)),
-                    Some(QuantWeight::Q4_0(gu_q4)),
-                    Some(quantize_matrix_q4(&down_bf16, hidden, inter)),
-                )
-            }
-            LayerQuantScheme::Mixed => {
-                let gu_q4 = quantize_gate_up_q4_0(&gate_bf16, &up_bf16, inter, hidden);
-                (
-                    Some(quantize_matrix_int8(&wq_bf16, q_dim, hidden)),
-                    Some(quantize_matrix_int8(&wk_bf16, kv_dim, hidden)),
-                    Some(quantize_matrix_int8(&wv_bf16, kv_dim, hidden)),
-                    Some(quantize_matrix_int8(&wo_bf16, hidden, q_dim)),
-                    Some(QuantWeight::Q4_0(gu_q4)),
-                    Some(quantize_matrix_q4(&down_bf16, hidden, inter)),
-                )
-            }
-        };
+        let gate_up_q = quantize_gate_up_q4_0(&gate_bf16, &up_bf16, inter, hidden);
+        let wq_q = quantize_matrix_q4(&wq_bf16, q_dim, hidden);
+        let wk_q = quantize_matrix_q4(&wk_bf16, kv_dim, hidden);
+        let wv_q = quantize_matrix_q4(&wv_bf16, kv_dim, hidden);
+        let wo_q = quantize_matrix_q4(&wo_bf16, hidden, q_dim);
+        let down_q = quantize_matrix_q4(&down_bf16, hidden, inter);
 
         Ok(Self {
             wq_bf16,
@@ -317,7 +167,6 @@ impl TransformerLayerWeights {
             gate_bf16,
             up_bf16,
             down_bf16,
-            gate_up_fused_bf16,
             wq_q,
             wk_q,
             wv_q,
@@ -326,7 +175,88 @@ impl TransformerLayerWeights {
             down_q,
         })
     }
+}
 
+/// Pesos de una capa del Code Predictor. Los pesos BF16 solo se leen al cuantizar durante la carga.
+pub struct CpLayerWeights {
+    pub q_norm: F32Weight,
+    pub k_norm: F32Weight,
+    pub input_norm: F32Weight,
+    pub post_attn_norm: F32Weight,
+    pub wq: Int8Weight,
+    pub wk: Int8Weight,
+    pub wv: Int8Weight,
+    pub wo: Int8Weight,
+    pub gate_up: AlignedBuf<Q4_0Block>,
+    pub down: AlignedBuf<Q4_0Block>,
+}
+
+impl CpLayerWeights {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn dispatch_qkv(
+        &self,
+        runtime: &ComputeRuntime,
+        x_norm: &[f32],
+        q: &mut [f32],
+        k: &mut [f32],
+        v: &mut [f32],
+        hidden: usize,
+        q_dim: usize,
+        kv_dim: usize,
+    ) {
+        runtime.dispatch.matvec_int8_qkv(
+            &runtime.pool,
+            q,
+            k,
+            v,
+            &self.wq.data,
+            &self.wq.scale,
+            &self.wk.data,
+            &self.wk.scale,
+            &self.wv.data,
+            &self.wv.scale,
+            x_norm,
+            hidden,
+            q_dim,
+            kv_dim,
+        );
+    }
+
+    fn load(
+        store: &MmapStore,
+        prefix: &str,
+        hidden: usize,
+        q_dim: usize,
+        kv_dim: usize,
+        inter: usize,
+    ) -> Result<Self, EngineError> {
+        let wq_bf16 = req_bf16(store, &format!("{prefix}.self_attn.q_proj.weight"))?;
+        let wk_bf16 = req_bf16(store, &format!("{prefix}.self_attn.k_proj.weight"))?;
+        let wv_bf16 = req_bf16(store, &format!("{prefix}.self_attn.v_proj.weight"))?;
+        let wo_bf16 = req_bf16(store, &format!("{prefix}.self_attn.o_proj.weight"))?;
+        let q_norm = req_f32_w(store, &format!("{prefix}.self_attn.q_norm.weight"))?;
+        let k_norm = req_f32_w(store, &format!("{prefix}.self_attn.k_norm.weight"))?;
+        let input_norm = req_f32_w(store, &format!("{prefix}.input_layernorm.weight"))?;
+        let post_attn_norm = req_f32_w(store, &format!("{prefix}.post_attention_layernorm.weight"))?;
+        let gate_bf16 = req_bf16(store, &format!("{prefix}.mlp.gate_proj.weight"))?;
+        let up_bf16 = req_bf16(store, &format!("{prefix}.mlp.up_proj.weight"))?;
+        let down_bf16 = req_bf16(store, &format!("{prefix}.mlp.down_proj.weight"))?;
+
+        let gate_up = quantize_gate_up_q4_0(&gate_bf16, &up_bf16, inter, hidden);
+
+        Ok(Self {
+            q_norm,
+            k_norm,
+            input_norm,
+            post_attn_norm,
+            wq: quantize_matrix_int8(&wq_bf16, q_dim, hidden),
+            wk: quantize_matrix_int8(&wk_bf16, kv_dim, hidden),
+            wv: quantize_matrix_int8(&wv_bf16, kv_dim, hidden),
+            wo: quantize_matrix_int8(&wo_bf16, hidden, q_dim),
+            gate_up,
+            down: quantize_matrix_q4(&down_bf16, hidden, inter),
+        })
+    }
 }
 
 pub struct TalkerWeights {
@@ -338,81 +268,37 @@ pub struct TalkerWeights {
     pub codec_embedding_bf16: Bf16Weight,
     pub codec_head_bf16: Bf16Weight,
     pub norm: F32Weight,
-    pub layers: Vec<TransformerLayerWeights>,
+    pub layers: Vec<TalkerLayerWeights>,
     pub rope_cos: AlignedBuf<f32>,
     pub rope_sin: AlignedBuf<f32>,
 }
 
+/// Cabeza del lm_head de un codebook del Code Predictor, en INT8.
 pub struct CpLmHead {
-    pub bf16: Bf16Weight,
-    pub quant: Option<QuantWeight>,
+    pub weight: Int8Weight,
 }
 
 impl CpLmHead {
     #[inline]
     pub fn argmax(&self, runtime: &ComputeRuntime, normed: &[f32]) -> usize {
-        let d = runtime.dispatch;
-        let pool = &runtime.pool;
-        match &self.quant {
-            Some(QuantWeight::Q4_0(w)) => {
-                d.argmax_matvec_q4_0(pool, normed, w, CP_HIDDEN_SIZE, CODEBOOK_SIZE)
-            }
-            Some(QuantWeight::Int8 { data, scale }) => {
-                d.argmax_matvec_int8(pool, normed, data, scale, CP_HIDDEN_SIZE, CODEBOOK_SIZE)
-            }
-            None => d.argmax_matvec_bf16(normed, &self.bf16, CP_HIDDEN_SIZE, CODEBOOK_SIZE),
-        }
+        runtime.dispatch.argmax_matvec_int8(
+            &runtime.pool,
+            normed,
+            &self.weight.data,
+            &self.weight.scale,
+            CP_HIDDEN_SIZE,
+            CODEBOOK_SIZE,
+        )
     }
 }
 
 pub struct CodePredictorWeights {
     pub norm: F32Weight,
-    pub layers: Vec<TransformerLayerWeights>,
+    pub layers: Vec<CpLayerWeights>,
     pub codec_emb_bf16: Vec<Bf16Weight>,
     pub lm_heads: Vec<CpLmHead>,
     pub rope_cos: AlignedBuf<f32>,
     pub rope_sin: AlignedBuf<f32>,
-    pub all_quantized: bool,
-}
-
-impl CodePredictorWeights {
-    pub fn prec_label(&self) -> &'static str {
-        let mut all8 = true;
-        let mut all4 = true;
-        let mut mix = true;
-        for l in &self.layers {
-            let att8 = matches!(l.wq_q, Some(QuantWeight::Int8 { .. }))
-                && matches!(l.wk_q, Some(QuantWeight::Int8 { .. }))
-                && matches!(l.wv_q, Some(QuantWeight::Int8 { .. }))
-                && matches!(l.wo_q, Some(QuantWeight::Int8 { .. }));
-            let ffn8 = matches!(l.gate_up_q, Some(QuantWeight::Int8 { .. }))
-                && matches!(l.down_q, Some(QuantWeight::Int8 { .. }));
-            let att4 = matches!(l.wq_q, Some(QuantWeight::Q4_0(_)))
-                && matches!(l.wk_q, Some(QuantWeight::Q4_0(_)))
-                && matches!(l.wv_q, Some(QuantWeight::Q4_0(_)))
-                && matches!(l.wo_q, Some(QuantWeight::Q4_0(_)));
-            let ffn4 = matches!(l.gate_up_q, Some(QuantWeight::Q4_0(_)))
-                && matches!(l.down_q, Some(QuantWeight::Q4_0(_)));
-            if !(att8 && ffn8) {
-                all8 = false;
-            }
-            if !(att4 && ffn4) {
-                all4 = false;
-            }
-            if !(att8 && ffn4) {
-                mix = false;
-            }
-        }
-        if all8 {
-            "INT8"
-        } else if all4 {
-            "Q4_0"
-        } else if mix {
-            "INT8+Q4_0-FFN"
-        } else {
-            "BF16"
-        }
-    }
 }
 
 pub struct SdPreLayerWeights {
@@ -689,7 +575,6 @@ pub struct CpBuffers {
     pub p2_d2: AlignedBuf<f32>,
     pub p2_xn0: AlignedBuf<f32>,
     pub p2_xn1: AlignedBuf<f32>,
-    pub down_q2_rough: Option<Vec<AlignedBuf<Q2_0Block>>>,
 }
 
 impl CpBuffers {
@@ -717,7 +602,6 @@ impl CpBuffers {
             p2_d2: AlignedBuf::new_zeroed(2 * CP_HIDDEN_SIZE),
             p2_xn0: AlignedBuf::new_zeroed(CP_HIDDEN_SIZE),
             p2_xn1: AlignedBuf::new_zeroed(CP_HIDDEN_SIZE),
-            down_q2_rough: None,
         }
     }
 }
@@ -1065,15 +949,15 @@ pub struct SynthesisTiming {
 }
 
 fn req_bf16(store: &MmapStore, name: &str) -> Result<Bf16Weight, EngineError> {
-    Ok(Bf16Weight::Mmap(store.tensor_bf16_ref(name)?))
+    Ok(Bf16Weight(store.tensor_bf16_ref(name)?))
 }
 
 fn req_f32_w(store: &MmapStore, name: &str) -> Result<F32Weight, EngineError> {
-    Ok(F32Weight::Mmap(store.tensor_f32_ref(name)?))
+    Ok(F32Weight(store.tensor_f32_ref(name)?))
 }
 
 fn opt_f32_w(store: &MmapStore, name: &str) -> Result<Option<F32Weight>, EngineError> {
-    Ok(store.tensor_f32_ref_opt(name)?.map(F32Weight::Mmap))
+    Ok(store.tensor_f32_ref_opt(name)?.map(F32Weight))
 }
 
 fn req_f32(store: &MmapStore, name: &str) -> Result<F32Ref, EngineError> {
@@ -1084,13 +968,13 @@ fn opt_f32(store: &MmapStore, name: &str) -> Result<Option<F32Ref>, EngineError>
     Ok(store.tensor_f32_ref_opt(name)?)
 }
 
-fn quantize_matrix_int8(src: &[u16], rows: usize, cols: usize) -> QuantWeight {
+fn quantize_matrix_int8(src: &[u16], rows: usize, cols: usize) -> Int8Weight {
     let (data, scale) = quantize_bf16_to_int8(src, rows, cols);
-    QuantWeight::Int8 { data, scale }
+    Int8Weight { data, scale }
 }
 
-fn quantize_matrix_q4(src: &[u16], rows: usize, cols: usize) -> QuantWeight {
-    QuantWeight::Q4_0(quantize_bf16_to_q4_0(src, rows, cols))
+fn quantize_matrix_q4(src: &[u16], rows: usize, cols: usize) -> AlignedBuf<Q4_0Block> {
+    quantize_bf16_to_q4_0(src, rows, cols)
 }
 
 /// Reordena `weight[out][in][k]` al layout im2col `[out][k · in + ic]`.
@@ -1210,45 +1094,6 @@ pub fn lookup_codec_embed(
     dispatch.bf16_to_f32_vec(&mut out[..HIDDEN_SIZE], row);
 }
 
-fn resolve_precision_scheme(
-    env_var: &str,
-    allow_mixed: bool,
-    opts: ModelLoadOptions,
-) -> Result<LayerQuantScheme, EngineError> {
-    if let Ok(val) = std::env::var(env_var) {
-        let v = val.trim();
-        if !v.is_empty() {
-            return match v {
-                "bf16" => Ok(LayerQuantScheme::Bf16),
-                "int8" => Ok(LayerQuantScheme::Int8),
-                "int4" => Ok(LayerQuantScheme::Int4),
-                "mixed" if allow_mixed => Ok(LayerQuantScheme::Mixed),
-                _ => Err(EngineError::InvalidArg(format!(
-                    "Error: {env_var}={v} no es válido; usa {}",
-                    if allow_mixed {
-                        "bf16, int8, int4 o mixed"
-                    } else {
-                        "bf16, int8 o int4"
-                    }
-                ))),
-            };
-        }
-    }
-    if opts.quant_mixed {
-        Ok(if allow_mixed {
-            LayerQuantScheme::Mixed
-        } else {
-            LayerQuantScheme::Int4
-        })
-    } else if opts.use_int4 {
-        Ok(LayerQuantScheme::Int4)
-    } else if opts.use_int8 {
-        Ok(LayerQuantScheme::Int8)
-    } else {
-        Ok(LayerQuantScheme::Bf16)
-    }
-}
-
 fn compute_special_text_embeds(
     runtime: &ComputeRuntime,
     talker: &TalkerWeights,
@@ -1285,7 +1130,7 @@ impl Model06B {
     pub fn load(
         model_dir: &Path,
         runtime: &ComputeRuntime,
-        opts: ModelLoadOptions,
+        silent: bool,
     ) -> Result<Self, EngineError> {
         let t0 = Instant::now();
         let config = ModelConfig06B::load_and_validate(model_dir)?;
@@ -1307,10 +1152,7 @@ impl Model06B {
         let speech_dir = model_dir.join("speech_tokenizer");
         let speech_store = MmapStore::open_model(&speech_dir)?;
 
-        let tk_prec = resolve_precision_scheme("QWEN_TALKER_PREC", false, opts)?;
-        let cp_prec = resolve_precision_scheme("QWEN_CP_PREC", true, opts)?;
-
-        if !opts.silent {
+        if !silent {
             eprintln!(
                 "Configuración: hidden={} text_hidden={} layers={} heads={}/{} head_dim={} inter={}",
                 HIDDEN_SIZE,
@@ -1324,14 +1166,14 @@ impl Model06B {
             eprintln!("Hilos: {}", runtime.pool.n_threads());
         }
 
-        let talker = Self::load_talker(&main_store, tk_prec, opts.silent)?;
-        let cp = Self::load_cp(&main_store, cp_prec, opts.silent)?;
-        let decoder = Self::load_decoder(&speech_store, opts.silent)?;
-        let speaker_encoder = Arc::new(SpeakerEncoderWeights::load(&main_store, opts.silent)?);
+        let talker = Self::load_talker(&main_store, silent)?;
+        let cp = Self::load_cp(&main_store, silent)?;
+        let decoder = Self::load_decoder(&speech_store, silent)?;
+        let speaker_encoder = Arc::new(SpeakerEncoderWeights::load(&main_store, silent)?);
         let speech_encoder = Arc::new(SpeechEncoderWeights::load(
             &speech_store,
             Arc::clone(&decoder.codebooks),
-            opts.silent,
+            silent,
         )?);
 
         let (cached_tts_pad_embed, cached_tts_bos_embed, cached_tts_eos_embed) =
@@ -1345,7 +1187,7 @@ impl Model06B {
         );
         let spk_ref_norm = spk_ref_tmp.iter().map(|&v| v * v).sum::<f32>().sqrt();
 
-        if !opts.silent {
+        if !silent {
             eprintln!(
                 "Modelo cargado en {:.0} ms",
                 t0.elapsed().as_secs_f64() * 1000.0
@@ -1369,7 +1211,6 @@ impl Model06B {
 
     fn load_talker(
         store: &MmapStore,
-        prec: LayerQuantScheme,
         silent: bool,
     ) -> Result<TalkerWeights, EngineError> {
         if !silent {
@@ -1390,14 +1231,13 @@ impl Model06B {
 
         let mut layers = Vec::with_capacity(NUM_LAYERS);
         for i in 0..NUM_LAYERS {
-            layers.push(TransformerLayerWeights::load(
+            layers.push(TalkerLayerWeights::load(
                 store,
                 &format!("talker.model.layers.{i}"),
                 HIDDEN_SIZE,
                 Q_DIM,
                 KV_DIM,
                 INTERMEDIATE_SIZE,
-                prec,
             )?);
         }
 
@@ -1433,7 +1273,6 @@ impl Model06B {
 
     fn load_cp(
         store: &MmapStore,
-        prec: LayerQuantScheme,
         silent: bool,
     ) -> Result<CodePredictorWeights, EngineError> {
         if !silent {
@@ -1446,14 +1285,13 @@ impl Model06B {
         let mut layers = Vec::with_capacity(CP_NUM_LAYERS);
 
         for i in 0..CP_NUM_LAYERS {
-            layers.push(TransformerLayerWeights::load(
+            layers.push(CpLayerWeights::load(
                 store,
                 &format!("talker.code_predictor.model.layers.{i}"),
                 CP_HIDDEN_SIZE,
                 CP_Q_DIM,
                 CP_KV_DIM,
                 CP_INTERMEDIATE_SIZE,
-                prec,
             )?);
         }
 
@@ -1466,19 +1304,9 @@ impl Model06B {
             )?;
             let head_bf16 =
                 req_bf16(store, &format!("talker.code_predictor.lm_head.{g}.weight"))?;
-            let quant = match prec {
-                LayerQuantScheme::Bf16 => None,
-                LayerQuantScheme::Int8 | LayerQuantScheme::Mixed => {
-                    Some(quantize_matrix_int8(&head_bf16, CODEBOOK_SIZE, CP_HIDDEN_SIZE))
-                }
-                LayerQuantScheme::Int4 => {
-                    Some(quantize_matrix_q4(&head_bf16, CODEBOOK_SIZE, CP_HIDDEN_SIZE))
-                }
-            };
             codec_emb_bf16.push(emb);
             lm_heads.push(CpLmHead {
-                bf16: head_bf16,
-                quant,
+                weight: quantize_matrix_int8(&head_bf16, CODEBOOK_SIZE, CP_HIDDEN_SIZE),
             });
         }
 
@@ -1487,7 +1315,6 @@ impl Model06B {
             CP_HEAD_DIM,
             qwen_core::config::ROPE_THETA,
         );
-        let all_quantized = layers.iter().all(|l| l.all_quantized());
 
         let cp = CodePredictorWeights {
             norm,
@@ -1496,16 +1323,14 @@ impl Model06B {
             lm_heads,
             rope_cos: AlignedBuf::from_slice(&cos_v),
             rope_sin: AlignedBuf::from_slice(&sin_v),
-            all_quantized,
         };
 
         if !silent {
             eprintln!(
-                "  Code Predictor: {} capas cargadas, q_dim={} kv_dim={} [{}]",
+                "  Code Predictor: {} capas cargadas, q_dim={} kv_dim={} [INT8+Q4_0-FFN]",
                 CP_NUM_LAYERS,
                 CP_Q_DIM,
-                CP_KV_DIM,
-                cp.prec_label()
+                CP_KV_DIM
             );
         }
 

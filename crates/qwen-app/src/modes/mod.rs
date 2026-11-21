@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::thread;
 
 use qwen_core::config::lookup_language;
-use qwen_engine::{validate_wav_path_or_header, Model06B, ModelLoadOptions, Synthesizer};
+use qwen_engine::{validate_wav_path_or_header, Model06B, Synthesizer};
 use qwen_kernels::ComputeRuntime;
 
 use crate::cli::{CliArgs, CliMode};
@@ -84,13 +84,7 @@ pub fn run_with_model(cfg: CliArgs, physical_cores: usize) -> Result<i32, String
     }
 
     let runtime = Arc::new(ComputeRuntime::for_cores(cfg.threads, physical_cores));
-    let load_opts = ModelLoadOptions {
-        use_int8: cfg.use_int8,
-        use_int4: cfg.use_int4,
-        quant_mixed: cfg.quant_mixed,
-        silent: cfg.silent,
-    };
-    let model = Model06B::load(Path::new(&model_dir_str), &runtime, load_opts)
+    let model = Model06B::load(Path::new(&model_dir_str), &runtime, cfg.silent)
         .map_err(|e| e.to_string())?;
 
     if cfg.mode == CliMode::CreateVoice && cfg.ref_audio.is_none() {

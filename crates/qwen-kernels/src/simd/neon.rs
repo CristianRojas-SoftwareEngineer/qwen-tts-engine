@@ -686,7 +686,7 @@ pub(crate) fn rms_norm_per_head(
 }
 
 /// Producto de dos filas BF16 por `x` (cuatro acumuladores de 8 carriles cada una), en el orden de
-/// `bf16_matvec_slice` y `argmax_matvec_bf16` de AVX2.
+/// `bf16_matvec_slice` de AVX2.
 #[inline]
 unsafe fn bf16_dot_2rows(w0: *const u16, w1: *const u16, xp: *const f32, in_dim: usize) -> (f32, f32) {
     let (mut a0, mut a1, mut a2, mut a3) = (F8::zero(), F8::zero(), F8::zero(), F8::zero());
@@ -754,76 +754,6 @@ pub(crate) fn bf16_matvec_slice(y: &mut [f32], x: &[f32], w: &[u16], in_dim: usi
             }
             *yp.add(o) = sum;
         }
-    }
-}
-
-/// `y[r, b] = Σ_k W[r, k] · x[k, b]` con una FMA por elemento y por `k` en orden ascendente: la
-/// misma secuencia de FMA que las dos variantes de AVX2 (de `B` fijo y genérica), y los mismos bits.
-pub(crate) fn bf16_matmat_slice(
-    y: &mut [f32],
-    w: &[u16],
-    x: &[f32],
-    r0: usize,
-    r1: usize,
-    cols: usize,
-    b_dim: usize,
-) {
-    unsafe {
-        let mut acc = [0.0f32; 64];
-        for r in r0..r1 {
-            let wr = w.as_ptr().add(r * cols);
-            acc[..b_dim].fill(0.0);
-            for k in 0..cols {
-                let wv = bf16_to_f32(*wr.add(k));
-                let xk = x.as_ptr().add(k * b_dim);
-                let vw = vdupq_n_f32(wv);
-                let mut b = 0usize;
-                while b + 4 <= b_dim {
-                    let ap = acc.as_mut_ptr().add(b);
-                    vst1q_f32(ap, vfmaq_f32(vld1q_f32(ap), vw, vld1q_f32(xk.add(b))));
-                    b += 4;
-                }
-                while b < b_dim {
-                    acc[b] = wv.mul_add(*xk.add(b), acc[b]);
-                    b += 1;
-                }
-            }
-            std::ptr::copy_nonoverlapping(acc.as_ptr(), y.as_mut_ptr().add(r * b_dim), b_dim);
-        }
-    }
-}
-
-pub(crate) fn argmax_matvec_bf16(x: &[f32], w_bf16: &[u16], in_dim: usize, out_dim: usize) -> usize {
-    unsafe {
-        let (xp, wp) = (x.as_ptr(), w_bf16.as_ptr());
-        let mut best_idx = 0usize;
-        let mut best_val = -1e30f32;
-        let mut o = 0usize;
-        while o + 1 < out_dim {
-            let (s0, s1) = bf16_dot_2rows(wp.add(o * in_dim), wp.add((o + 1) * in_dim), xp, in_dim);
-            if s0 > best_val {
-                best_val = s0;
-                best_idx = o;
-            }
-            if s1 > best_val {
-                best_val = s1;
-                best_idx = o + 1;
-            }
-            o += 2;
-        }
-        while o < out_dim {
-            let row = wp.add(o * in_dim);
-            let mut sum = 0.0f32;
-            for k in 0..in_dim {
-                sum += bf16_to_f32(*row.add(k)) * *xp.add(k);
-            }
-            if sum > best_val {
-                best_val = sum;
-                best_idx = o;
-            }
-            o += 1;
-        }
-        best_idx
     }
 }
 

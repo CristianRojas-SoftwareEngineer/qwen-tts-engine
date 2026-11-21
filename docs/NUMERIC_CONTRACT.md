@@ -15,18 +15,17 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 3. `qx[i] = clamp(round_half_even(x[i] * inv), -128, 127)` (`round_ties_even` / `_mm256_cvtps_epi32`).
 4. Límite de pila y lote: `QWEN_QACT_MAX = 8192`. Toda matriz cuantizada debe cumplir `cols > 0 && cols <= 8192 && cols % 32 == 0`, y toda llamada `matmat_*` exige explícitamente `b_dim <= 64`.
 
-### 1.2 Formatos `INT8`, `Q4_0` y `Q2_0`
+### 1.2 Formatos `INT8` y `Q4_0`
 
 | Formato | Layout por bloque / fila | Regla de cuantización | Uso en `0.6B` |
 |---|---|---|---|
-| **INT8** | `i8[rows, cols]` + `f32 scale[rows]` | Por fila: `s = absmax / 127.0`, `round_ties_even(w * 127.0 / absmax)` saturado a `[-128, 127]`. | `--int8`; atención y 15 `lm_head` en `--quant-mixed`. |
-| **Q4_0** (`18 B / 32 pesos`) | `scale_f16` (`u16`) + `qs[16]` | **Mínimos cuadrados ponderados (`q4_0s1`)**: toma el elemento de mayor magnitud `vmax` (con signo), fija `isc = -8.0 / vmax`, `q[i] = clamp(round(v[i] * isc), -8, 7)` y reescala `s* = sum(v^2 * v * q) / sum(v^2 * q^2)`. Empaque intercalado: `qs[i] = (q[2i]+8) \| ((q[2i+1]+8) << 4)`. | `--int4`; Talker + FFN del CP en `--quant-mixed`. |
-| **Q2_0** (`12 B / 32 pesos`) | `scale` (`f32`) + `qs[8]` | 4 niveles simétricos `{-1.5, -0.5, 0.5, 1.5} * scale`: `scale = absmax / 1.5`, `code = clamp(round_ties_even(v / scale + 1.5), 0, 3)`; 4 códigos/byte (`(i & 3) * 2`). | Solo `down_q2_rough` bajo `--roughness > 0`, mezclado en `down_proj` del CP: `proj = (1 - r) * proj + r * proj_q2`. |
+| **INT8** | `i8[rows, cols]` + `f32 scale[rows]` | Por fila: `s = absmax / 127.0`, `round_ties_even(w * 127.0 / absmax)` saturado a `[-128, 127]`. | Atención y 15 `lm_head` del Code Predictor. |
+| **Q4_0** (`18 B / 32 pesos`) | `scale_f16` (`u16`) + `qs[16]` | **Mínimos cuadrados ponderados (`q4_0s1`)**: toma el elemento de mayor magnitud `vmax` (con signo), fija `isc = -8.0 / vmax`, `q[i] = clamp(round(v[i] * isc), -8, 7)` y reescala `s* = sum(v^2 * v * q) / sum(v^2 * q^2)`. Empaque intercalado: `qs[i] = (q[2i]+8) \| ((q[2i+1]+8) << 4)`. | Talker y FFN del Code Predictor. |
 
 - **Ninguna ruta de reserva en coma flotante**: todas las rutas (`AVX2` `maddubs`, NEON `SDOT` o `SMULL` y escalar `i32`) acumulan en producto escalar entero.
-- **Matriz `gate_up` intercalada**: la fila `2r` corresponde a `gate[r]` y la `2r+1` a `up[r]`. En modos cuantizados se cuantiza directamente desde `gate_bf16` y `up_bf16` sin materializar `gate_up_fused_bf16`.
+- **Matriz `gate_up` intercalada**: la fila `2r` corresponde a `gate[r]` y la `2r+1` a `up[r]`. Se cuantiza directamente desde `gate_bf16` y `up_bf16`, sin materializar la matriz intercalada en BF16.
 
-### 1.3 Perfil `--quant-mixed` (`[INT8+Q4_0-FFN]`)
+### 1.3 Perfil de precisión único (`[INT8+Q4_0-FFN]`)
 
 - **Talker (28 capas)**: `wq`, `wk`, `wv`, `wo`, `gate_up`, `down` en `Q4_0`; `text_embedding`, `text_projection`, `codec_embedding`, `codec_head` en `BF16`; norms en `F32`; caché KV en `BF16`.
 - **Code Predictor (5 capas)**: `wq`, `wk`, `wv`, `wo` y 15 `lm_head` en `INT8` *(mantiene salida por `argmax_matvec_int8`, nunca en `Q4_0`)*; `gate_up` y `down` en `Q4_0`; `codec_embedding` en `BF16`; caché KV en `BF16`.
@@ -60,17 +59,17 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | **`convnext_mlp` (`SpeechDecoder`)** | **LayerNorm de 2 pasadas** (`mean`, luego `var`) | La variante de una pasada altera la señal respecto al streaming validado. |
 | **Activación Snake (`SpeechDecoder`)** | `y = x + exp(-log_beta) * sin^2(exp(log_alpha) * x)` en `F32` | Los parámetros `{alpha, beta}` del checkpoint están en escala logarítmica. |
 | **`causal_conv1d` / `conv_transpose1d`** | `conv_transpose1d`: 1 `FfiBlas::sgemm` + dispersión en orden ascendente de `k`; `causal_conv1d` (`k>1`): `k` `sgemm` acumulados sobre `W_k` `[k][out][in]`, salvo la `conv1` k=7 de los bloques residuales que el *streaming* procesa por tiles (`b >= SD_TILE_FROM_BLOCK`, 192 y 96 canales): **im2col del tile y una sola `sgemm`** con `K = 7 · canales` sobre `conv1_wcat` `[out][k · in]` | Sin `im2col` se ahorran copias con canales anchos; con 96–192 canales, `K = canales` rinde 1,7× peor por FLOP y el im2col del tile (≤ 1,75 MiB) compensa. Cambio medido frente a la referencia vigente: SNR 104,7–105,8 dB, ±1 LSB. |
-| **Atención con ventana deslizante (`SpeechDecoder`)** | Un único kernel `causal_attention_windowed` (*online softmax* + FMA) para streaming y decodificación completa; en streaming, consultas en coordenadas de la caché compactable (`q_offset = kv_len - kv_base`), que conserva `window - 1` posiciones | Streaming y completo comparten aritmética (`SNR >= 100 dB`); el bucle escalar previo difería en ±1 LSB de PCM16. |
+| **Atención con ventana deslizante (`SpeechDecoder`)** | Un único kernel `causal_attention_windowed` (*online softmax* + FMA) para el decodificador por partes; consultas en coordenadas de la caché compactable (`q_offset = kv_len - kv_base`), que conserva `window - 1` posiciones | Un solo kernel para todo el audio; el bucle escalar previo difería en ±1 LSB de PCM16. |
 | **`Talker` prefill** | Pesos `BF16` → `F32` por bloques de filas de **4 MiB** (`PREFILL_STAGE_ELEMS`) y una `sgemm` por bloque (`gate_up` intercalado por parejas de filas) | OpenBLAS redondea según el ancho del bloque y el muestreo autorregresivo amplifica cualquier diferencia hasta cambiar los códigos: **cambiar el tamaño de bloque cambia el audio** y exige una línea base nueva. |
 | **`Talker`: `codec_head`** | Solo se calculan las filas que sobreviven a `apply_talker_logit_rules`: los códigos de audio `0..2048` y `CODEC_EOS` = 2150, este junto a su pareja 2151 (`talker_codec_logits`, camino de una petición) | Las reglas fijan a `-1e30` el resto de `2048..3072` sin mirar su valor; calcular la pareja par conserva el emparejamiento de filas del kernel BF16 y da los mismos bits que el cálculo completo (pruebas `pipeline::tests`). |
-| **`CodePredictor`: pasadas de 2 posiciones** | **`cp_step2(pos)`** (`matmat(B=2)`) cuando las 5 capas están cuantizadas: posiciones `0`–`1` y, después, **verificación especulativa de 1 adivinanza**. Tras `c[g]` se adivina `ĉ = argmax(lm_heads[g+1](h[g+1]))` y una pasada calcula las posiciones `g+2` (entrada `c[g]`) y `g+3` (entrada `ĉ`); se acepta la segunda columna solo si el código real `c[g+1]` (`argmax` sobre la columna 0) es `ĉ`, y si no se descarta (su K/V se sobrescribe antes de leerse) | Cada matriz se lee una vez para las dos columnas; cada código sigue siendo el `argmax` de la misma cabeza sobre el mismo estado, y cada columna es bit-idéntica a un `cp_transformer_step` (pruebas `code_predictor::tests` y PCM idéntico al de antes de introducirla). Pasadas de pesos por frame: 15 → ~11,9 (acierta el 28–31 %). |
+| **`CodePredictor`: pasadas de 2 posiciones** | **`cp_step2(pos)`** (`matmat(B=2)`): posiciones `0`–`1` y, después, **verificación especulativa de 1 adivinanza**. Tras `c[g]` se adivina `ĉ = argmax(lm_heads[g+1](h[g+1]))` y una pasada calcula las posiciones `g+2` (entrada `c[g]`) y `g+3` (entrada `ĉ`); se acepta la segunda columna solo si el código real `c[g+1]` (`argmax` sobre la columna 0) es `ĉ`, y si no se descarta (su K/V se sobrescribe antes de leerse) | Cada matriz se lee una vez para las dos columnas; cada código sigue siendo el `argmax` de la misma cabeza sobre el mismo estado, y cada columna es bit-idéntica a un `cp_transformer_step` (pruebas `code_predictor::tests` y PCM idéntico al de antes de introducirla). Pasadas de pesos por frame: 15 → ~11,9 (acierta el 28–31 %). |
 
 ---
 
 ## 4. Invariantes de determinismo en generación y *streaming*
 
 1. **Prefill completo**: cada petición arranca con `kv_len = 0` desde la posición `0` (sin reutilización parcial entre peticiones).
-2. **Hilos BLAS congelados durante generación**: prefill usa `nt` hilos; antes de lanzar el hilo del decoder se fija `gen_blas = max(1, nt - 1)` (o `QWEN_BLAS_GEN_THREADS`) y no cambia hasta terminar el drenaje final.
+2. **Hilos BLAS congelados durante generación**: prefill usa `nt` hilos; antes de lanzar el hilo del decoder se fija `gen_blas = max(1, nt - 1)` y no cambia hasta terminar el drenaje final.
 3. **Calendario fijo de chunks (con y sin streaming)**: primer chunk de `2` frames (`160 ms`); siguientes `k = 0, 1, 2, ...` de `min(chunk_frames, 4 + 2 * (k / 8))`, con `chunk_frames = 10` (`DEFAULT_CHUNK_FRAMES`) salvo que la petición lo cambie. Los dos modos usan el mismo calendario porque las fronteras de chunk fijan el redondeo del decoder: así el PCM es idéntico. **Decisión del 2026-11-19**:
 - **Coste aceptado**: sin *streaming* se renuncia a los bloques fijos de 10 heredados del motor original en C. El decoder trabaja un 4–17 % más y el RTF sube de +0,00 a +0,01 (A/B intercalado).
 - **Por qué no bloques de 10 en todos los modos**: retrasaría el primer audio del *streaming* (estimado: ~450 → ~850 ms sin carga). La subida gradual del calendario evita cortes con RTF cercano a 1.
@@ -97,22 +96,20 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | **Rutas SIMD frente a la escalar** (`--self-test`, cada ruta que pueda ejecutar la CPU: `avx2`, `neon`, `neon-dotprod`) | `matvec_int8`, `matmat_int8(B=3, 8)` | **Bit-idéntico** |
 | | `matvec_q4_0`, `qkv_q4_0`, `matmat_q4_0(B=3, 8)` | **`L2_rel <= 1e-6`** (otro orden de suma; AVX2 y NEON dan ≤ 3,5e-7) |
 | | `quantize_act_int8`, `bf16_accum_f32`, `bf16_to_f32_vec`, `f32_to_bf16_vec`, suma residual de `rms_norm_residual` | **Bit-idéntico** |
-| | normas RMS, `matvec_bf16`, `matmat_bf16(B=3, 8)`, atención `f32` (con y sin ventana) y BF16 (en serie y repartida), RoPE, `f32_matvec_accum`, *snake* | **`L2_rel <= 1e-6`** (AVX2 da ≤ 6,2e-7); `argmax_bf16`, índice igual o empate |
+| | normas RMS, `matvec_bf16`, atención `f32` (con y sin ventana) y BF16 (en serie y repartida), RoPE, `f32_matvec_accum`, *snake* | **`L2_rel <= 1e-6`** (AVX2 da ≤ 6,2e-7) |
 | **Kernels `bf16`** (`--self-test`) | `matvec_bf16` vs `f32` ref | `max_rel < 1e-2` |
-| | `matmat_bf16(B=8)` vs `B × matvec_bf16` | `L2_rel < 1e-4` |
-| **Speech Decoder aislado** | Streaming vs decodificación completa | **`SNR >= 100 dB`** |
 | **Pipeline E2E** (misma semilla/params) | 2 corridas independientes | **Bit-idéntico** entre corridas y entre los cuatro modos: CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream` dan el mismo PCM (mismo calendario de chunks y mismas rampas de borde, invariantes 3 y 5); también con marcado y `--compose`, y con `--stdout`. Comprobado en las 4 combinaciones de idioma y longitud de la tabla de referencia. |
 
 ### Audio de referencia (x86-64)
 
-Tras cualquier cambio que no deba tocar el audio, el PCM tiene que coincidir con esta tabla. Se mide en Windows x86_64 (Ryzen 7 5825U, ruta `avx2`, OpenBLAS 0.3.34 propio (`scripts/build-openblas.sh`)) con `--quant-mixed -j 4 --seed 4` y la temperatura por defecto (0,325). El hash es el de `scripts/ci-common.sh` (`pcm_hash`): los 16 primeros dígitos hexadecimales del SHA-256 del PCM, sin la cabecera WAV de 44 bytes. Es el mismo en los cuatro modos (CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream`) y en todas las corridas. El idioma se indica con `-l` (`Spanish` o `English`).
+Tras cualquier cambio que no deba tocar el audio, el PCM tiene que coincidir con esta tabla. Se mide en Windows x86_64 (Ryzen 7 5825U, ruta `avx2`, OpenBLAS 0.3.34 propio (`scripts/build-openblas.sh`)) con `-j 4 --seed 4` y la temperatura por defecto (0,325). El hash es el de `scripts/ci-common.sh` (`pcm_hash`): los 16 primeros dígitos hexadecimales del SHA-256 del PCM, sin la cabecera WAV de 44 bytes. Es el mismo en los cuatro modos (CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream`) y en todas las corridas. El idioma se indica con `-l` (`Spanish` o `English`).
 
 - **Voz**: `default`, la voz incorporada en el binario (x-vector de 4096 bytes, SHA-256 `d2ceafbb7c5f75c488ecf60eef8e5cafc4a76e8e5e240e7339d44bec80543b94`), sin `--load-voice`, con el modelo Base (`-d models/qwen3-tts-0.6b-base`).
 - **Textos** (los de inglés son `TEXT_short` y `TEXT_long` de `scripts/ci-common.sh`):
   - inglés, corta: `Hello world, this is a quick baseline test.`
   - inglés, larga: `In this long synthesis benchmark, we measure sustained memory bandwidth, Talker latency, Code Predictor throughput, and streaming Speech Decoder stability across multiple seconds of continuous speech generation.`
   - español, corta: `Hola mundo, esta es una prueba rápida de referencia.`
-  - español, larga: `En esta prueba de síntesis larga medimos el ancho de banda de memoria sostenido, la latencia del Talker, el rendimiento del Code Predictor y la estabilidad del decoder de voz en streaming durante varios segundos de generación continua.`
+  - español, larga: `En esta prueba de síntesis larga medimos el ancho de banda de memoria sostenido, la latencia del Talker, el rendimiento del Code Predictor y la estabilidad del decodificador de voz en streaming durante varios segundos de generación continua.`
 
 | Voz | `-l` | Frase | Duración (s) | Hash del PCM |
 |---|---|---|---|---|

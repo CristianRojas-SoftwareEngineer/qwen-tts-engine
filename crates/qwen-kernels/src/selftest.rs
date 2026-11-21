@@ -120,30 +120,7 @@ fn selftest_shape_case(
         }
     }
 
-    // 2. matmat bf16 por lotes
-    let l2rel_bf16 = check_matmat_vs_matvec(
-        &x,
-        rows,
-        cols,
-        B,
-        |ym, xm| d.matmat_bf16(pool, ym, &wb, xm, rows, cols, B),
-        |yc, xc| d.matvec_bf16(pool, yc, &wb, xc, rows, cols),
-    );
-    let ok = l2rel_bf16 < 1e-4;
-    let _ = writeln!(
-        out,
-        "  [{:4}x{:4}] matmat(B={}) frente a B*matvec: L2_rel={:.2e}  {}",
-        rows,
-        cols,
-        B,
-        l2rel_bf16,
-        if ok { "OK" } else { "FALLO" }
-    );
-    if !ok {
-        failures += 1;
-    }
-
-    // 3. matvec int8 + argmax
+    // 2. matvec int8 + argmax
     let (wi, sc) = quantize_bf16_to_int8(&wb, rows, cols);
     for r in 0..rows {
         let row = &wi[r * cols..(r + 1) * cols];
@@ -187,7 +164,7 @@ fn selftest_shape_case(
         amax_got
     );
 
-    // 4. matmat int8 por lotes == B*matvec (0.0 exacto)
+    // 3. matmat int8 por lotes == B*matvec (0.0 exacto)
     let l2rel_i8 = check_matmat_vs_matvec(
         &x,
         rows,
@@ -210,7 +187,7 @@ fn selftest_shape_case(
         failures += 1;
     }
 
-    // 5. q4_0 matvec, matmat, qkv y 1 fila vs bloque
+    // 4. q4_0 matvec, matmat, qkv y 1 fila vs bloque
     if cols.is_multiple_of(Q4_0_BLOCK_SIZE) {
         let nb = cols / Q4_0_BLOCK_SIZE;
         let wq = quantize_bf16_to_q4_0(&wb, rows, cols);
@@ -545,7 +522,7 @@ fn selftest_simd_float_vs_scalar(
     sc.rms_norm_per_head(&mut xb, &w[..hd], 2, heads, hd, 1e-6);
     results.push(l2("rms_norm_per_head", &xa, &xb));
 
-    // BF16: matvec (filas impares, columnas con resto), matmat y argmax.
+    // BF16: matvec (filas impares, columnas con resto).
     let (rows, cols) = (257usize, 1027usize);
     let wb: Vec<u16> = vec_f(rows * cols, 1.0).iter().map(|&v| f32_to_bf16_round(v)).collect();
     let x = vec_f(cols * 8, 1.0);
@@ -553,17 +530,6 @@ fn selftest_simd_float_vs_scalar(
     simd.matvec_bf16(pool, &mut ya[..rows], &wb, &x, rows, cols);
     sc.matvec_bf16(pool, &mut yb[..rows], &wb, &x, rows, cols);
     results.push(l2("matvec_bf16", &ya[..rows], &yb[..rows]));
-    for b in [3usize, 8] {
-        simd.matmat_bf16(pool, &mut ya[..rows * b], &wb, &x, rows, cols, b);
-        sc.matmat_bf16(pool, &mut yb[..rows * b], &wb, &x, rows, cols, b);
-        results.push(l2(&format!("matmat_bf16(B={b})"), &ya[..rows * b], &yb[..rows * b]));
-    }
-    sc.matvec_bf16(pool, &mut yb[..rows], &wb, &x, rows, cols);
-    let ia = simd.argmax_matvec_bf16(&x, &wb, cols, rows);
-    let ib = sc.argmax_matvec_bf16(&x, &wb, cols, rows);
-    let tie = (yb[ia] - yb[ib]).abs() <= 1e-6 * yb[ib].abs();
-    results.push(("argmax_bf16".into(), ia == ib || tie, format!("simd={ia} escalar={ib}")));
-
     // Atención: f32 con y sin ventana, y caché BF16 en serie y repartida entre hilos.
     let (n_heads, n_kv, seq_q, seq_k) = (16usize, 8usize, 5usize, 64usize);
     let (qh, kvh) = (n_heads * hd, n_kv * hd);

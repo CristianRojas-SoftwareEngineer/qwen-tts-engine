@@ -207,15 +207,6 @@ impl MmapStore {
         Ok((shard, loc.byte_offset, loc.byte_len / 2))
     }
 
-    /// Vista sin copias de un tensor BF16 como `&[u16]` (host little-endian).
-    /// Exige offset alineado a 2 bytes dentro del archivo safetensors (garantizado en exports estándar de HF).
-    pub fn tensor_bf16(&self, name: &str) -> Result<&[u16], CoreError> {
-        let (shard, byte_offset, len) = self.locate_bf16(name)?;
-        let data = &shard[byte_offset..byte_offset + len * 2];
-        let slice = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u16, len) };
-        Ok(slice)
-    }
-
     pub fn tensor_bf16_ref(&self, name: &str) -> Result<Bf16Ref, CoreError> {
         let (shard, byte_offset, len) = self.locate_bf16(name)?;
         Ok(Bf16Ref {
@@ -288,13 +279,6 @@ impl MmapStore {
             }),
             F32DataView::Owned(out) => Ok(F32Ref::Owned(Arc::new(out))),
         }
-    }
-
-    pub fn tensor_bf16_opt(&self, name: &str) -> Result<Option<&[u16]>, CoreError> {
-        if !self.contains(name) {
-            return Ok(None);
-        }
-        self.tensor_bf16(name).map(Some)
     }
 
     pub fn tensor_f32_ref_opt(&self, name: &str) -> Result<Option<F32Ref>, CoreError> {

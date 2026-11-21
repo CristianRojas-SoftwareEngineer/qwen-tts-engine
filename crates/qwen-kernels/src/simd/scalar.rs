@@ -7,8 +7,7 @@
 //! en ARM64 y control para comparar rutas (`QWEN_KERNELS=scalar`).
 
 use crate::quant::{
-    bf16_to_f32, f16_to_f32, quantize_act_int8_scalar, Q2_0Block, Q4_0Block, Q2_0_BLOCK_SIZE,
-    Q4_0_BLOCK_SIZE,
+    bf16_to_f32, f16_to_f32, quantize_act_int8_scalar, Q4_0Block, Q4_0_BLOCK_SIZE,
 };
 
 #[inline]
@@ -83,32 +82,6 @@ pub fn bf16_matvec_slice(y: &mut [f32], x: &[f32], w: &[u16], cols: usize, rows:
             sum += bf16_to_f32(row[k]) * x[k];
         }
         y[o] = sum;
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn bf16_matmat_slice(
-    y: &mut [f32],
-    w: &[u16],
-    x: &[f32],
-    r0: usize,
-    r1: usize,
-    cols: usize,
-    b_dim: usize,
-) {
-    let mut acc = [0.0f32; 64];
-    for r in r0..r1 {
-        let row = &w[r * cols..(r + 1) * cols];
-        let yr = &mut y[r * b_dim..(r + 1) * b_dim];
-        acc[..b_dim].fill(0.0);
-        for k in 0..cols {
-            let wv = bf16_to_f32(row[k]);
-            let xk = &x[k * b_dim..(k + 1) * b_dim];
-            for b in 0..b_dim {
-                acc[b] += wv * xk[b];
-            }
-        }
-        yr.copy_from_slice(&acc[..b_dim]);
     }
 }
 
@@ -224,41 +197,6 @@ pub fn q4_0_matmat_slice(
         }
         r += MM_TILE;
     }
-}
-
-pub fn q2_0_matvec(y: &mut [f32], w: &[Q2_0Block], x: &[f32], rows: usize, cols: usize) {
-    let bpr = cols / Q2_0_BLOCK_SIZE;
-    for o in 0..rows {
-        let wr = &w[o * bpr..(o + 1) * bpr];
-        let mut sum = 0.0f32;
-        for b in 0..bpr {
-            let scale = wr[b].scale;
-            let qs = &wr[b].qs;
-            let xb = &x[b * Q2_0_BLOCK_SIZE..(b + 1) * Q2_0_BLOCK_SIZE];
-            for i in 0..Q2_0_BLOCK_SIZE {
-                let code = ((qs[i >> 2] >> ((i & 3) * 2)) & 0x3) as f32;
-                sum += (code - 1.5f32) * scale * xb[i];
-            }
-        }
-        y[o] = sum;
-    }
-}
-
-pub fn argmax_matvec_bf16(x: &[f32], w_bf16: &[u16], in_dim: usize, out_dim: usize) -> usize {
-    let mut best_idx = 0usize;
-    let mut best_val = -1e30f32;
-    for o in 0..out_dim {
-        let row = &w_bf16[o * in_dim..(o + 1) * in_dim];
-        let mut sum = 0.0f32;
-        for k in 0..in_dim {
-            sum += bf16_to_f32(row[k]) * x[k];
-        }
-        if sum > best_val {
-            best_val = sum;
-            best_idx = o;
-        }
-    }
-    best_idx
 }
 
 #[allow(clippy::too_many_arguments)]
