@@ -16,15 +16,15 @@ use crate::audio::{time_stretch, AudioSink, MemorySink};
 use crate::compose::compose_spans;
 use crate::error::EngineError;
 use crate::model::{AbortHandle, Model06B, SessionScratch, SynthesisTiming};
-use crate::pipeline::{finish_full_delivery, generate_to_sink, Run};
+use crate::pipeline::{generate_to_sink, Run};
 use crate::request::SynthesisRequest;
 use crate::voice::Voice;
 
 /// Cómo se entrega el audio.
 pub enum Delivery<'a> {
-    /// Todo el audio en memoria, con el acabado de la entrega completa.
+    /// Todo el audio en memoria.
     Buffer,
-    /// Chunks PCM hacia el destino, sin acabado y sin `rate` distinto de 1.
+    /// Chunks PCM hacia el destino, sin `rate` distinto de 1.
     Stream(&'a mut (dyn AudioSink + Send)),
 }
 
@@ -49,12 +49,11 @@ pub struct Synthesizer<'a> {
 impl Synthesizer<'_> {
     /// Sintetiza `script` con la voz del contexto y lo entrega según `delivery`.
     ///
-    /// - `Script::Plain` con `Buffer`: ganancia, `time_stretch` y, al final, `tail_trim` y
-    ///   `onset_fade`.
+    /// - `Script::Plain` con `Buffer`: ganancia y `time_stretch`.
     /// - `Script::Plain` con `Stream`: chunks con la ganancia aplicada justo antes del
     ///   destino.
     /// - `Script::Spans`: una sola composición para las dos entregas (ganancia `x·(v·o)` por
-    ///   tramo, pausas y fundido cruzado de 45 ms); con `Buffer` además el acabado final.
+    ///   tramo, pausas y fundido cruzado de 45 ms).
     ///
     /// `rate` distinto de 1 con `Stream` es un error.
     pub fn synthesize(
@@ -95,10 +94,8 @@ impl Synthesizer<'_> {
             (Script::Spans(spans), Delivery::Buffer) => {
                 let mut sink = MemorySink::new(0);
                 compose_spans(&job, scratch, spans, &mut sink)?;
-                let mut samples = sink.samples;
-                finish_full_delivery(&mut samples, req);
                 Ok(SynthesisOutput {
-                    samples: Some(samples),
+                    samples: Some(sink.samples),
                     timing: SynthesisTiming::default(),
                 })
             }
@@ -115,7 +112,7 @@ impl Synthesizer<'_> {
 
 /// Texto plano hacia un buffer mono `f32` a 24 kHz con las métricas.
 ///
-/// Orden del buffer: ganancia, `time_stretch` y, al final, `tail_trim` y `onset_fade`.
+/// Orden del buffer: ganancia y `time_stretch`.
 pub(crate) fn plain_buffer(
     job: &Run<'_>,
     scratch: &mut SessionScratch,
@@ -129,7 +126,6 @@ pub(crate) fn plain_buffer(
     if (req.rate - 1.0).abs() > 1e-4 {
         samples = time_stretch(&samples, req.rate);
     }
-    finish_full_delivery(&mut samples, req);
     timing.samples_produced = samples.len();
     Ok((samples, timing))
 }

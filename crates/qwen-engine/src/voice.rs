@@ -4,11 +4,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! La voz de una síntesis: x-vector del locutor y, opcionalmente, el contexto ICL (texto y
-//! códigos del audio de referencia) ya recortado al tope de frames.
+//! códigos del audio de referencia).
 
 use std::path::Path;
 
-use qwen_core::config::{DEFAULT_LANGUAGE_ID, MEL_DIM, NUM_CODEBOOKS, SAMPLE_RATE};
+use qwen_core::config::{DEFAULT_LANGUAGE_ID, MEL_DIM, SAMPLE_RATE};
 use qwen_core::QVoiceFile;
 use qwen_kernels::ComputeRuntime;
 
@@ -27,8 +27,7 @@ pub const DEFAULT_VOICE_NAME: &str = "default";
 
 /// Contexto ICL de una voz: transcripción y códigos del audio de referencia.
 ///
-/// Nunca está vacío y `ref_codes` ya está recortado al tope de frames con que se construyó
-/// la voz (`icl_frames_cap`).
+/// Nunca está vacío.
 #[derive(Debug, Clone)]
 pub struct IclPrompt {
     pub ref_text: String,
@@ -54,8 +53,6 @@ pub struct VoiceLoadOptions {
     pub ref_text_override: Option<String>,
     /// Usa el contexto ICL si el archivo lo trae; `false` deja solo el x-vector.
     pub use_icl: bool,
-    /// Tope de frames ICL (0 = sin tope).
-    pub icl_frames_cap: usize,
     pub log: LogLevel,
 }
 
@@ -64,11 +61,9 @@ pub struct VoiceLoadOptions {
 pub struct CloneOptions {
     /// Transcripción del audio; sin ella (o vacía) la voz es solo x-vector.
     pub ref_text: Option<String>,
-    pub max_ref_seconds: f32,
     /// Nombre de la voz; si falta, el nombre del WAV sin extensión.
     pub name: Option<String>,
     pub language_id: Option<i32>,
-    pub icl_frames_cap: usize,
     pub log: LogLevel,
 }
 
@@ -85,14 +80,6 @@ pub fn ensure_qvoice_path(path: &Path) -> Result<(), EngineError> {
             "los archivos de voz deben ser .qvoice (se obtuvo {})",
             path.display()
         )))
-    }
-}
-
-/// Recorta `ref_codes` a los primeros frames permitidos por el tope.
-fn cap_ref_codes(ref_codes: &mut Vec<i32>, cap: usize) {
-    let n_frames = ref_codes.len() / NUM_CODEBOOKS;
-    if cap > 0 && cap < n_frames {
-        ref_codes.truncate(cap * NUM_CODEBOOKS);
     }
 }
 
@@ -123,22 +110,11 @@ impl Voice {
                 .unwrap_or("")
                 .to_string();
         }
-        // Frames ICL del archivo antes del recorte, solo para el log.
-        let ref_text_empty = opts
-            .ref_text_override
-            .as_deref()
-            .map_or(qv.ref_text.is_empty(), str::is_empty);
-        let file_icl_frames = (opts.use_icl && !ref_text_empty && !qv.ref_codes.is_empty())
-            .then_some(qv.ref_codes.len() / NUM_CODEBOOKS);
         let voice = Self::from_qvoice(qv, opts);
         if !opts.log.is_silent() {
             eprintln!(
-                "Clonación de voz: .qvoice v4 cargado desde {}{}",
-                path.display(),
-                match file_icl_frames {
-                    Some(n) => format!(" ({n} frames ICL)"),
-                    None => String::new(),
-                }
+                "Clonación de voz: .qvoice v4 cargado desde {}",
+                path.display()
             );
         }
         Ok(voice)
@@ -151,11 +127,9 @@ impl Voice {
             .clone()
             .unwrap_or_else(|| qv.ref_text.clone());
         let icl = if opts.use_icl && !qv.ref_codes.is_empty() && !ref_text.is_empty() {
-            let mut ref_codes = qv.ref_codes;
-            cap_ref_codes(&mut ref_codes, opts.icl_frames_cap);
             Some(IclPrompt {
                 ref_text,
-                ref_codes,
+                ref_codes: qv.ref_codes,
             })
         } else {
             None
@@ -176,16 +150,16 @@ impl Voice {
 
 /// Clona una voz desde un audio de referencia.
 ///
-/// Devuelve el perfil completo (`QVoiceFile`, `ref_codes` sin recortar, `voice_name` vacío si no
+/// Devuelve el perfil completo (`QVoiceFile`, `voice_name` vacío si no
 /// se dio nombre y `lang_id` 0 si no se dio idioma), que es lo que se guarda, y la voz ya
-/// construida (ICL recortado al tope y nombre resuelto: el dado o el del WAV).
+/// construida (con el nombre resuelto: el dado o el del WAV).
 pub fn clone_voice(
     runtime: &ComputeRuntime,
     model: &Model06B,
     ref_wav: &Path,
     opts: &CloneOptions,
 ) -> Result<(QVoiceFile, Voice), EngineError> {
-    let audio = load_and_trim_ref_audio(ref_wav, opts.max_ref_seconds, opts.log.is_silent())?;
+    let audio = load_and_trim_ref_audio(ref_wav, opts.log.is_silent())?;
     let (mel, n_frames) = mel_spectrogram(&audio, SAMPLE_RATE)?;
     if !opts.log.is_silent() {
         eprintln!("Espectrograma mel: {n_frames} frames x {MEL_DIM} mels");
@@ -234,11 +208,9 @@ pub fn clone_voice(
     let icl = if qv.ref_codes.is_empty() {
         None
     } else {
-        let mut ref_codes = qv.ref_codes.clone();
-        cap_ref_codes(&mut ref_codes, opts.icl_frames_cap);
         Some(IclPrompt {
             ref_text: qv.ref_text.clone(),
-            ref_codes,
+            ref_codes: qv.ref_codes.clone(),
         })
     };
     let voice = Voice {

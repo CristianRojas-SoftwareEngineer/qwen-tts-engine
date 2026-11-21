@@ -30,10 +30,8 @@
 | | `-k, --top-k <n>` | `50` | Número de candidatos más probables entre los que se muestrea, en `[0, 3072]`. |
 | | `-p, --top-p <f>` | `1.0` | Probabilidad acumulada máxima de esos candidatos, en `[0.0, 1.0]`. |
 | | `-r, --rep-penalty <f>` | `1.05` | Penalización de repetición sobre tokens previos en `[0.5, 2.0]`. |
-| | `-m, --max-tokens <n>` | `8192` | Tope de frames generados (`>= 1`). |
-| | `--max-duration <secs>` | `None` | Si es `> 0`, sobrescribe `--max-tokens` con `max(1, floor(secs * 12.5))`. |
+| | `--max-duration <secs>` | `None` | Si es `> 0`, el tope es `max(1, floor(secs * 12.5))`; si no (sin el flag, `0` o negativo), `8192`. |
 | | `--seed <n>` | `4` (`< 0` reloj) | Entero `0..=u32::MAX` fija semilla; omitido usa `DEFAULT_SEED = 4` (salvo sustitución paralingüística en línea); negativo usa reloj del sistema; `> u32::MAX` → `exit 1`. |
-| | `--greedy-warmup <n>` | `0` | Primeros `n` frames con `T=0.0, top_k=1`. |
 
 **Cuantización**: no hay flags. El motor usa siempre el mismo perfil: Talker en `Q4_0`; Code Predictor con atención y `lm_head` en `INT8` y FFN en `Q4_0` (`[INT8+Q4_0-FFN]`).
 
@@ -46,23 +44,17 @@
 | `--stream-chunk <n>` | `10` | Frames máximos por chunk (`clamp(2, 250)`). Rampa: `2` en el primer chunk y `min(n, 4 + 2 * (k / 8))` para `k = 0, 1, 2, ...` en los siguientes. |
 | `--volume <f>` | `1.0` | Ganancia lineal en `[0.0, 10.0]` aplicada sobre las muestras PCM con *clamp* a `[-1.0, 1.0]`. |
 | `--rate <f>` | `1.0` | Cambio de velocidad WSOLA en `[0.25, 4.0]` preservando el tono (incompatible con `--stream`). |
-| `--onset-fade <ms>` | `0` | Rampa de entrada sobre el ataque real detectado (solo entrega completa). |
-| `--tail-trim` | off | Recorta cola metálica degenerada detectada al final (solo entrega completa). |
-| `--seed-audition <N>` | `0` | Evalúa hasta `N` (`1..64`) semillas consecutivas y elige la mejor (solo entrega completa). |
-| `--audition-keep` | off | Conserva cada toma de `--seed-audition` como `<stem>.seed<S>.wav`. |
 
 ### 1.4 Voces, clonación y marcado `0.6B`
 
 | Categoría | Flag(s) | Por defecto | Contrato y validación |
 |---|---|---|---|
-| **Clonación** | `--ref-audio <path>` | `None` | Valida cabecera `RIFF`/WAV 24 kHz mono antes de cargar el modelo; otros formatos fallan con comando `ffmpeg`. |
+| **Clonación** | `--ref-audio <path>` | `None` | Valida cabecera `RIFF`/WAV 24 kHz mono antes de cargar el modelo; otros formatos fallan con comando `ffmpeg`. La referencia se recorta siempre a 30 s. |
 | | `--ref-text <string>` | `None` | Transcripción de la referencia para activar modo ICL (o sobrescribir `ref_text` de `.qvoice`). Sin ella, la voz guarda solo el timbre (x-vector). |
 | | `--xvector-only` | off | Usa únicamente el *x-vector* (`1024 × f32`), omitiendo los códigos ICL. |
 | | `--save-voice <path>` | `None` | Guarda `.qvoice` v4 (la extensión debe ser `.qvoice`; otra da `los archivos de voz deben ser .qvoice (se obtuvo <ruta>)`). Con idioma `-l` lo guarda; sin `-l` guarda «sin idioma». Sin `--text` ni `--serve`, crea el perfil y sale (`0`). |
 | | `--load-voice <path>` | voz `default` incorporada | Carga `.qvoice` v4. Otra extensión o una versión distinta de la 4 → `exit 1`. Sin este flag ni `--ref-audio`, se usa la voz `default`. |
-| | `--icl-frames <n>` | `0` *(todos)* | Tope máximo de frames de referencia en modo ICL. |
 | | `--voice-name <name>` | `None` | Nombre guardado en el `.qvoice`; sin él, la voz clonada al vuelo se llama como el WAV (sin extensión). Al cargar, el nombre es el guardado en el archivo o, si está vacío, el nombre del archivo. |
-| | `--max-ref-duration <s>` | `30.0` | Duración máxima en segundos leída de `--ref-audio` (`0` = audio completo). |
 | **Marcado y estilo** | `--compose <spec>` | `None` | Síntesis multitramo con pausas `[pause:<s>]`, `[break:<s>]`, `[0.5]` o `\|`, y tags paralingüísticos en línea (`[laugh]`, `[sigh]`, `[yawn]`, `[wow]`, `[giggle]`, `[scoff]`), que se tratan igual que en `--text`. Sirve para la entrega completa y para `--stream`/`--stdout` (mismo PCM, `NUMERIC_CONTRACT.md` §4, invariante 5). Una composición solo de pausas, sin nada que hablar, es un error (`Composición: nada que sintetizar`) en las dos entregas. |
 | | `--compose-pause <s>` | `0.12` | Pausa por defecto entre tramos hablados en `--compose`. |
 | | `--no-compose` | off | Desactiva la sustitución de `[tags]` y la composición automática en `--text`. El marcado en `--text` (`[hmm]`, `[pause:0.4]`...) va por el mismo camino que `--compose`, con `--stream` y `--stdout` incluidos. |
@@ -97,8 +89,8 @@
 |---|---|---|---|
 | `GET /v1/health` | — | `200` `{"status":"ok"}` | Comprobación de disponibilidad. |
 | `GET /v1/voices` | — | `200` `{"voices":[{"name":"<nombre>","language":"<nombre o null>","icl":<bool>}]}` | Devuelve la voz cargada. `"language"` es el idioma declarado por la voz (la voz `default` declara `"Spanish"`; `null` si una voz cargada no declara ninguno). |
-| `POST /v1/tts` | JSON TTS | `200` `audio/wav` (24 kHz s16le mono) | WAV completo con rampas de 5 ms (entrada) y 40 ms (salida); mismo PCM que `/v1/tts/stream` y que la CLI. Usa `DEFAULT_CHUNK_FRAMES = 10`; `max_tokens = 8192`. |
-| `POST /v1/tts/stream` | JSON TTS | `200` `audio/pcm` (`Transfer-Encoding: chunked`) | Cabeceras: `X-Sample-Rate: 24000`, `X-Sample-Format: s16le`, `X-Channels: 1`. No admite el campo `rate` (`400`); `max_tokens = 8192`. |
+| `POST /v1/tts` | JSON TTS | `200` `audio/wav` (24 kHz s16le mono) | WAV completo con rampas de 5 ms (entrada) y 40 ms (salida); mismo PCM que `/v1/tts/stream` y que la CLI. Usa `DEFAULT_CHUNK_FRAMES = 10`; `max_frames = 8192`. |
+| `POST /v1/tts/stream` | JSON TTS | `200` `audio/pcm` (`Transfer-Encoding: chunked`) | Cabeceras: `X-Sample-Rate: 24000`, `X-Sample-Format: s16le`, `X-Channels: 1`. No admite el campo `rate` (`400`); `max_frames = 8192`. |
 
 **Campos JSON aceptados en `POST`**:
 
@@ -160,7 +152,7 @@ let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, fa
 
 ### 3.2 `Voice` y `SessionScratch`
 
-`Voice` es la única representación de una voz: `name`, `language_id: Option<i32>` (idioma declarado; `None` si no declara ninguno), `xvector: Vec<f32>` e `icl: Option<IclPrompt>`. `IclPrompt { ref_text, ref_codes }` ya está recortado al tope de frames al construir la voz (`VoiceLoadOptions::icl_frames_cap`).
+`Voice` es la única representación de una voz: `name`, `language_id: Option<i32>` (idioma declarado; `None` si no declara ninguno), `xvector: Vec<f32>` e `icl: Option<IclPrompt>`. `IclPrompt { ref_text, ref_codes }` lleva todos los frames de la referencia.
 
 - **Voz `default` incorporada**, que declara español (`2054`):
   ```rust
@@ -169,8 +161,8 @@ let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, fa
   let voice = Voice::builtin_default(); // nombre: "default"
   let mut scratch = SessionScratch::new(); // reutilizable entre síntesis secuenciales
   ```
-- **Voz desde un `.qvoice` v4** (no toca el modelo): `Voice::load(path, &VoiceLoadOptions { ref_text_override, use_icl, icl_frames_cap, log })` o `Voice::from_qvoice(QVoiceFile, &opts)`. El nombre es el guardado en el archivo o, si está vacío, el del archivo.
-- **Voz clonada desde un WAV**: `clone_voice(&runtime, &model, ref_wav, &CloneOptions { ref_text, max_ref_seconds, name, language_id, icl_frames_cap, log })` devuelve `(QVoiceFile, Voice)`. El `QVoiceFile` es el archivo completo (`ref_codes` sin recortar), listo para guardarse; el `Voice` es el ya construido y recortado. `Voice` no guarda archivos: `QVoiceFile` (`qwen-core`) es quien lee y escribe `.qvoice`.
+- **Voz desde un `.qvoice` v4** (no toca el modelo): `Voice::load(path, &VoiceLoadOptions { ref_text_override, use_icl, log })` o `Voice::from_qvoice(QVoiceFile, &opts)`. El nombre es el guardado en el archivo o, si está vacío, el del archivo.
+- **Voz clonada desde un WAV**: `clone_voice(&runtime, &model, ref_wav, &CloneOptions { ref_text, name, language_id, log })` devuelve `(QVoiceFile, Voice)`. El audio de referencia se recorta siempre a 30 s antes de codificarse. El `QVoiceFile` es el archivo, listo para guardarse; el `Voice` es el ya construido. `Voice` no guarda archivos: `QVoiceFile` (`qwen-core`) es quien lee y escribe `.qvoice`.
 
 ### 3.3 Síntesis: `Synthesizer`, `Script` y `Delivery`
 
@@ -201,8 +193,8 @@ synth.synthesize(
 ```
 
 - **`Script`**: `Plain(String)` (texto sin marcado) o `Spans(Vec<SpanSpec>)` (tramos hablados y pausas). `qwen_core::plan_script(text, MarkupMode::{Auto, Literal, Compose})` es el único sitio que decide la sustitución paralingüística y los tramos.
-- **`Delivery`**: `Buffer` devuelve todo el audio en `SynthesisOutput::samples`, con `time_stretch` (`rate`), `tail_trim` y `onset_fade`; `Stream(&mut sink)` entrega chunks al destino sin acabado y rechaza `rate != 1.0`. Los dos dan el mismo PCM (`NUMERIC_CONTRACT.md` §4, invariante 5).
-- **`SynthesisRequest`**: `language_id` (ya resuelto con `effective_language(pedido, voz)`: pedido, voz o español), `sampling: SamplingParams` (`temperature`, `top_k`, `top_p`, `rep_penalty`, `greedy_warmup`, `seed`), `max_frames`, `chunk_frames`, `volume`, `rate`, `compose_pause_s`, `tail_trim`, `onset_fade_ms` y `log: LogLevel`. Los valores por defecto (0,325 / 50 / 1,0 / 1,05 / 0 / 4, 8192 frames, chunks de 10) están en un solo sitio.
+- **`Delivery`**: `Buffer` devuelve todo el audio en `SynthesisOutput::samples`, con `time_stretch` (`rate`); `Stream(&mut sink)` entrega chunks al destino y rechaza `rate != 1.0`. Los dos dan el mismo PCM (`NUMERIC_CONTRACT.md` §4, invariante 5).
+- **`SynthesisRequest`**: `language_id` (ya resuelto con `effective_language(pedido, voz)`: pedido, voz o español), `sampling: SamplingParams` (`temperature`, `top_k`, `top_p`, `rep_penalty`, `seed`), `max_frames`, `chunk_frames`, `volume`, `rate`, `compose_pause_s` y `log: LogLevel`. Los valores por defecto (0,325 / 50 / 1,0 / 1,05 / 4, 8192 frames, chunks de 10) están en un solo sitio.
 - **Destinos de audio**: el trait `AudioSink` (`write_samples(&mut self, &[f32])` y `finish(&mut self)`) es el único destino del camino. `MemorySink` acumula `f32`; `EdgeRampSink<W: PcmWrite>` aplica las rampas de borde (5 ms de entrada, 40 ms de salida con retención) y convierte a PCM `s16le`, y no aplica ganancia (la aplica `synthesize` antes de escribir). `PcmWrite` (`write_pcm` y `finish`) tiene escritores incluidos —`WavFileWriter` (WAV progresivo), `StdoutWriter` y `Vec<u8>`— o uno propio.
 
 ### 3.4 Cancelación cooperativa (`AbortHandle`) y marcado

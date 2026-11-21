@@ -264,11 +264,9 @@ fn test_clone_from_default_voice_e2e() {
         &ref_wav,
         &CloneOptions {
             ref_text: Some(ref_text.to_string()),
-            max_ref_seconds: 30.0,
             name: Some("clone_icl".to_string()),
             language_id: Some(2050),
             log: LogLevel::Silent,
-            ..Default::default()
         },
     )
     .unwrap();
@@ -351,21 +349,6 @@ fn test_clone_from_default_voice_e2e() {
         icl_override.icl.as_ref().map(|i| i.ref_text.as_str()),
         Some("Another transcript.")
     );
-
-    // El tope de frames ICL se aplica al construir la voz
-    let n_file_frames = icl_file.n_ref_frames();
-    assert!(n_file_frames > 3);
-    let capped = Voice::load(
-        &icl_path,
-        &VoiceLoadOptions {
-            icl_frames_cap: 3,
-            ..load_opts.clone()
-        },
-    )
-    .unwrap();
-    let capped_icl = capped.icl.as_ref().unwrap();
-    assert_eq!(capped_icl.ref_codes.len(), 3 * 16);
-    assert_eq!(capped_icl.ref_codes[..], icl_file.ref_codes[..3 * 16]);
 
     for voice in [&icl_voice, &xvec_voice] {
         let out = Synthesizer {

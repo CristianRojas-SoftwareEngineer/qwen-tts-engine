@@ -8,7 +8,7 @@
 use qwen_core::config::DEFAULT_LANGUAGE_ID;
 use qwen_core::SamplingParams;
 
-/// Tope de frames por síntesis cuando el llamador no fija otro.
+/// Máximo de frames por síntesis cuando el llamador no fija otro.
 pub const DEFAULT_MAX_FRAMES: usize = 8192;
 /// Tamaño por defecto del chunk de decodificación, en frames.
 pub const DEFAULT_CHUNK_FRAMES: usize = 10;
@@ -47,7 +47,7 @@ pub struct SynthesisRequest {
     /// Idioma del prompt, ya resuelto con `effective_language`.
     pub language_id: i32,
     pub sampling: SamplingParams,
-    /// Tope de frames generados.
+    /// Máximo de frames generados.
     pub max_frames: usize,
     /// Tamaño del chunk de decodificación (`0` = `DEFAULT_CHUNK_FRAMES`; se acota a `2..=250`).
     pub chunk_frames: usize,
@@ -55,10 +55,6 @@ pub struct SynthesisRequest {
     pub rate: f32,
     /// Pausa entre tramos hablados de una composición, en segundos.
     pub compose_pause_s: f32,
-    /// Recorte de la cola degenerada; solo en la entrega completa.
-    pub tail_trim: bool,
-    /// Fundido del ataque en milisegundos (`0` = sin fundido); solo en la entrega completa.
-    pub onset_fade_ms: f32,
     pub log: LogLevel,
 }
 
@@ -72,8 +68,6 @@ impl Default for SynthesisRequest {
             volume: 1.0,
             rate: 1.0,
             compose_pause_s: DEFAULT_COMPOSE_PAUSE_S,
-            tail_trim: false,
-            onset_fade_ms: 0.0,
             log: LogLevel::Normal,
         }
     }

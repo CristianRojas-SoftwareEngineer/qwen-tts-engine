@@ -100,9 +100,6 @@ fn synth_span(
         eprintln!("Tramo {idx}: \"{text}\"");
     }
     let mut span_req = job.req.clone();
-    // El acabado (`tail_trim`, `onset_fade`) se aplica una sola vez, a la composición entera.
-    span_req.tail_trim = false;
-    span_req.onset_fade_ms = 0.0;
     if rate > 0.0 {
         span_req.rate = (span_req.rate * rate).clamp(0.25, 4.0);
     }

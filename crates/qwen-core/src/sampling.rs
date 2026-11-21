@@ -14,7 +14,6 @@ pub struct SamplingParams {
     pub top_k: usize,
     pub top_p: f32,
     pub rep_penalty: f32,
-    pub greedy_warmup: usize,
     pub seed: u32,
 }
 
@@ -25,7 +24,6 @@ impl Default for SamplingParams {
             top_k: 50,
             top_p: 1.0,
             rep_penalty: 1.05,
-            greedy_warmup: 0,
             seed: DEFAULT_SEED,
         }
     }

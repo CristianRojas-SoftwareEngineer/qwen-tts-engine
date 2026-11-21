@@ -24,13 +24,12 @@ pub mod voice;
 pub mod voice_clone;
 
 pub use audio::{
-    encode_wav_bytes, read_wav_24khz, read_wav_pcm, tail_glitch_score, trim_trailing_silence,
+    encode_wav_bytes, read_wav_24khz, read_wav_pcm, trim_trailing_silence,
     validate_wav_path_or_header, write_wav, AudioSink, EdgeRampSink, MemorySink, PcmWrite,
     StdoutWriter, WavFileWriter,
 };
 pub use error::EngineError;
 pub use model::{AbortHandle, Model06B, SessionScratch, SynthesisTiming};
-pub use pipeline::finish_full_delivery;
 pub use request::{
     LogLevel, SynthesisRequest, DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES,
 };

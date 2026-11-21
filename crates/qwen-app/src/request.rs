@@ -39,7 +39,7 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScrip
 
     let max_frames = match cli.max_duration {
         Some(dur) if dur > 0.0 => ((dur * FRAME_RATE) as usize).max(1),
-        _ => cli.max_tokens,
+        _ => DEFAULT_MAX_FRAMES,
     };
 
     let (text, mode) = match &cli.compose_spec {
@@ -53,7 +53,6 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScrip
         top_k: cli.top_k as usize,
         top_p: cli.top_p,
         rep_penalty: cli.rep_penalty,
-        greedy_warmup: cli.greedy_warmup,
         ..SamplingParams::default()
     };
     let sampling = resolve_sampling(base, cli.seed, cli.temperature, planned.paralinguistic);
@@ -91,8 +90,6 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScrip
         volume: cli.volume,
         rate: cli.rate,
         compose_pause_s: cli.compose_pause,
-        tail_trim: cli.tail_trim,
-        onset_fade_ms: cli.onset_fade_ms as f32,
         log: log_level(cli),
     };
     (req, planned)
@@ -121,8 +118,6 @@ pub fn from_http(vreq: &ValidatedTtsRequest, voice: &Voice) -> (SynthesisRequest
         volume: vreq.volume,
         rate: vreq.rate,
         compose_pause_s: DEFAULT_COMPOSE_PAUSE_S,
-        tail_trim: false,
-        onset_fade_ms: 0.0,
         log: LogLevel::Silent,
     };
     (req, planned)
@@ -165,10 +160,7 @@ mod tests {
         let (stream, _) = from_http(&parse(body, true), &voice(None));
         assert_eq!(stream.chunk_frames, 4);
         assert_eq!(stream.rate, 1.0);
-        assert_eq!(
-            (stream.max_frames, stream.sampling.greedy_warmup),
-            (DEFAULT_MAX_FRAMES, 0)
-        );
+        assert_eq!(stream.max_frames, DEFAULT_MAX_FRAMES);
         assert!(stream.log == LogLevel::Silent);
     }
 

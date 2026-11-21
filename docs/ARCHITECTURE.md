@@ -46,7 +46,7 @@ Voice  [Inmutable por voz — unos pocos KB; la voz `default` va embebida en el 
  ├── name: String                         // `default`, el nombre guardado en el `.qvoice` o el del archivo
  ├── language_id: Option<i32>             // idioma declarado (`default` declara español)
  ├── xvector: Vec<f32>                    // x-vector de 1024 valores
- └── icl: Option<IclPrompt>               // { ref_text, ref_codes }, ya recortado al tope de frames
+ └── icl: Option<IclPrompt>               // { ref_text, ref_codes }
      (`Voice::load` solo lee el `.qvoice`; no modifica `Model06B`.)
 
 Synthesizer<'a>  [Efímero, `Copy`: referencias a los tres niveles anteriores]
@@ -60,8 +60,8 @@ SessionScratch  [Mutable, exclusivo por sesión — cero locks internos]
 
 SynthesisRequest  [Efímero por síntesis — plano, `Clone`]
  ├── language_id: i32                     // ya resuelto: pedido, voz o español
- ├── sampling: SamplingParams             // temperature (0.325), top_k, top_p, rep_penalty, greedy_warmup, seed (4)
- └── max_frames, chunk_frames, volume, rate, compose_pause_s, tail_trim, onset_fade_ms, log
+ ├── sampling: SamplingParams             // temperature (0.325), top_k, top_p, rep_penalty, seed (4)
+ └── max_frames, chunk_frames, volume, rate, compose_pause_s, log
 
 AbortHandle  [Efímero por síntesis]      // Arc<AtomicBool> + poll opcional acoplado por RAII (Drop); es un parámetro, no parte de la petición
 ```
@@ -86,8 +86,8 @@ AbortHandle  [Efímero por síntesis]      // Arc<AtomicBool> + poll opcional ac
 
 1. **Un solo camino de síntesis** (`Synthesizer::synthesize`): dos ejes independientes, el guion y la entrega.
    - **`Script`** (`qwen-core`): `Plain(String)` o `Spans(Vec<SpanSpec>)`. `plan_script(texto, MarkupMode)` es el único sitio que sustituye los `[tags]` paralingüísticos y divide el texto en tramos (`Utterance` o `Pause`), sin estado global.
-   - **`Delivery`**: `Buffer` (todo el audio en memoria, con `time_stretch`, `tail_trim` y `onset_fade`) o `Stream(&mut dyn AudioSink)` (chunks a un destino, sin acabado).
-   - Las cuatro combinaciones (`Plain`/`Spans` por `Buffer`/`Stream`) comparten el mismo generador, y `Buffer` y `Stream` dan el mismo PCM (salvo el acabado de la entrega completa). `Plain` es un bucle productor-consumidor; `Spans` sintetiza cada tramo como `Plain` con ganancia `x·(v·o)` y los une con pausas y fundido cruzado de 45 ms (`compose.rs`).
+   - **`Delivery`**: `Buffer` (todo el audio en memoria, con `time_stretch`) o `Stream(&mut dyn AudioSink)` (chunks a un destino).
+   - Las cuatro combinaciones (`Plain`/`Spans` por `Buffer`/`Stream`) comparten el mismo generador, y `Buffer` y `Stream` dan el mismo PCM. `Plain` es un bucle productor-consumidor; `Spans` sintetiza cada tramo como `Plain` con ganancia `x·(v·o)` y los une con pausas y fundido cruzado de 45 ms (`compose.rs`).
    - **`AudioSink`** es el único destino de audio; `EdgeRampSink<W: PcmWrite>` hace solo rampas de borde y retención, y los escritores (`WavFileWriter`, `StdoutWriter`, `Vec<u8>` y el HTTP *chunked* de `qwen-app`) solo escriben bytes. La ganancia la aplica `synthesize` justo antes del destino.
    - **Una regla de idioma** (`effective_language`): pedido, voz o español. La preparación de la petición está en `qwen-app/src/request.rs` (`from_cli` y `from_http`), el único sitio que aplica `plan_script`, `resolve_sampling` y `effective_language`.
 2. **Ejecución por tramo**:
@@ -102,7 +102,7 @@ AbortHandle  [Efímero por síntesis]      // Arc<AtomicBool> + poll opcional ac
 
 ## 5. Aplicación (`qwen-app`)
 
-1. **Modos**: `cli.rs` resuelve una sola vez el `CliMode` (`Caps`, `SelfTest`, `ListVoices`, `DeleteVoice`, `CreateVoice`, `Serve`, `Synthesize` o `NoJob`) según la precedencia de los flags, y `main.rs` solo despacha. `modes/diag.rs` y `modes/voice_cmd.rs` no cargan el modelo; `modes/mod.rs` prepara runtime, modelo y voz para `modes/single.rs` (una síntesis, `--seed-audition` incluido) y `modes/serve.rs`.
+1. **Modos**: `cli.rs` resuelve una sola vez el `CliMode` (`Caps`, `SelfTest`, `ListVoices`, `DeleteVoice`, `CreateVoice`, `Serve`, `Synthesize` o `NoJob`) según la precedencia de los flags, y `main.rs` solo despacha. `modes/diag.rs` y `modes/voice_cmd.rs` no cargan el modelo; `modes/mod.rs` prepara runtime, modelo y voz para `modes/single.rs` (una síntesis) y `modes/serve.rs`.
 2. **Servidor simple**: `ServerContext { runtime, model, voice }` y `serve(ctx, host, port)`. Usa el `ComputeRuntime` global, calienta una sesión (`warm_up`, con un `SynthesisRequest` directo, sin JSON) y atiende cada conexión en línea (`accept` + `handle_connection`), con un único trabajador, sin hilos ni cola. El presupuesto de *spin-wait* lo fija `ComputeRuntime::for_cores` según los núcleos físicos.
 3. **Un solo enrutado**: `handle_connection` atiende `/v1/health`, `/v1/voices`, `/v1/tts`, y `/v1/tts/stream`. `ValidatedTtsRequest::parse` valida todas las peticiones (HTTP `400` ante cualquier parámetro fuera de contrato, incluidos los campos desconocidos), `from_http` las convierte en `SynthesisRequest` y `Script`, y `AbortGuard` acopla el ciclo de vida del socket a `AbortHandle::cancel()` vía `Drop`.
 

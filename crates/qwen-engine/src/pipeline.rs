@@ -14,7 +14,7 @@ use qwen_core::config::{
 use qwen_core::LcgRng;
 use qwen_kernels::{ftz_on, ComputeRuntime, KernelDispatch};
 
-use crate::audio::{apply_gain, onset_fade, tail_trim, AudioSink};
+use crate::audio::{apply_gain, AudioSink};
 use crate::code_predictor::cp_predict;
 use crate::error::EngineError;
 use crate::model::{
@@ -388,15 +388,10 @@ pub(crate) fn generate_to_sink(
                 apply_talker_logit_rules(&mut tb.logits, frame, text_content_len);
             }
 
-            let (frame_temp, frame_top_k) = if sp.greedy_warmup > 0 && frame < sp.greedy_warmup {
-                (0.0, 1)
-            } else {
-                (sp.temperature, sp.top_k as i32)
-            };
             let code0 = scratch.sampler.sample(
                 &mut scratch.talker_bufs.logits,
-                frame_temp,
-                frame_top_k,
+                sp.temperature,
+                sp.top_k as i32,
                 sp.top_p,
                 sp.rep_penalty,
                 &scratch.prev_tokens,
@@ -567,31 +562,6 @@ fn log_synthesis_summary(t: &SynthesisTiming, chunk_frames: usize) {
             "  TTFA: {:.0} ms (primer chunk de audio, chunk de {} frames)",
             ttfa, chunk_frames
         );
-    }
-}
-
-/// Acabado de la entrega completa: recorte de la cola degenerada y fundido del ataque.
-///
-/// Va siempre después de `apply_gain` y `time_stretch`. En streaming no se aplica.
-pub fn finish_full_delivery(samples: &mut Vec<f32>, req: &SynthesisRequest) {
-    let silent = req.log.is_silent();
-    if req.tail_trim {
-        let cut = tail_trim(samples, SAMPLE_RATE, 0.30);
-        if cut > 0 && !silent {
-            eprintln!(
-                "Recorte de cola: cortados {:.2}s de cola degenerada ({cut} muestras)",
-                cut as f64 / SAMPLE_RATE as f64
-            );
-        }
-    }
-    if req.onset_fade_ms > 0.0 {
-        onset_fade(samples, SAMPLE_RATE, req.onset_fade_ms as usize);
-        if !silent {
-            eprintln!(
-                "Fundido de ataque: {} ms sobre el ataque real",
-                req.onset_fade_ms
-            );
-        }
     }
 }
 

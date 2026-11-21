@@ -103,7 +103,7 @@ fn expected_qvoice_bytes(qv: &QVoiceFile) -> Vec<u8> {
 }
 
 #[test]
-fn test_voice_load_and_icl_cap_on_construction() {
+fn test_voice_load_on_construction() {
     let dir = temp_dir("voice_load");
     let ref_text = "Texto de referencia.";
 
@@ -156,34 +156,7 @@ fn test_voice_load_and_icl_cap_on_construction() {
 
     let full_icl = full.icl.as_ref().unwrap();
     assert_eq!(full_icl.ref_text, ref_text);
-    assert_eq!(full_icl.ref_codes, icl_qv.ref_codes, "tope 0 = sin recorte");
-
-    // El tope se aplica al construir: los primeros N frames, sin tocar el archivo
-    let capped = Voice::load(
-        &icl_path,
-        &VoiceLoadOptions {
-            icl_frames_cap: 4,
-            ..opts.clone()
-        },
-    )
-    .unwrap();
-    let capped_icl = capped.icl.unwrap();
-    assert_eq!(capped_icl.ref_codes.len(), 4 * NUM_CODEBOOKS);
-    assert_eq!(
-        capped_icl.ref_codes[..],
-        icl_qv.ref_codes[..4 * NUM_CODEBOOKS]
-    );
-    assert_eq!(QVoiceFile::read_from_file(&icl_path).unwrap(), icl_qv);
-
-    // Un tope mayor que el ICL no recorta
-    let loose = Voice::from_qvoice(
-        icl_qv.clone(),
-        &VoiceLoadOptions {
-            icl_frames_cap: 99,
-            ..opts
-        },
-    );
-    assert_eq!(loose.icl.unwrap().ref_codes, icl_qv.ref_codes);
+    assert_eq!(full_icl.ref_codes, icl_qv.ref_codes);
 }
 
 #[test]
@@ -236,17 +209,15 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
     let ref_wav = dir.join("ref.wav");
     write_wav(&ref_wav, &ref_samples, SAMPLE_RATE as u32).unwrap();
 
-    // Bytes del `QVoiceFile` de `clone_voice`: archivo completo, sin recortar
+    // Bytes del `QVoiceFile` de `clone_voice`: archivo completo
     let (qv, built) = clone_voice(
         &runtime,
         &model,
         &ref_wav,
         &CloneOptions {
             ref_text: Some(ref_text.to_string()),
-            max_ref_seconds: 30.0,
             name: None,
             language_id: None,
-            icl_frames_cap: 5,
             log: LogLevel::Silent,
         },
     )
@@ -258,17 +229,13 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
     );
     assert_eq!(qv.lang_id, 0, "sin idioma dado, el archivo guarda 0");
     assert_eq!(qv.ref_text, ref_text);
-    assert!(
-        qv.n_ref_frames() > 5,
-        "el archivo conserva todos los fotogramas"
-    );
+    assert!(qv.n_ref_frames() > 0, "el archivo trae los fotogramas ICL");
     assert_eq!(built.name, "ref", "la voz construida usa el nombre del WAV");
     assert_eq!(built.language_id, None);
     assert_eq!(built.xvector, qv.speaker_embedding);
     let built_icl = built.icl.as_ref().unwrap();
     assert_eq!(built_icl.ref_text, ref_text);
-    assert_eq!(built_icl.ref_codes.len(), 5 * NUM_CODEBOOKS);
-    assert_eq!(built_icl.ref_codes[..], qv.ref_codes[..5 * NUM_CODEBOOKS]);
+    assert_eq!(built_icl.ref_codes, qv.ref_codes);
     let qv_path = dir.join("clone.qvoice");
     qv.write_to_file(&qv_path).unwrap();
     assert_eq!(fs::read(&qv_path).unwrap(), expected_qvoice_bytes(&qv));
@@ -278,10 +245,8 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         &ref_wav,
         &CloneOptions {
             ref_text: None,
-            max_ref_seconds: 30.0,
             name: Some("nombrada".to_string()),
             language_id: Some(2050),
-            icl_frames_cap: 0,
             log: LogLevel::Silent,
         },
     )
@@ -309,7 +274,6 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         &qv_path,
         &VoiceLoadOptions {
             use_icl: true,
-            icl_frames_cap: 5,
             log: LogLevel::Silent,
             ..Default::default()
         },

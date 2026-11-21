@@ -133,10 +133,8 @@ pub fn resolve_voice(
             } else {
                 cfg.ref_text.clone()
             },
-            max_ref_seconds: cfg.max_ref_duration,
             name: cfg.voice_name.clone(),
             language_id: cli_language_id,
-            icl_frames_cap: cfg.icl_frames,
             log: request::log_level(cfg),
         };
         let (qv, voice) = clone_voice(runtime, model, Path::new(ref_audio_path), &clone_opts)
@@ -157,7 +155,6 @@ pub fn resolve_voice(
         let lv_opts = VoiceLoadOptions {
             ref_text_override: cfg.ref_text.clone(),
             use_icl: !cfg.xvector_only,
-            icl_frames_cap: cfg.icl_frames,
             log: request::log_level(cfg),
         };
         let v = Voice::load(Path::new(lv_path), &lv_opts).map_err(|e| e.to_string())?;

@@ -7,7 +7,7 @@ use std::net::Ipv4Addr;
 
 use qwen_core::config::CODEC_VOCAB_SIZE;
 use qwen_core::{SamplingParams, SeedChoice};
-use qwen_engine::{DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES};
+use qwen_engine::{DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S};
 
 /// Qué hace el proceso, resuelto una sola vez al parsear (ver [`CliMode::resolve`]).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -74,12 +74,10 @@ pub struct CliArgs {
     pub top_k: i32,
     pub top_p: f32,
     pub rep_penalty: f32,
-    pub max_tokens: usize,
     pub max_duration: Option<f32>,
     pub threads: Option<usize>,
     /// Semilla pedida con `--seed` (un valor negativo activa semilla temporal).
     pub seed: SeedChoice,
-    pub greedy_warmup: usize,
 
     pub stream: bool,
     pub stdout_pcm: bool,
@@ -92,9 +90,7 @@ pub struct CliArgs {
     pub xvector_only: bool,
     pub save_voice: Option<String>,
     pub load_voice: Option<String>,
-    pub icl_frames: usize,
     pub voice_name: Option<String>,
-    pub max_ref_duration: f32,
 
     pub compose_spec: Option<String>,
     pub compose_pause: f32,
@@ -106,11 +102,6 @@ pub struct CliArgs {
 
     pub silent: bool,
     pub debug: bool,
-
-    pub onset_fade_ms: u32,
-    pub tail_trim: bool,
-    pub seed_audition: usize,
-    pub audition_keep: bool,
 
     pub show_caps: bool,
     pub self_test: bool,
@@ -131,11 +122,9 @@ impl Default for CliArgs {
             top_k: sampling.top_k as i32,
             top_p: sampling.top_p,
             rep_penalty: sampling.rep_penalty,
-            max_tokens: DEFAULT_MAX_FRAMES,
             max_duration: None,
             threads: None,
             seed: SeedChoice::Default,
-            greedy_warmup: sampling.greedy_warmup,
             stream: false,
             stdout_pcm: false,
             stream_chunk: DEFAULT_CHUNK_FRAMES,
@@ -146,9 +135,7 @@ impl Default for CliArgs {
             xvector_only: false,
             save_voice: None,
             load_voice: None,
-            icl_frames: 0,
             voice_name: None,
-            max_ref_duration: 30.0,
             compose_spec: None,
             compose_pause: DEFAULT_COMPOSE_PAUSE_S,
             no_compose: false,
@@ -157,10 +144,6 @@ impl Default for CliArgs {
             watch_stdin: false,
             silent: false,
             debug: false,
-            onset_fade_ms: 0,
-            tail_trim: false,
-            seed_audition: 0,
-            audition_keep: false,
             show_caps: false,
             self_test: false,
             list_voices_dir: None,
@@ -187,7 +170,6 @@ pub fn print_usage(prog: &str) {
     eprintln!("  -k, --top-k <int>          Candidatos más probables entre los que se muestrea (por defecto: 50)");
     eprintln!("  -p, --top-p <float>        Probabilidad acumulada máxima de esos candidatos (por defecto: 1.0)");
     eprintln!("  -r, --rep-penalty <float>  Penalización por repetición (por defecto: 1.05)");
-    eprintln!("  -m, --max-tokens <int>     Máximo de tokens (por defecto: {DEFAULT_MAX_FRAMES})");
     eprintln!("  -j, --threads <int>        Número de hilos (0=automático)");
     eprintln!("  --stream                   Escribe el audio al WAV de forma progresiva");
     eprintln!(
@@ -199,16 +181,13 @@ pub fn print_usage(prog: &str) {
         "  --rate <f>                 Velocidad del habla, conservando el tono (por defecto: 1.0)"
     );
     eprintln!("  --seed <n>                 Semilla aleatoria (por defecto: 4; < 0 para semilla temporal)");
-    eprintln!("  --greedy-warmup <n>        Primeros n frames en modo voraz (T=0, k=1)");
     eprintln!("  --max-duration <secs>      Duración máxima del audio en segundos");
     eprintln!("  --ref-audio <path>         WAV de referencia mono de 24 kHz para clonar la voz");
     eprintln!("  --ref-text <string>        Transcripción de --ref-audio para la clonación ICL");
     eprintln!("  --xvector-only             Usa solo el embedding del locutor (sin ICL)");
     eprintln!("  --save-voice <path>        Guarda la voz (.qvoice)");
     eprintln!("  --load-voice <path>        Carga una voz (.qvoice; por defecto: la voz default integrada)");
-    eprintln!("  --icl-frames <n>           Limita los frames de referencia ICL (0=todos)");
     eprintln!("  --voice-name <name>        Nombre de voz en los metadatos del .qvoice");
-    eprintln!("  --max-ref-duration <secs>  Segundos máximos del audio de referencia (por defecto: 30, 0=todo)");
     eprintln!("  --list-voices <dir>        Lista los archivos .qvoice de un directorio");
     eprintln!("  --delete-voice <path>      Borra un archivo .qvoice");
     eprintln!("  --compose <spec>           Síntesis de varios tramos con marcado en línea");
@@ -217,12 +196,6 @@ pub fn print_usage(prog: &str) {
     eprintln!("  --serve <port>             Inicia el servidor HTTP en el puerto indicado");
     eprintln!("  --host <ipv4>              Dirección IPv4 de enlace (por defecto: 127.0.0.1)");
     eprintln!("  --watch-stdin              Termina de inmediato cuando stdin llega a EOF");
-    eprintln!("  --onset-fade <ms>          Duración de la rampa de entrada inicial (ms)");
-    eprintln!("  --tail-trim                Recorta la cola metálica degenerada");
-    eprintln!(
-        "  --seed-audition <N>        Audición secuencial de las N mejores semillas (hasta 64)"
-    );
-    eprintln!("  --audition-keep            Conserva todas las tomas de la audición como <out>.seed<S>.wav");
     eprintln!("  -S, --silent               Suprime los logs de stderr");
     eprintln!("  -D, --debug                Diagnósticos internos detallados");
     eprintln!("  --caps                     Imprime las capacidades de CPU/SIMD/BLAS y termina");
@@ -348,13 +321,6 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                 out.rep_penalty =
                     take_bounded_f32(args, &mut i, inline_val, flag, "rep-penalty", 0.5, 2.0)?;
             }
-            "-m" | "--max-tokens" => {
-                let m = take_usize(args, &mut i, inline_val, flag, "max-tokens")?;
-                if m == 0 {
-                    return Err("Error: max-tokens debe ser >= 1".to_string());
-                }
-                out.max_tokens = m;
-            }
             "-j" | "--threads" => {
                 let n = take_usize(args, &mut i, inline_val, flag, "threads")?;
                 if n > 0 {
@@ -373,9 +339,6 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                 } else {
                     return Err(format!("Error: seed {val} excede u32::MAX"));
                 }
-            }
-            "--greedy-warmup" => {
-                out.greedy_warmup = take_usize(args, &mut i, inline_val, flag, "greedy-warmup")?;
             }
             "--max-duration" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
@@ -408,18 +371,8 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
             "--load-voice" => {
                 out.load_voice = Some(take_val(args, &mut i, inline_val, flag)?);
             }
-            "--icl-frames" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.icl_frames = s
-                    .parse::<usize>()
-                    .map_err(|_| format!("Error: icl-frames inválido '{s}'"))?;
-            }
             "--voice-name" => {
                 out.voice_name = Some(take_val(args, &mut i, inline_val, flag)?);
-            }
-            "--max-ref-duration" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.max_ref_duration = parse_finite_f32(&s, "max-ref-duration")?;
             }
             "--compose" => {
                 out.compose_spec = Some(take_val(args, &mut i, inline_val, flag)?);
@@ -449,22 +402,6 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
             "--watch-stdin" => out.watch_stdin = true,
             "-S" | "--silent" => out.silent = true,
             "-D" | "--debug" => out.debug = true,
-            "--onset-fade" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.onset_fade_ms = s
-                    .parse::<i32>()
-                    .map_err(|_| format!("Error: onset-fade inválido '{s}'"))?
-                    .max(0) as u32;
-            }
-            "--tail-trim" => out.tail_trim = true,
-            "--seed-audition" => {
-                let s = take_val(args, &mut i, inline_val, flag)?;
-                out.seed_audition = s
-                    .parse::<usize>()
-                    .map_err(|_| format!("Error: seed-audition inválido '{s}'"))?
-                    .clamp(1, 64);
-            }
-            "--audition-keep" => out.audition_keep = true,
             "--caps" => out.show_caps = true,
             "--self-test" => out.self_test = true,
             "--list-voices" => {
@@ -513,7 +450,6 @@ mod tests {
             vec!["qwen_tts", "--volume", "-0.5"],
             vec!["qwen_tts", "--rate", "0.1"],
             vec!["qwen_tts", "--seed", "99999999999"],
-            vec!["qwen_tts", "--max-tokens", "0"],
         ] {
             let args: Vec<String> = bad.into_iter().map(str::to_string).collect();
             assert!(
