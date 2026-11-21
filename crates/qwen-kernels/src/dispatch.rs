@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use crate::blas::{BlasBackend, FfiBlas};
+use crate::blas::FfiBlas;
 use crate::caps::CpuCaps;
 use crate::ftz::ftz_on;
 use crate::pool::{resolve_num_threads, spin_budget_for, ComputePool};
@@ -1497,20 +1497,7 @@ pub struct ComputeRuntime {
     pub dispatch: &'static KernelDispatch,
     pub pool: Arc<ComputePool>,
     pub sd_pool: Arc<ComputePool>,
-    pub blas: Arc<dyn BlasBackend>,
-}
-
-fn select_blas_backend() -> Arc<dyn BlasBackend> {
-    #[cfg(feature = "faer-blas")]
-    {
-        if std::env::var("QWEN_BLAS")
-            .ok()
-            .is_some_and(|v| v.trim().eq_ignore_ascii_case("faer"))
-        {
-            return Arc::new(crate::blas::PureRustBlas::default());
-        }
-    }
-    Arc::new(FfiBlas)
+    pub blas: FfiBlas,
 }
 
 impl ComputeRuntime {
@@ -1545,7 +1532,7 @@ impl ComputeRuntime {
             }
             None => (Arc::new(ComputePool::new(nt)), Arc::new(ComputePool::new(sd_nt))),
         };
-        let blas = select_blas_backend();
+        let blas = FfiBlas;
         blas.set_threads(nt);
         Self {
             caps,

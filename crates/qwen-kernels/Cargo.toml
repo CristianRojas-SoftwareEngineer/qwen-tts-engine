@@ -4,10 +4,3 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-
-[features]
-default = []
-faer-blas = ["dep:faer"]
-
-[dependencies]
-faer = { version = "0.24", optional = true }

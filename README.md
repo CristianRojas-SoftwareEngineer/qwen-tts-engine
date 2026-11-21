@@ -59,17 +59,13 @@ Notas sobre estos requisitos:
 - **Memoria.** El proceso usa ~1,3 GB en el pico. El motor está limitado por el ancho de banda de memoria, por eso se recomienda doble canal.
 - **Ajuste de hilos.** `-j` fija los hilos del productor (4 por defecto). Menos hilos no compensa la falta de núcleos: con 4 núcleos, `-j 2` tampoco bajó de RTF 1.
 
-### Dependencias por plataforma (perfil BLAS nativo por defecto)
+### Dependencias por plataforma (BLAS nativo)
 
 | Plataforma | Toolchain y bibliotecas | Notas |
 |---|---|---|
-| **Windows (`x86_64-pc-windows-gnu`)** | Rust estable (`x86_64-pc-windows-gnu`) + MSYS2 UCRT64 (`mingw-w64-ucrt-x86_64-gcc`, `mingw-w64-ucrt-x86_64-openblas`, `mingw-w64-ucrt-x86_64-binutils`) en `PATH` (`C:\msys64\ucrt64\bin`) | Si OpenBLAS está en otra ruta, define `OPENBLAS_LIB_DIR` (por defecto `C:/msys64/ucrt64/lib`). |
-| **Linux** | Rust estable + `libopenblas-dev`, o un OpenBLAS propio (abajo) | **Para distribuir el binario, y sobre todo en ARM64, enlaza un OpenBLAS propio**: `scripts/build-openblas.sh "$HOME/openblas"` (OpenBLAS 0.3.30 estático, solo BLAS, `DYNAMIC_ARCH`: elige el kernel de cada CPU al arrancar; ~4–6 min en 4 vCPU ARM) y `OPENBLAS_LIB_DIR="$HOME/openblas/lib" cargo build --release -p qwen-app`. El de la distribución puede traer solo el kernel genérico: Ubuntu 22.04 en ARM64 usa `armv8` y el decoder va un 30 % más lento. `qwen_tts --caps` muestra el kernel en la línea `BLAS (prefill)`. |
+| **Windows (`x86_64-pc-windows-gnu`)** | Rust estable (`x86_64-pc-windows-gnu`) + MSYS2 UCRT64 (`mingw-w64-ucrt-x86_64-gcc`, `make`, `mingw-w64-ucrt-x86_64-binutils`) en `PATH` (`C:\msys64\ucrt64\bin`), más el OpenBLAS propio (abajo) | El motor enlaza un OpenBLAS 0.3.34 propio, estático y sin OpenMP ni Fortran: `OPENBLAS_LIB_DIR` es obligatoria (`C:/openblas/lib`). |
+| **Linux** | Rust estable + OpenBLAS propio | El motor enlaza siempre un OpenBLAS propio: `scripts/build-openblas.sh "$HOME/openblas"` (OpenBLAS 0.3.34 estático, solo BLAS, `DYNAMIC_ARCH`: elige el kernel de cada CPU al arrancar; ~4–6 min en 4 vCPU ARM, medido con la 0.3.30) y `OPENBLAS_LIB_DIR="$HOME/openblas/lib" cargo build --release -p qwen-app`; `OPENBLAS_LIB_DIR` es obligatoria. El de la distribución puede traer solo el kernel genérico: Ubuntu 22.04 en ARM64 usa `armv8` y el decoder va un 30 % más lento. `qwen_tts --caps` muestra el kernel en la línea `BLAS (prefill)`. |
 | **macOS** | Rust estable + Xcode Command Line Tools | Enlaza con el framework del sistema `Accelerate`. |
-
-### Variante opcional 100 % Rust (`--features faer-blas`)
-
-Para compilar una variante en Rust puro mediante el backend `PureRustBlas` (basado en `faer`), habilita `--features faer-blas` y selecciónalo en ejecución con `QWEN_BLAS=faer`. Consulta la comparativa técnica en [`docs/adr/002-blas-strategy.md`](docs/adr/002-blas-strategy.md).
 
 ---
 
@@ -91,8 +87,16 @@ huggingface-cli download Qwen/Qwen3-TTS-12Hz-0.6B-Base --local-dir models/qwen3-
 
 #### Windows (MSYS2 UCRT64)
 
+Antes de la primera compilación, compila una vez el OpenBLAS propio en `C:/openblas` (unos 30 minutos con 8 núcleos):
+
+```powershell
+$env:MSYSTEM = "UCRT64"; $env:CHERE_INVOKING = "1"
+C:\msys64\usr\bin\bash.exe -lc 'pacman -S --needed --noconfirm make && bash scripts/build-openblas.sh /c/openblas 0.3.34'
+```
+
 ```powershell
 $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+$env:OPENBLAS_LIB_DIR = "C:/openblas/lib"
 Remove-Item Env:OPENBLAS_NUM_THREADS -ErrorAction SilentlyContinue
 
 cargo build -p qwen-app --release --target x86_64-pc-windows-gnu
@@ -108,7 +112,7 @@ cargo build -p qwen-app --release
 ./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 --seed 4 -l English --quant-mixed --text "Hello, world!" -o output.wav
 ```
 
-> **Nota**: sin `--load-voice` ni `--ref-audio`, el motor habla con la voz `default` incorporada (la CLI imprime `Voz: default` en `stderr`). Sin `-l`, el idioma es el de la voz cargada o, si no tiene, español. `--quant-mixed` es el perfil recomendado para producción en `0.6B` (los valores por defecto de muestreo son `temperature = 0.325` y `seed = 4`); añade `--stream` si necesitas escribir audio progresivamente conforme se decodifica. En Windows GNU, mantén `OPENBLAS_NUM_THREADS` sin definir para que el motor ajuste los hilos entre *prefill* y generación.
+> **Nota**: sin `--load-voice` ni `--ref-audio`, el motor habla con la voz `default` incorporada (la CLI imprime `Voz: default` en `stderr`). Sin `-l`, el idioma es el de la voz cargada o, si no tiene, español. `--quant-mixed` es el perfil recomendado para producción en `0.6B` (los valores por defecto de muestreo son `temperature = 0.325` y `seed = 4`); añade `--stream` si necesitas escribir audio progresivamente conforme se decodifica. En Windows GNU, mantén `OPENBLAS_NUM_THREADS`, `GOTO_NUM_THREADS` y `OMP_NUM_THREADS` sin definir para que el motor ajuste los hilos entre *prefill* y generación.
 
 ### 2. Clonación de voz
 
@@ -214,6 +218,7 @@ En Windows (`x86_64-pc-windows-gnu`):
 
 ```powershell
 $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+$env:OPENBLAS_LIB_DIR = "C:/openblas/lib"
 Remove-Item Env:OPENBLAS_NUM_THREADS -ErrorAction SilentlyContinue
 
 .\target\x86_64-pc-windows-gnu\release\qwen_tts.exe --self-test
@@ -236,7 +241,7 @@ La documentación sigue el modelo **Diátaxis** para separar guías prácticas, 
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Explicación | Desarrolladores y contribuidores | Grafo de *crates* (DAG), política `unsafe`, tiempos de vida del estado, `ComputeRuntime`, camino único de síntesis y servidor. |
 | [`docs/VERIFICATION_PLAN.md`](docs/VERIFICATION_PLAN.md) | Guía operativa | QA, contribuidores y mantenimiento de CI | Suites `cargo test`, verificación numérica de kernels, CI en CircleCI (`.circleci/config.yml`) y protocolo de medición de rendimiento. |
 | [`docs/adr/001-only-06b.md`](docs/adr/001-only-06b.md) | ADR | Mantenedores | Especialización del motor para Qwen3-TTS `0.6B`. |
-| [`docs/adr/002-blas-strategy.md`](docs/adr/002-blas-strategy.md) | ADR | Mantenedores | Estrategia BLAS (`FfiBlas` por defecto y `faer-blas` opcional). |
+| [`docs/adr/002-blas-strategy.md`](docs/adr/002-blas-strategy.md) | ADR | Mantenedores | Estrategia BLAS (OpenBLAS propio y Accelerate). |
 | [`docs/adr/003-concurrency-pool.md`](docs/adr/003-concurrency-pool.md) | ADR | Mantenedores | Pool de hilos `ComputePool` y control de sobresuscripción. |
 | [`docs/adr/004-simd-baseline.md`](docs/adr/004-simd-baseline.md) | ADR | Mantenedores | Despacho SIMD en runtime sobre Rust estable (AVX2, NEON y escalar). |
 | [`docs/adr/005-cpu-inference-optimizations.md`](docs/adr/005-cpu-inference-optimizations.md) | ADR | Mantenedores | Optimizaciones de la inferencia en CPU adoptadas y descartadas, con su efecto medido, y rendimiento por plataforma. |

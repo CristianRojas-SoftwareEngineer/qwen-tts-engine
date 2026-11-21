@@ -5,46 +5,13 @@
 
 use std::os::raw::c_int;
 #[cfg(not(target_os = "macos"))]
-use std::{
-    cell::Cell,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        OnceLock,
-    },
-};
+use std::sync::OnceLock;
 
-/// Modo de transposición de matrices para `BlasBackend::sgemm`.
+/// Modo de transposición de matrices para `FfiBlas::sgemm`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Transpose {
     NoTrans,
     Trans,
-}
-
-/// Abstracción del backend BLAS denso en `f32` (`FfiBlas` por defecto o `PureRustBlas`).
-pub trait BlasBackend: Send + Sync {
-    fn name(&self) -> &'static str;
-    /// Detalle de la implementación para `--caps` (en OpenBLAS, el kernel elegido para esta CPU).
-    fn detail(&self) -> Option<String> {
-        None
-    }
-    fn set_threads(&self, n: usize);
-    #[allow(clippy::too_many_arguments)]
-    fn sgemm(
-        &self,
-        transa: Transpose,
-        transb: Transpose,
-        m: usize,
-        n: usize,
-        k: usize,
-        alpha: f32,
-        a: &[f32],
-        lda: usize,
-        b: &[f32],
-        ldb: usize,
-        beta: f32,
-        c: &mut [f32],
-        ldc: usize,
-    );
 }
 
 #[repr(C)]
@@ -105,24 +72,16 @@ fn validate_sgemm_bounds(
     ldb: usize,
     c_len: usize,
     ldc: usize,
-    check_c_int: bool,
 ) {
-    if check_c_int {
-        assert!(
-            m <= c_int::MAX as usize
-                && n <= c_int::MAX as usize
-                && k <= c_int::MAX as usize
-                && lda <= c_int::MAX as usize
-                && ldb <= c_int::MAX as usize
-                && ldc <= c_int::MAX as usize,
-            "sgemm: las dimensiones superan c_int::MAX"
-        );
-    } else {
-        assert!(
-            lda <= isize::MAX as usize && ldb <= isize::MAX as usize && ldc <= isize::MAX as usize,
-            "sgemm: las dimensiones principales superan isize::MAX"
-        );
-    }
+    assert!(
+        m <= c_int::MAX as usize
+            && n <= c_int::MAX as usize
+            && k <= c_int::MAX as usize
+            && lda <= c_int::MAX as usize
+            && ldb <= c_int::MAX as usize
+            && ldc <= c_int::MAX as usize,
+        "sgemm: las dimensiones superan c_int::MAX"
+    );
 
     let (a_rows, a_cols) = match transa {
         Transpose::NoTrans => (m, k),
@@ -169,19 +128,6 @@ fn handle_zero_k_sgemm(m: usize, n: usize, beta: f32, c: &mut [f32], ldc: usize)
     }
 }
 
-/// Hilos de OpenBLAS pedidos con `set_threads` (0 = sin fijar: manda el entorno).
-///
-/// El estado de OpenBLAS es global al proceso, así que el valor también lo es.
-#[cfg(not(target_os = "macos"))]
-static BLAS_THREADS: AtomicUsize = AtomicUsize::new(0);
-
-// Valor de `BLAS_THREADS` ya aplicado en cada hilo.
-#[cfg(not(target_os = "macos"))]
-thread_local! {
-    #[allow(clippy::missing_const_for_thread_local)]
-    static APPLIED_THREADS: Cell<usize> = const { Cell::new(0) };
-}
-
 /// Hilos con que se inicializó OpenBLAS: tope de `set_threads` (pedir más cuelga `sgemm`).
 #[cfg(not(target_os = "macos"))]
 fn initial_threads() -> usize {
@@ -189,43 +135,45 @@ fn initial_threads() -> usize {
     *INITIAL.get_or_init(|| unsafe { openblas_get_num_threads() }.max(1) as usize)
 }
 
-/// Aplica en el hilo actual los hilos pedidos con `set_threads`, sin pasar de los iniciales.
+/// Indica si el usuario fijó los hilos de OpenBLAS por entorno, con `OPENBLAS_NUM_THREADS`,
+/// `GOTO_NUM_THREADS` u `OMP_NUM_THREADS`, las tres que OpenBLAS lee al arrancar.
 ///
-/// Con OpenMP, cada `sgemm` de OpenBLAS se reajusta a `omp_get_max_threads()` del hilo
-/// que la llama, y ese valor es por hilo. Sin esto, un hilo que no llamó a `set_threads`
-/// (p. ej. el del decoder) usaría el valor global de `OMP_NUM_THREADS`.
+/// Se evalúa la primera vez que se llama y se conserva. Debe llamarse antes de que el propio
+/// binario toque el entorno (`_putenv`): después vería la variable que fija el binario y se
+/// confundiría con una del usuario.
 #[cfg(not(target_os = "macos"))]
-fn apply_threads_on_this_thread() {
-    let n = BLAS_THREADS.load(Ordering::Relaxed).min(initial_threads());
-    if n != 0 && APPLIED_THREADS.with(Cell::get) != n {
-        unsafe {
-            openblas_set_num_threads(n as c_int);
-        }
-        APPLIED_THREADS.with(|a| a.set(n));
-    }
+fn user_fixed_threads() -> bool {
+    static FIXED: OnceLock<bool> = OnceLock::new();
+    *FIXED.get_or_init(|| {
+        ["OPENBLAS_NUM_THREADS", "GOTO_NUM_THREADS", "OMP_NUM_THREADS"]
+            .iter()
+            .any(|v| std::env::var_os(v).is_some())
+    })
 }
 
 /// Fija los hilos con que se inicializa OpenBLAS, si el usuario no los fijó por entorno.
 ///
-/// En `x86_64-pc-windows-gnu` OpenBLAS se enlaza estático con OpenMP. Su constructor corre
-/// antes de `main` y reserva un buffer de 128 MiB (memoria comprometida) por cada hilo que
-/// indique `OMP_NUM_THREADS`; sin la variable, uno por CPU lógica. `openblas_set_num_threads`
-/// posterior no devuelve esa memoria, y pedir más hilos que los iniciales cuelga la primera
-/// `sgemm` (OpenBLAS 0.3.34). Por eso el binario llama a esta función antes que los
-/// constructores de OpenBLAS y libgomp, con el número de hilos que va a usar.
+/// En `x86_64-pc-windows-gnu` se enlaza el OpenBLAS propio, estático y sin OpenMP. Su
+/// inicialización corre antes de `main` y reserva 128 MiB de memoria comprometida por cada
+/// hilo. Por eso el binario fija `OPENBLAS_NUM_THREADS` antes, salvo que el usuario haya fijado
+/// alguna de las tres variables de hilos (`OPENBLAS_NUM_THREADS`, `GOTO_NUM_THREADS` u
+/// `OMP_NUM_THREADS`), que se respetan; sin ninguna, OpenBLAS usa un hilo por CPU lógica.
+/// `openblas_set_num_threads` posterior no devuelve esa memoria, y pedir más hilos que los
+/// iniciales cuelga la primera `sgemm`. Por eso el binario llama a esta función antes que los
+/// constructores de OpenBLAS, con el número de hilos que va a usar.
 ///
 /// `_putenv` actualiza la tabla de entorno de la CRT, que es la que lee `getenv`. En el resto
 /// de plataformas no hace nada: Linux no cobra la memoria comprometida (*commit*) por adelantado y macOS usa Accelerate.
 pub fn set_initial_openblas_threads(n: usize) {
     #[cfg(all(windows, target_env = "gnu"))]
     {
-        let user_set = ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "GOTO_NUM_THREADS"]
-            .iter()
-            .any(|v| std::env::var_os(v).is_some());
-        if user_set {
+        // Invariante: `user_fixed_threads` se evalúa siempre antes de cualquier `_putenv`, que
+        // actualiza también el entorno del proceso; evaluada después, vería la variable que fija
+        // el propio binario.
+        if user_fixed_threads() {
             return;
         }
-        let Ok(var) = std::ffi::CString::new(format!("OMP_NUM_THREADS={}", n.max(1))) else {
+        let Ok(var) = std::ffi::CString::new(format!("OPENBLAS_NUM_THREADS={}", n.max(1))) else {
             return;
         };
         // Si falla, OpenBLAS arranca con su valor por defecto: más memoria, mismo resultado.
@@ -243,8 +191,8 @@ pub fn set_initial_openblas_threads(n: usize) {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FfiBlas;
 
-impl BlasBackend for FfiBlas {
-    fn name(&self) -> &'static str {
+impl FfiBlas {
+    pub fn name(&self) -> &'static str {
         if cfg!(target_os = "macos") {
             "Accelerate"
         } else {
@@ -252,9 +200,9 @@ impl BlasBackend for FfiBlas {
         }
     }
 
-    /// Kernel de OpenBLAS para esta CPU (`openblas_get_corename`): con `DYNAMIC_ARCH` lo elige al
-    /// arrancar; si no, es el `TARGET` con que se compiló.
-    fn detail(&self) -> Option<String> {
+    /// Detalle de la implementación para `--caps`: en OpenBLAS, el kernel para esta CPU
+    /// (`openblas_get_corename`), que con `DYNAMIC_ARCH` se elige al arrancar.
+    pub fn detail(&self) -> Option<String> {
         #[cfg(not(target_os = "macos"))]
         {
             let p = unsafe { openblas_get_corename() };
@@ -270,14 +218,17 @@ impl BlasBackend for FfiBlas {
         }
     }
 
-    fn set_threads(&self, n: usize) {
+    /// Fija los hilos de OpenBLAS, sin pasar de los iniciales, salvo que el usuario los haya
+    /// fijado por entorno. El número de hilos de OpenBLAS es global al proceso.
+    pub fn set_threads(&self, n: usize) {
         #[cfg(not(target_os = "macos"))]
         {
-            if std::env::var_os("OPENBLAS_NUM_THREADS").is_some() {
+            if user_fixed_threads() {
                 return;
             }
-            BLAS_THREADS.store(n.max(1), Ordering::Relaxed);
-            apply_threads_on_this_thread();
+            unsafe {
+                openblas_set_num_threads(n.max(1).min(initial_threads()) as c_int);
+            }
         }
         #[cfg(target_os = "macos")]
         {
@@ -285,7 +236,8 @@ impl BlasBackend for FfiBlas {
         }
     }
 
-    fn sgemm(
+    #[allow(clippy::too_many_arguments)]
+    pub fn sgemm(
         &self,
         transa: Transpose,
         transb: Transpose,
@@ -317,7 +269,6 @@ impl BlasBackend for FfiBlas {
             ldb,
             c.len(),
             ldc,
-            true,
         );
         let ta = match transa {
             Transpose::NoTrans => CblasTranspose::NoTrans as c_int,
@@ -327,8 +278,6 @@ impl BlasBackend for FfiBlas {
             Transpose::NoTrans => CblasTranspose::NoTrans as c_int,
             Transpose::Trans => CblasTranspose::Trans as c_int,
         };
-        #[cfg(not(target_os = "macos"))]
-        apply_threads_on_this_thread();
         unsafe {
             cblas_sgemm(
                 CblasOrder::RowMajor as c_int,
@@ -350,99 +299,20 @@ impl BlasBackend for FfiBlas {
     }
 }
 
-#[cfg(feature = "faer-blas")]
-#[derive(Debug)]
-pub struct PureRustBlas {
-    threads: std::sync::atomic::AtomicUsize,
-}
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    use super::*;
 
-#[cfg(feature = "faer-blas")]
-impl Default for PureRustBlas {
-    fn default() -> Self {
-        Self {
-            threads: std::sync::atomic::AtomicUsize::new(1),
-        }
-    }
-}
-
-#[cfg(feature = "faer-blas")]
-impl BlasBackend for PureRustBlas {
-    fn name(&self) -> &'static str {
-        "faer (Rust puro)"
-    }
-
-    fn set_threads(&self, n: usize) {
-        self.threads
-            .store(n.max(1), std::sync::atomic::Ordering::Relaxed);
-    }
-
-    fn sgemm(
-        &self,
-        transa: Transpose,
-        transb: Transpose,
-        m: usize,
-        n: usize,
-        k: usize,
-        alpha: f32,
-        a: &[f32],
-        lda: usize,
-        b: &[f32],
-        ldb: usize,
-        beta: f32,
-        c: &mut [f32],
-        ldc: usize,
-    ) {
-        use faer::linalg::matmul::matmul;
-        use faer::{Accum, MatMut, MatRef, Par};
-
-        if m == 0 || n == 0 || k == 0 {
-            handle_zero_k_sgemm(m, n, beta, c, ldc);
+    #[test]
+    fn set_threads_acts_on_openblas() {
+        if user_fixed_threads() {
+            eprintln!("se omite: el usuario fijó los hilos de OpenBLAS por entorno");
             return;
         }
-        validate_sgemm_bounds(
-            transa,
-            transb,
-            m,
-            n,
-            k,
-            a.len(),
-            lda,
-            b.len(),
-            ldb,
-            c.len(),
-            ldc,
-            false,
-        );
-
-        let (a_rs, a_cs) = match transa {
-            Transpose::NoTrans => (lda as isize, 1isize),
-            Transpose::Trans => (1isize, lda as isize),
-        };
-        let (b_rs, b_cs) = match transb {
-            Transpose::NoTrans => (ldb as isize, 1isize),
-            Transpose::Trans => (1isize, ldb as isize),
-        };
-
-        let a_mat = unsafe { MatRef::<'_, f32>::from_raw_parts(a.as_ptr(), m, k, a_rs, a_cs) };
-        let b_mat = unsafe { MatRef::<'_, f32>::from_raw_parts(b.as_ptr(), k, n, b_rs, b_cs) };
-        let mut c_mat =
-            unsafe { MatMut::<'_, f32>::from_raw_parts_mut(c.as_mut_ptr(), m, n, ldc as isize, 1) };
-
-        let accum = if beta == 0.0 {
-            Accum::Replace
-        } else {
-            if beta != 1.0 {
-                for r in 0..m {
-                    for col in 0..n {
-                        c[r * ldc + col] *= beta;
-                    }
-                }
-            }
-            Accum::Add
-        };
-
-        let nt = self.threads.load(std::sync::atomic::Ordering::Relaxed);
-        let par = if nt <= 1 { Par::Seq } else { Par::rayon(nt) };
-        matmul(c_mat.as_mut(), accum, a_mat, b_mat, alpha, par);
+        // En un equipo de un solo hilo, la comprobación con n = 1 pasa de forma trivial.
+        FfiBlas.set_threads(1);
+        assert_eq!(unsafe { openblas_get_num_threads() }, 1, "set_threads(1) no fijó un hilo en OpenBLAS");
+        // Restaura el estado global del proceso.
+        FfiBlas.set_threads(initial_threads());
     }
 }

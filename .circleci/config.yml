@@ -1,7 +1,7 @@
 # CircleCI de qwen-tts-engine en Linux ARM64, macOS ARM64 y Windows x86_64.
 #
-# Linux ARM64 enlaza un OpenBLAS propio (scripts/build-openblas.sh, en caché): el de Ubuntu 22.04
-# solo trae el kernel genérico ARMV8.
+# Linux ARM64 y Windows enlazan el OpenBLAS propio 0.3.34 (scripts/build-openblas.sh, en caché):
+# el de Ubuntu 22.04 solo trae el kernel genérico ARMV8.
 #
 # Pruebas (en cada push, salvo en las ejecuciones manuales de medición): clippy -D warnings,
 # cargo test --workspace --release (con el modelo Base restaurado de la caché) y --self-test.
@@ -66,17 +66,17 @@ commands:
     steps:
       - restore_cache:
           keys:
-            - openblas-0.3.30-dynarch-arm64-v1
+            - openblas-0.3.34-dynarch-arm64-v1
       - run:
-          name: OpenBLAS 0.3.30 propio (compilar si no está en caché)
+          name: OpenBLAS 0.3.34 propio (compilar si no está en caché)
           no_output_timeout: 40m
           command: |
             if [ ! -s "$HOME/openblas/lib/libopenblas.a" ]; then
-              bash scripts/build-openblas.sh "$HOME/openblas" 0.3.30
+              bash scripts/build-openblas.sh "$HOME/openblas" 0.3.34
             fi
             echo "export OPENBLAS_LIB_DIR=$HOME/openblas/lib" >> "$BASH_ENV"
       - save_cache:
-          key: openblas-0.3.30-dynarch-arm64-v1
+          key: openblas-0.3.34-dynarch-arm64-v1
           paths:
             - ~/openblas
 
@@ -134,17 +134,32 @@ commands:
           path: kernels
 
   prepare_windows:
-    description: MSYS2 UCRT64 (gcc, OpenBLAS), Rust para x86_64-pc-windows-gnu, modelo y compilación
+    description: MSYS2 UCRT64 (gcc, make, binutils), OpenBLAS propio en caché, Rust para x86_64-pc-windows-gnu, modelo y compilación
     steps:
       - checkout
       - run:
-          name: Instalar MSYS2 UCRT64 (gcc, OpenBLAS, binutils)
+          name: Instalar MSYS2 UCRT64 (gcc, make, binutils)
           command: |
             $ErrorActionPreference = "Stop"
             choco install msys2 -y --no-progress --params "/NoUpdate /InstallDir:C:\msys64"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --needed --noconfirm --disable-download-timeout mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-binutils"
+            & C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --needed --noconfirm --disable-download-timeout mingw-w64-ucrt-x86_64-gcc make mingw-w64-ucrt-x86_64-binutils"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - restore_cache:
+          keys:
+            - openblas-0.3.34-dynarch-core2-windows-v1
+      - run:
+          name: OpenBLAS 0.3.34 propio (compilar si no está en caché)
+          no_output_timeout: 120m
+          command: |
+            $ErrorActionPreference = "Stop"
+            $env:MSYSTEM = 'UCRT64'; $env:CHERE_INVOKING = '1'
+            & C:\msys64\usr\bin\bash.exe -lc 'if [ ! -s /c/openblas/lib/libopenblas.a ]; then bash scripts/build-openblas.sh /c/openblas 0.3.34; fi; ls -l /c/openblas/lib/libopenblas.a'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - save_cache:
+          key: openblas-0.3.34-dynarch-core2-windows-v1
+          paths:
+            - C:\openblas
       - run:
           name: Instalar Rust (versión de rust-toolchain.toml, x86_64-pc-windows-gnu)
           command: |
@@ -161,6 +176,7 @@ commands:
           shell: bash.exe
           command: |
             export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
+            export OPENBLAS_LIB_DIR=C:/openblas/lib
             unset OPENBLAS_NUM_THREADS
             rustc --version
             cargo build --release -p qwen-app --target x86_64-pc-windows-gnu
@@ -200,6 +216,7 @@ jobs:
           command: |
             set -euo pipefail
             export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
+            export OPENBLAS_LIB_DIR=C:/openblas/lib
             unset OPENBLAS_NUM_THREADS
             cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
             cargo test --workspace --release --target x86_64-pc-windows-gnu

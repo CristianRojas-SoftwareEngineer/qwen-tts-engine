@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
-# Compila OpenBLAS estático para enlazarlo en el binario (Linux): solo BLAS (sin LAPACK ni
-# Fortran), hilos POSIX y DYNAMIC_ARCH, que elige al arrancar el kernel de la CPU (en aarch64,
-# Neoverse N1/V1/N2, Cortex-A57/A72/A76, Apple, etc.). Después:
+# Compila OpenBLAS estático para enlazarlo en el binario, en Linux y en Windows: solo BLAS (sin
+# LAPACK ni Fortran), el servidor de hilos propio de OpenBLAS (sin OpenMP) y DYNAMIC_ARCH, que
+# elige al arrancar el kernel de la CPU (en aarch64, Neoverse N1/V1/N2, Cortex-A57/A72/A76,
+# Apple, etc.).
+# La versión por defecto es la 0.3.34, la misma en todas las plataformas.
+#
+# Base del código común (BASE_TARGET): en x86_64 es CORE2, es decir, el código común sin AVX2
+# ni FMA, para que el binario arranque en cualquier CPU x86_64, como el resto del motor (que
+# detecta las capacidades de la CPU en tiempo de ejecución); con una base con AVX2 el código
+# común llevaría AVX2 y FMA y el binario se caería en CPUs que no los tienen. En aarch64 es ARMV8.
+#
+# Uso en Linux:
+#   scripts/build-openblas.sh <prefijo> [versión]
 #   OPENBLAS_LIB_DIR=<prefijo>/lib cargo build --release -p qwen-app
-# Uso: scripts/build-openblas.sh <prefijo> [versión]   (por defecto 0.3.30)
+# Uso en Windows (x86_64-pc-windows-gnu), en el bash de MSYS2 UCRT64, con make instalado
+# (pacman -S --needed make):
+#   scripts/build-openblas.sh /c/openblas
+#   OPENBLAS_LIB_DIR=C:/openblas/lib cargo build --release -p qwen-app --target x86_64-pc-windows-gnu
 set -euo pipefail
 
 PREFIX="${1:?uso: scripts/build-openblas.sh <prefijo> [versión]}"
-VERSION="${2:-0.3.30}"
+VERSION="${2:-0.3.34}"
 SRC="$(mktemp -d)"
 trap 'rm -rf "$SRC"' EXIT
 
@@ -18,7 +31,7 @@ cd "$SRC/OpenBLAS-${VERSION}"
 
 case "$(uname -m)" in
     aarch64 | arm64) BASE_TARGET=ARMV8 ;;
-    x86_64) BASE_TARGET=HASWELL ;;
+    x86_64) BASE_TARGET=CORE2 ;;
     *) echo "arquitectura no soportada: $(uname -m)" >&2; exit 1 ;;
 esac
 

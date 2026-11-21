@@ -4,10 +4,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::env;
-use std::path::PathBuf;
+use std::path::Path;
 
 fn main() {
-    let target = env::var("TARGET").unwrap_or_default();
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
     println!("cargo:rerun-if-env-changed=OPENBLAS_LIB_DIR");
@@ -17,40 +16,30 @@ fn main() {
         return;
     }
 
-    if target_os == "windows" {
-        let lib_dir = env::var("OPENBLAS_LIB_DIR")
-            .unwrap_or_else(|_| "C:/msys64/ucrt64/lib".to_string());
-        println!("cargo:rustc-link-search=native={lib_dir}");
-
-        if target.contains("gnu") {
-            // OpenBLAS estático + OpenMP + runtime de gfortran (MSYS2 UCRT64)
-            println!("cargo:rustc-link-lib=static=openblas");
-            println!("cargo:rustc-link-lib=static=gomp");
-            println!("cargo:rustc-link-lib=static=gfortran");
-            println!("cargo:rustc-link-lib=static=quadmath");
-            println!("cargo:rustc-link-lib=static=winpthread");
-            println!("cargo:rustc-link-lib=ws2_32");
-        } else {
-            println!("cargo:rustc-link-lib=openblas");
-        }
-        return;
+    // Linux y Windows enlazan siempre el OpenBLAS propio estático de `scripts/build-openblas.sh`
+    // (sin OpenMP ni Fortran), en el directorio que indica `OPENBLAS_LIB_DIR`. Esa es la única
+    // ruta de búsqueda: así ningún otro `libopenblas` instalado en el equipo entra en el enlace.
+    let windows = target_os == "windows";
+    let build_hint = if windows {
+        "compílalo con `scripts/build-openblas.sh /c/openblas` en el bash de MSYS2 UCRT64 y fija OPENBLAS_LIB_DIR=C:/openblas/lib"
+    } else {
+        "compílalo con `scripts/build-openblas.sh \"$HOME/openblas\"` y fija OPENBLAS_LIB_DIR=$HOME/openblas/lib"
+    };
+    let Ok(lib_dir) = env::var("OPENBLAS_LIB_DIR") else {
+        panic!("el motor enlaza un OpenBLAS propio y falta OPENBLAS_LIB_DIR: {build_hint}");
+    };
+    if !Path::new(&lib_dir).join("libopenblas.a").exists() {
+        panic!(
+            "el motor enlaza un OpenBLAS propio y falta libopenblas.a en `{lib_dir}`: {build_hint}"
+        );
     }
-
-    // Linux / Unix: con OPENBLAS_LIB_DIR y libopenblas.a, enlace estático; si no, la libopenblas
-    // dinámica del sistema. Las bibliotecas de Fortran solo hacen falta si ese OpenBLAS se compiló
-    // con LAPACK en Fortran: se enlazan si están en el mismo directorio.
-    if let Ok(lib_dir) = env::var("OPENBLAS_LIB_DIR") {
-        println!("cargo:rustc-link-search=native={lib_dir}");
-        let dir = PathBuf::from(&lib_dir);
-        if dir.join("libopenblas.a").exists() {
-            println!("cargo:rustc-link-lib=static=openblas");
-            for lib in ["gfortran", "quadmath"] {
-                if dir.join(format!("lib{lib}.a")).exists() {
-                    println!("cargo:rustc-link-lib=static={lib}");
-                }
-            }
-            return;
-        }
+    println!("cargo:rustc-link-search=native={lib_dir}");
+    println!("cargo:rustc-link-lib=static=openblas");
+    if windows {
+        // OpenBLAS usa símbolos `pthread_*` en MinGW. `libwinpthread.a` es del toolchain de MSYS2
+        // UCRT64 y la resuelve gcc al enlazar, por eso va con `-bundle` y sin ruta de búsqueda
+        // propia. Debe ir después de `openblas`, que usa sus símbolos.
+        println!("cargo:rustc-link-lib=static:-bundle=winpthread");
+        println!("cargo:rustc-link-lib=ws2_32");
     }
-    println!("cargo:rustc-link-lib=openblas");
 }

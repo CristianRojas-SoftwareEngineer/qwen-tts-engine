@@ -21,7 +21,7 @@
 
 | Crate | Módulos principales | Política `unsafe` |
 |---|---|---|
-| **`qwen-kernels`** | `aligned`, `caps`, `pool`, `ftz`, `blas`, `quant`, `simd/{scalar,avx2,neon}` *(internos del crate)*, `dispatch`, `selftest`, `bench`. | **Permitido y aislado** (intrínsecos `AVX2+FMA` y NEON, `asm!` para `SDOT`, `std::alloc`, `MXCSR`/`FPCR`, FFI BLAS / `faer`); la API segura `KernelDispatch` valida límites antes de despachar. |
+| **`qwen-kernels`** | `aligned`, `caps`, `pool`, `ftz`, `blas`, `quant`, `simd/{scalar,avx2,neon}` *(internos del crate)*, `dispatch`, `selftest`, `bench`. | **Permitido y aislado** (intrínsecos `AVX2+FMA` y NEON, `asm!` para `SDOT`, `std::alloc`, `MXCSR`/`FPCR`, FFI BLAS); la API segura `KernelDispatch` valida límites antes de despachar. |
 | **`qwen-core`** | `config`, `error`, `mmap_store`, `tokenizer`, `sampling`, `qvoice`, `markup`. | **Solo `Mmap::map` y cast de slices alineadas** en `mmap_store.rs`; resto 100 % seguro. |
 | **`qwen-engine`** | `model`, `talker`, `code_predictor`, `speech_decoder`, `speech_encoder`, `voice`, `voice_clone`, `request`, `prompt`, `synth`, `compose`, `audio`, `pipeline`, `error`. | **`#![forbid(unsafe_code)]`** |
 | **`qwen-app`** | `main`, `cli`, `request`, `affinity`, `build.rs` + manifiesto UTF-8, `modes/{mod,single,serve,voice_cmd,diag}`, `server/{mod,http,validation}`. | **Solo llamada puntual** a Win32 (`SetProcessAffinityMask` / `GetLogicalProcessorInformationEx`). |
@@ -75,10 +75,10 @@ AbortHandle  [Efímero por síntesis]      // Arc<AtomicBool> + poll opcional ac
    - `dispatch: &'static KernelDispatch` — tabla de punteros resuelta según `CpuCaps` *(ver [ADR-004](adr/004-simd-baseline.md))*. `qwen-engine` nunca contiene `#[cfg(target_arch)]`.
    - `pool: Arc<ComputePool>` — pool persistente para `Talker` y `CodePredictor` *(ver [ADR-003](adr/003-concurrency-pool.md))*.
    - `sd_pool: Arc<ComputePool>` — pool dedicado para `SpeechDecoder` (configurable con `QWEN_SD_THREADS`).
-   - `blas: Arc<dyn BlasBackend>` — abstracción de `sgemm` y `set_threads` *(ver [ADR-002](adr/002-blas-strategy.md))*.
+   - `blas: FfiBlas` — `sgemm` y `set_threads` *(ver [ADR-002](adr/002-blas-strategy.md))*.
 2. **`ComputePool`**: sincronización con contador atómico de chunks (`AtomicUsize`), presupuesto de *spin-wait* (`QWEN_POOL_SPIN=4096`, o `0` si los hilos del productor ocupan todos los núcleos físicos: `spin_budget_for`) usando `std::hint::spin_loop()`, `Condvar` de respaldo y llamada única a `ftz_on()` al iniciar cada hilo trabajador.
    Si una tarea entra en pánico en un hilo trabajador, `parallel` lo relanza en quien llama y el trabajador sigue vivo.
-3. **`BlasBackend`**: `FfiBlas` (`OpenBLAS` en Linux/Windows, `Accelerate` en macOS; en Linux, estático y con `DYNAMIC_ARCH` si se compila con `scripts/build-openblas.sh`) por defecto; `PureRustBlas` (`faer`) disponible con `--features faer-blas` y seleccionable con `QWEN_BLAS=faer`.
+3. **`FfiBlas`**: `OpenBLAS` en Linux y Windows, `Accelerate` en macOS. En Linux y Windows enlaza siempre el OpenBLAS propio (`scripts/build-openblas.sh`), estático y con `DYNAMIC_ARCH`, con `OPENBLAS_LIB_DIR` obligatoria.
 
 ---
 
@@ -91,7 +91,7 @@ AbortHandle  [Efímero por síntesis]      // Arc<AtomicBool> + poll opcional ac
    - **`AudioSink`** es el único destino de audio; `EdgeRampSink<W: PcmWrite>` hace solo rampas de borde y retención, y los escritores (`WavFileWriter`, `StdoutWriter`, `Vec<u8>` y el HTTP *chunked* de `qwen-app`) solo escriben bytes. La ganancia la aplica `synthesize` justo antes del destino.
    - **Una regla de idioma** (`effective_language`): pedido, voz o español. La preparación de la petición está en `qwen-app/src/request.rs` (`from_cli` y `from_http`), el único sitio que aplica `plan_script`, `resolve_sampling` y `effective_language`.
 2. **Ejecución por tramo**:
-   - **Prefill**: siempre completo (`kv_len = 0`) vía `BlasBackend` usando `nt` hilos.
+   - **Prefill**: siempre completo (`kv_len = 0`) vía `FfiBlas` usando `nt` hilos.
    - **Paso de generación**: fija `blas.set_threads(gen_blas)` antes de iniciar el hilo decoder y lo mantiene constante hasta terminar el drenaje final.
    - **Paralelismo productor-consumidor (`std::thread::scope`)**:
      - **Hilo productor (`Talker + CodePredictor`)**: genera `[i32; 16]` por frame, comprueba `abort.is_cancelled()` antes de cada paso y empuja los códigos a `DecoderQueue`.

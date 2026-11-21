@@ -43,7 +43,7 @@ El protocolo de medición está en [`VERIFICATION_PLAN.md`](../VERIFICATION_PLAN
 | RAM | Caché KV del Talker con 256 posiciones iniciales que crece bajo demanda (`KV_INITIAL_POSITIONS`) | −84 MiB por sesión |
 | RAM | *Staging* F32 de pesos del prefill local y transitorio de `talker_prefill` | Pico de memoria comprometida (*commit*): CLI −60 MiB, `--workers 4` −241 MiB |
 | RAM | KV de `BatchWorkspace` bajo demanda (`kv_cap` hasta `kv_max`) y copia compacta del KV en `generate_batch_multi` | `--batch-size 4` −377 MiB; `--batch-multi-test` −170 a −206 MiB |
-| Hilos | El binario fija `OMP_NUM_THREADS = -j` antes de que se inicialice OpenBLAS (inicializador en `.CRT$XCT` en Windows); `set_threads` no pide más hilos que los iniciales | Servidor arrancado sin la variable: −1 539 MiB de memoria comprometida (*commit*), RTF 0,74–0,77 → 0,66–0,69. Pedir más hilos que los iniciales colgaba la primera `sgemm` |
+| Hilos | El binario fija `OPENBLAS_NUM_THREADS = -j` antes de que se inicialice OpenBLAS (inicializador en `.CRT$XCT` en Windows, con el OpenBLAS propio 0.3.34, [ADR-002](002-blas-strategy.md)); `set_threads` no pide más hilos que los iniciales | Servidor arrancado sin la variable: −1 539 MiB de memoria comprometida (*commit*), RTF 0,74–0,77 → 0,66–0,69. Pedir más hilos que los iniciales colgaba la primera `sgemm` |
 | Primer audio | Prefill con conversión `BF16→F32` por bloques de 4 MiB y una `sgemm` por bloque | TTFA 618 → 493 ms (corta) y 702 → 590 ms (larga) sin carga. Cambia el audio (contrato en [`NUMERIC_CONTRACT.md`](../NUMERIC_CONTRACT.md) §3) |
 | Decoder | im2col en la `conv1` k=7 de los bloques residuales 2–3 (una `sgemm` con `K = 7 · canales`) | Decoder −3 / −7 %, drenaje hasta −38 %, SNR ≥ 104 dB |
 | Decoder | Atención del *streaming* por el mismo kernel que la decodificación completa | Rendimiento neutro; un único camino aritmético |
@@ -53,7 +53,7 @@ El protocolo de medición está en [`VERIFICATION_PLAN.md`](../VERIFICATION_PLAN
 | Audio | Mismo calendario de chunks y mismas rampas de borde en los cuatro modos | PCM idéntico en CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream`; RTF +0,00 a +0,01 sin *streaming* |
 | ARM64 | Todos los kernels en NEON, en dos variantes (`neon-dotprod` con `SDOT` y `neon`), con el orden de suma de AVX2 ([ADR-004](004-simd-baseline.md)) | macOS 1,36–1,56 → 0,25–0,26; Linux N1 5,3 → 1,61–1,69 |
 | Hilos | Sin spin-wait en los pools cuando los hilos del productor ocupan todos los núcleos físicos (`spin_budget_for`, [ADR-003](003-concurrency-pool.md)) | 4 núcleos: Linux ARM64 1,61–1,69 → 1,54–1,62, Windows 1,53–2,16 → 1,40–1,83. Con 6 núcleos empeora (0,25 → 0,43), por eso la regla |
-| BLAS | OpenBLAS 0.3.30 propio, estático y con `DYNAMIC_ARCH` en Linux (`scripts/build-openblas.sh`, [ADR-002](002-blas-strategy.md)) | Neoverse V1 con Ubuntu 22.04 (kernel genérico `armv8`): RTF 1,20–1,33 → 1,12–1,21 y decoder 13,5 → 9,5 s; neutro donde la distribución ya trae `DYNAMIC_ARCH` |
+| BLAS | OpenBLAS 0.3.34 propio, estático y con `DYNAMIC_ARCH` en Linux y Windows (`scripts/build-openblas.sh`, [ADR-002](002-blas-strategy.md)) | Neoverse V1 con Ubuntu 22.04 (kernel genérico `armv8`): RTF 1,20–1,33 → 1,12–1,21 y decoder 13,5 → 9,5 s; neutro donde la distribución ya trae `DYNAMIC_ARCH` |
 
 ### Descartadas
 

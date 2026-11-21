@@ -37,7 +37,7 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
 /// Fija los hilos iniciales de OpenBLAS con el `-j` efectivo antes de que se inicialice.
 ///
 /// Corre en `.CRT$XCT`: dentro de `_initterm`, con la CRT ya iniciada y antes de los
-/// constructores (`.ctors`) de OpenBLAS y libgomp. Ver [`qwen_kernels::set_initial_openblas_threads`].
+/// constructores (`.ctors`) de OpenBLAS. Ver [`qwen_kernels::set_initial_openblas_threads`].
 /// Si los argumentos no se pueden leer o no son válidos, no hace nada: `main` informa del error.
 #[cfg(all(windows, target_env = "gnu"))]
 mod openblas_preinit {

@@ -1,9 +1,9 @@
-# ADR-002: Estrategia BLAS (`FfiBlas` por defecto y `faer-blas` opcional)
+# ADR-002: Estrategia BLAS (OpenBLAS propio y Accelerate)
 
 > Registro de decisión arquitectónica sobre el backend de álgebra lineal densa (`sgemm`) para *prefill* y convoluciones del decoder/encoder de audio.
 
 - **Estado**: Aceptado
-- **Fecha**: 2026-11-16 (revisado el 2026-11-19: hilos de OpenMP y OpenBLAS propio en Linux)
+- **Fecha**: 2026-11-16 (revisado el 2026-11-21: OpenBLAS propio 0.3.34 en Linux y Windows)
 
 ---
 
@@ -15,12 +15,15 @@ Las convoluciones de `SpeechDecoder`, `SpeechEncoder` y el *prefill* del `Talker
 
 ## Decisión
 
-1. Abstraer BLAS detrás del trait `BlasBackend` en `qwen-kernels` (`sgemm` y `set_threads`).
-2. Usar **`FfiBlas`** como backend por defecto: **OpenBLAS** en Linux/Windows y **Accelerate** en macOS, invocando `openblas_set_num_threads` en las fronteras entre *prefill* y generación (siempre que `OPENBLAS_NUM_THREADS` no esté fijada).
-   - En Windows, el binario fija `OMP_NUM_THREADS = -j` antes de que se inicialice OpenBLAS (inicializador en `.CRT$XCT`): con el OpenBLAS de MSYS2, que usa OpenMP, OpenBLAS reserva 128 MiB de memoria comprometida (*commit*) por hilo inicial (sin la variable, uno por CPU lógica: +1 539 MiB en el servidor y RTF un 12 % peor).
-   - `set_threads` no pide más hilos que los iniciales (pedir más colgaba la primera `sgemm`) y los aplica en cada hilo que llama a `sgemm`, porque con OpenMP el valor es por hilo.
-3. En Windows (`x86_64-pc-windows-gnu`), enlazar estáticamente con `libopenblas.a` de MSYS2 UCRT64. En Linux, enlazar estático si `OPENBLAS_LIB_DIR` contiene `libopenblas.a`, y recomendar un OpenBLAS propio (`scripts/build-openblas.sh`: 0.3.30, solo BLAS, hilos POSIX, `DYNAMIC_ARCH`), que elige el kernel de cada CPU al arrancar. El de la distribución puede traer solo el kernel genérico: en un Neoverse V1 con Ubuntu 22.04 (`armv8`), el propio baja el decoder de 13,5 a 9,5 s y el RTF de 1,20–1,33 a 1,12–1,21. `--caps` muestra el kernel elegido (`openblas_get_corename`).
-4. Mantener `PureRustBlas` (`faer`) como backend opcional bajo `--features faer-blas` (`QWEN_BLAS=faer`): en `0.6B --quant-mixed -j 4`, OpenBLAS alcanza `RTF 0.70–0.71` frente a `0.72–0.75` de `faer` en texto largo al evitar la contención entre `Par::rayon` y `ComputePool`; en Linux ARM64 (Neoverse N1, 4 vCPU), `faer` da 1,67–1,81 frente a 1,54–1,62.
+1. El runtime usa `FfiBlas` directamente, sin abstraer BLAS detrás de un trait (`sgemm` y `set_threads` son métodos de `FfiBlas`).
+2. **`FfiBlas`** usa **OpenBLAS** en Linux/Windows y **Accelerate** en macOS, e invoca `openblas_set_num_threads` en las fronteras entre *prefill* y generación (siempre que el usuario no haya fijado `OPENBLAS_NUM_THREADS`, `GOTO_NUM_THREADS` ni `OMP_NUM_THREADS`).
+   - En Windows, el binario fija `OPENBLAS_NUM_THREADS = -j` antes de que se inicialice OpenBLAS (inicializador en `.CRT$XCT`): el OpenBLAS propio también reserva 128 MiB de memoria comprometida (*commit*) por hilo inicial (sin la variable, uno por CPU lógica: +1 539 MiB en el servidor y RTF un 12 % peor). Hasta el 2026-11-21 se usaba el OpenBLAS de MSYS2, con OpenMP, y el binario fijaba `OMP_NUM_THREADS`.
+   - Las tres variables de hilos del usuario mandan, con un único criterio, `user_fixed_threads`, que se lee antes de que el binario toque el entorno: si el usuario fijó alguna, ni el inicializador ni `set_threads` cambian los hilos.
+   - `set_threads` llama una vez a `openblas_set_num_threads`, que es global al proceso, sin pedir más hilos que los iniciales (pedir más colgaba la primera `sgemm`). Hasta el 2026-11-21 se reaplicaba en cada hilo que llamaba a `sgemm`, porque con el OpenMP de MSYS2 el valor era por hilo.
+3. Linux y Windows (`x86_64-pc-windows-gnu`) enlazan **solo** el OpenBLAS propio estático (`scripts/build-openblas.sh`: 0.3.34, solo BLAS, el servidor de hilos propio de OpenBLAS (pthreads en Linux, hilos Win32 en Windows), `DYNAMIC_ARCH`, sin OpenMP ni Fortran; base `CORE2` en x86_64 y `ARMV8` en ARM64; en Windows, más `winpthread` del toolchain de MSYS2), con `OPENBLAS_LIB_DIR` obligatoria y sin enlace alternativo con el OpenBLAS de la distribución o de MSYS2. `DYNAMIC_ARCH` elige el kernel de cada CPU al arrancar. Hasta el 2026-11-21 Windows enlazaba el `libopenblas.a` de MSYS2 UCRT64 (con OpenMP y el runtime de Fortran). El de la distribución puede traer solo el kernel genérico, lo que justifica el propio: en un Neoverse V1 con Ubuntu 22.04 (`armv8`), el propio baja el decoder de 13,5 a 9,5 s y el RTF de 1,20–1,33 a 1,12–1,21. `--caps` muestra el kernel elegido (`openblas_get_corename`).
+   - Spike en Windows (en la CI, con un solo núcleo en `DYNAMIC_LIST`, para que A y B usaran el mismo kernel): audio idéntico, −129 MiB de memoria comprometida y −31 % de ejecutable; en 4 núcleos, RTF de la frase corta de 1,34 a 1,30 y de la larga de 1,21 a 1,20, y decoder un 7 % más rápido sin carga y un 3 % más lento con carga.
+   - Spike en ARM con la 0.3.34 frente a la 0.3.30: audio idéntico, mismo núcleo (`neoversen1`) y RTF sin diferencia consistente.
+4. Hasta el 2026-11-21 existió `PureRustBlas` (`faer`) como opción (`--features faer-blas`, `QWEN_BLAS=faer`). Se retiró porque era más lento (en `0.6B --quant-mixed -j 4`, `RTF 0.72–0.75` frente a `0.70–0.71` de OpenBLAS en texto largo, por la contención entre `Par::rayon` y `ComputePool`; en Linux ARM64, Neoverse N1 de 4 vCPU, 1,67–1,81 frente a 1,54–1,62), no se probaba en la CI y no tenía usuarios.
 
 ---
 
@@ -30,8 +33,7 @@ Las convoluciones de `SpeechDecoder`, `SpeechEncoder` y el *prefill* del `Talker
 
 - Máximo rendimiento en generación larga sin contención de `rayon`.
 - Determinismo validado en `SpeechDecoder` y *prefill*.
-- Opción de compilación 100 % Rust mediante `--features faer-blas`.
 
 ### Riesgos y mitigación
 
-- El perfil por defecto requiere `OpenBLAS` en Linux/Windows (en macOS usa `Accelerate`); se mitiga con el script de build `qwen-kernels/build.rs` y la alternativa opcional `faer-blas`.
+- Linux y Windows requieren compilar el OpenBLAS propio una vez (en macOS se usa `Accelerate`); se mitiga con `scripts/build-openblas.sh`, la caché de la CI y un mensaje de `qwen-kernels/build.rs` que explica cómo compilarlo si falta.

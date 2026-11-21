@@ -17,6 +17,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```powershell
 # Windows (x86_64-pc-windows-gnu)
 $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+$env:OPENBLAS_LIB_DIR = "C:/openblas/lib"
 Remove-Item Env:OPENBLAS_NUM_THREADS -ErrorAction SilentlyContinue
 
 cargo test --workspace --release --target x86_64-pc-windows-gnu
@@ -25,7 +26,7 @@ cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warn
 
 | Suite | Qué valida |
 |---|---|
-| `qwen-kernels/tests/kernels_tests.rs` | `AlignedBuf<64>`, batería `--self-test` (`0` fallos en `int8`/`q4_0`/`bf16`), selección de ruta con `QWEN_KERNELS` (`auto`/`scalar`), tablas disponibles por CPU (`KernelDispatch::available`), hashes de las rutas SIMD iguales a los de AVX2 (Q4_0 y kernels de coma flotante sin `libm`: mismo orden de suma en NEON), regla de spin-wait por núcleos (`spin_budget_for`), paridad escalar vs dispatch detectado (`quantize_act_int8`, `rms_norm`, `matvec_int8`, `matmat_int8`, `matmat_q4_0`) y validación de límites seguros en `KernelDispatch`, reparto de filas entre hilos bit a bit (1 frente a 4 hilos, `matvec`/`matmat` BF16, INT8 y Q4_0), estrés concurrente y *seguridad ante pánicos* de `ComputePool`, `BlasBackend::sgemm`, `quantize_bf16_to_q2_0` y conversión `f16`. |
+| `qwen-kernels/tests/kernels_tests.rs` | `AlignedBuf<64>`, batería `--self-test` (`0` fallos en `int8`/`q4_0`/`bf16`), selección de ruta con `QWEN_KERNELS` (`auto`/`scalar`), tablas disponibles por CPU (`KernelDispatch::available`), hashes de las rutas SIMD iguales a los de AVX2 (Q4_0 y kernels de coma flotante sin `libm`: mismo orden de suma en NEON), regla de spin-wait por núcleos (`spin_budget_for`), paridad escalar vs dispatch detectado (`quantize_act_int8`, `rms_norm`, `matvec_int8`, `matmat_int8`, `matmat_q4_0`) y validación de límites seguros en `KernelDispatch`, reparto de filas entre hilos bit a bit (1 frente a 4 hilos, `matvec`/`matmat` BF16, INT8 y Q4_0), estrés concurrente y *seguridad ante pánicos* de `ComputePool`, `FfiBlas::sgemm`, `quantize_bf16_to_q2_0` y conversión `f16`. |
 | `qwen-core/tests/core_tests.rs` | Precedencia de idioma (`effective_language`: pedido, voz, español), solo el modelo Base carga (config sintética y checkpoint real) y todo otro checkpoint se rechaza, rechazo de `1.7B` y `VoiceDesign`, idiomas sin dialectos (`language_name`), `MmapStore`, tokenización BPE, `.qvoice` v4 (ida y vuelta con y sin ICL, tamaño exacto, rechazo de v3, magic incorrecto, truncado, bytes sobrantes, tamaños excesivos, ICL incoherente), `MarkupPlanner` (pausas, `[laugh]`, separador `\|`; un tag desconocido como `[sad]` queda como texto), saneamiento de pausas negativas, manejo seguro de `NaN` y determinismo `Sampler`/`LcgRng`. |
 | `qwen-engine/tests/engine_tests.rs` | Equivalencia de `SpeechDecoder` en *streaming* (`2`, luego `min(10, 4 + 2 * (k / 8))` con tiles de 256 KB) frente a decodificación completa (`SNR >= 100 dB`), rechazo de códigos truncados, determinismo E2E bit-idéntico y cancelación cooperativa vía `AbortHandle`. |
 | `qwen-core` (unitarios en `markup.rs`) | `plan_script` en sus tres modos (`Auto`, `Literal` y `Compose`, este último con la sustitución paralingüística) y `resolve_sampling` (primero lo explícito del usuario, después el tag paralingüístico, por último el valor por defecto). |
@@ -57,9 +58,9 @@ La CI del repositorio es CircleCI, con tres workflows sobre las mismas máquinas
 
 | Sistema | Máquina | Target | BLAS |
 |---|---|---|---|
-| Linux ARM64 | Docker `cimg/base`, `arm.large` (Neoverse N1, 4 vCPU) | `aarch64-unknown-linux-gnu` | OpenBLAS 0.3.30 propio (`scripts/build-openblas.sh`, en caché) |
+| Linux ARM64 | Docker `cimg/base`, `arm.large` (Neoverse N1, 4 vCPU) | `aarch64-unknown-linux-gnu` | OpenBLAS 0.3.34 propio (`scripts/build-openblas.sh`, en caché) |
 | macOS ARM64 | macOS Xcode 26.4, `m4pro.medium` (Apple M4 Pro) | `aarch64-apple-darwin` | `Accelerate` |
-| Windows x86_64 | Windows Server 2022 (orb `circleci/windows`), `large` (4 núcleos físicos) | `x86_64-pc-windows-gnu` | MSYS2 UCRT64 (`libopenblas.a` estático) |
+| Windows x86_64 | Windows Server 2022 (orb `circleci/windows`), `large` (4 núcleos físicos) | `x86_64-pc-windows-gnu` | OpenBLAS 0.3.34 propio (`scripts/build-openblas.sh`, en caché) |
 
 **Workflows**:
 - **`test`**: en cada push.
