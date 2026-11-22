@@ -51,7 +51,7 @@ pub fn run_with_model(cfg: CliArgs, physical_cores: usize) -> Result<i32, String
         .ok_or_else(|| "Error: falta --model-dir".to_string())?;
 
     if cfg.mode == CliMode::NoJob {
-        return Err("Error: falta --text, --compose o --serve".to_string());
+        return Err("Error: falta --text o --serve".to_string());
     }
 
     let cli_language_id = if let Some(ref lang_name) = cfg.language {
@@ -86,10 +86,6 @@ pub fn run_with_model(cfg: CliArgs, physical_cores: usize) -> Result<i32, String
     let runtime = Arc::new(ComputeRuntime::for_cores(cfg.threads, physical_cores));
     let model = Model06B::load(Path::new(&model_dir_str), &runtime, cfg.silent)
         .map_err(|e| e.to_string())?;
-
-    if cfg.mode == CliMode::CreateVoice && cfg.ref_audio.is_none() {
-        return Err("Error: falta --ref-audio para crear un perfil de voz".to_string());
-    }
 
     let voice = voice_cmd::resolve_voice(&cfg, &runtime, &model, cli_language_id)?;
 

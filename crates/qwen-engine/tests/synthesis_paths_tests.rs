@@ -67,12 +67,11 @@ fn load_model(runtime: &ComputeRuntime) -> Option<Model06B> {
 }
 
 /// Un perfil `.qvoice` en memoria, con `n_frames` frames ICL deterministas.
-fn sample_qvoice(name: &str, lang_id: u32, ref_text: &str, n_frames: usize) -> QVoiceFile {
+fn sample_qvoice(lang_id: u32, ref_text: &str, n_frames: usize) -> QVoiceFile {
     QVoiceFile {
         speaker_embedding: (0..ENC_DIM)
             .map(|i| ((i % 37) as f32 - 18.0) * 0.01)
             .collect(),
-        voice_name: name.to_string(),
         lang_id,
         ref_text: ref_text.to_string(),
         ref_codes: (0..n_frames * NUM_CODEBOOKS)
@@ -81,17 +80,15 @@ fn sample_qvoice(name: &str, lang_id: u32, ref_text: &str, n_frames: usize) -> Q
     }
 }
 
-/// Bytes esperados de un `.qvoice` v4, escritos a mano campo a campo.
+/// Bytes esperados de un `.qvoice` v5, escritos a mano campo a campo.
 fn expected_qvoice_bytes(qv: &QVoiceFile) -> Vec<u8> {
     let mut b = Vec::new();
     b.extend_from_slice(b"QVCE");
-    b.extend_from_slice(&4u32.to_le_bytes());
+    b.extend_from_slice(&5u32.to_le_bytes());
     b.extend_from_slice(&(ENC_DIM as u32).to_le_bytes());
     for v in &qv.speaker_embedding {
         b.extend_from_slice(&v.to_le_bytes());
     }
-    b.extend_from_slice(&(qv.voice_name.len() as u32).to_le_bytes());
-    b.extend_from_slice(qv.voice_name.as_bytes());
     b.extend_from_slice(&qv.lang_id.to_le_bytes());
     b.extend_from_slice(&(qv.ref_text.len() as u32).to_le_bytes());
     b.extend_from_slice(qv.ref_text.as_bytes());
@@ -107,52 +104,42 @@ fn test_voice_load_on_construction() {
     let dir = temp_dir("voice_load");
     let ref_text = "Texto de referencia.";
 
-    // Con ICL, nombre propio e idioma
-    let icl_qv = sample_qvoice("mi_voz", 2050, ref_text, 10);
+    // Con ICL e idioma
+    let icl_qv = sample_qvoice(2050, ref_text, 10);
     let icl_path = dir.join("icl.qvoice");
     icl_qv.write_to_file(&icl_path).unwrap();
-    // Solo x-vector, sin nombre ni idioma
-    let xv_qv = sample_qvoice("", 0, "", 0);
+    // Solo x-vector, sin idioma
+    let xv_qv = sample_qvoice(0, "", 0);
     let xv_path = dir.join("solo_x.qvoice");
     xv_qv.write_to_file(&xv_path).unwrap();
 
     let opts = VoiceLoadOptions {
         use_icl: true,
         log: LogLevel::Silent,
-        ..Default::default()
     };
     let full = Voice::load(&icl_path, &opts).unwrap();
-    assert_eq!(full.name, "mi_voz");
+    assert_eq!(full.name, "icl", "la voz se llama como su archivo");
     assert_eq!(full.language_id, Some(2050));
     assert_eq!(full.xvector, icl_qv.speaker_embedding);
 
     let xv = Voice::load(&xv_path, &opts).unwrap();
-    assert_eq!(xv.name, "solo_x", "sin nombre guardado, el del archivo");
+    assert_eq!(xv.name, "solo_x", "la voz se llama como su archivo");
     assert_eq!(xv.language_id, None);
     assert!(xv.icl.is_none());
 
     // Sin `.qvoice` en la ruta: error
     assert!(Voice::load(&dir.join("voz.bin"), &opts).is_err());
 
-    // `use_icl = false` descarta el ICL; `ref_text_override` sustituye el texto
+    // `use_icl = false` descarta el ICL
     let no_icl = Voice::load(
         &icl_path,
         &VoiceLoadOptions {
             use_icl: false,
-            ..opts.clone()
+            log: LogLevel::Silent,
         },
     )
     .unwrap();
     assert!(no_icl.icl.is_none());
-    let over = Voice::load(
-        &icl_path,
-        &VoiceLoadOptions {
-            ref_text_override: Some("Otra transcripción.".to_string()),
-            ..opts.clone()
-        },
-    )
-    .unwrap();
-    assert_eq!(over.icl.unwrap().ref_text, "Otra transcripción.");
 
     let full_icl = full.icl.as_ref().unwrap();
     assert_eq!(full_icl.ref_text, ref_text);
@@ -210,27 +197,30 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
     write_wav(&ref_wav, &ref_samples, SAMPLE_RATE as u32).unwrap();
 
     // Bytes del `QVoiceFile` de `clone_voice`: archivo completo
-    let (qv, built) = clone_voice(
+    let qv = clone_voice(
         &runtime,
         &model,
         &ref_wav,
         &CloneOptions {
             ref_text: Some(ref_text.to_string()),
-            name: None,
             language_id: None,
             log: LogLevel::Silent,
         },
     )
     .unwrap();
     assert_eq!(qv.speaker_embedding.len(), ENC_DIM);
-    assert_eq!(
-        qv.voice_name, "",
-        "sin nombre dado, el archivo guarda el vacío"
-    );
     assert_eq!(qv.lang_id, 0, "sin idioma dado, el archivo guarda 0");
     assert_eq!(qv.ref_text, ref_text);
     assert!(qv.n_ref_frames() > 0, "el archivo trae los fotogramas ICL");
-    assert_eq!(built.name, "ref", "la voz construida usa el nombre del WAV");
+    let built = Voice::from_qvoice(
+        qv.clone(),
+        "ref".to_string(),
+        &VoiceLoadOptions {
+            use_icl: true,
+            log: LogLevel::Silent,
+        },
+    );
+    assert_eq!(built.name, "ref");
     assert_eq!(built.language_id, None);
     assert_eq!(built.xvector, qv.speaker_embedding);
     let built_icl = built.icl.as_ref().unwrap();
@@ -239,28 +229,19 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
     let qv_path = dir.join("clone.qvoice");
     qv.write_to_file(&qv_path).unwrap();
     assert_eq!(fs::read(&qv_path).unwrap(), expected_qvoice_bytes(&qv));
-    let (named, named_voice) = clone_voice(
+    let named = clone_voice(
         &runtime,
         &model,
         &ref_wav,
         &CloneOptions {
             ref_text: None,
-            name: Some("nombrada".to_string()),
             language_id: Some(2050),
             log: LogLevel::Silent,
         },
     )
     .unwrap();
-    assert_eq!(
-        (named.voice_name.as_str(), named.lang_id),
-        ("nombrada", 2050)
-    );
+    assert_eq!(named.lang_id, 2050);
     assert!(named.ref_codes.is_empty() && named.ref_text.is_empty());
-    assert_eq!(
-        (named_voice.name.as_str(), named_voice.language_id),
-        ("nombrada", Some(2050))
-    );
-    assert!(named_voice.icl.is_none());
     assert_eq!(named.speaker_embedding, qv.speaker_embedding);
     let named_path = dir.join("named.qvoice");
     named.write_to_file(&named_path).unwrap();
@@ -275,7 +256,6 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         &VoiceLoadOptions {
             use_icl: true,
             log: LogLevel::Silent,
-            ..Default::default()
         },
     )
     .unwrap();

@@ -25,8 +25,6 @@ pub enum MarkupMode {
     Auto,
     /// `--no-compose`: el texto pasa tal cual y los tags se leen como texto.
     Literal,
-    /// `--compose`: el texto es una especificación de tramos.
-    Compose,
 }
 
 /// Guion a sintetizar: un texto plano o una lista de tramos.
@@ -54,17 +52,6 @@ pub fn plan_script(text: &str, mode: MarkupMode) -> PlannedScript {
             paralinguistic: None,
             text: text.to_string(),
         },
-        // `--compose`: igual que el texto normal (sustitución paralingüística), pero siempre
-        // como lista de tramos.
-        MarkupMode::Compose => {
-            let sub = MarkupPlanner::paralinguistic_substitute(text);
-            let paralinguistic = sub.did_substitute.then_some((sub.seed, sub.temperature));
-            PlannedScript {
-                script: Script::Spans(MarkupPlanner::parse_spans(&sub.text)),
-                paralinguistic,
-                text: sub.text,
-            }
-        }
         MarkupMode::Auto => {
             let sub = MarkupPlanner::paralinguistic_substitute(text);
             let paralinguistic = sub.did_substitute.then_some((sub.seed, sub.temperature));
@@ -273,7 +260,7 @@ impl MarkupPlanner {
         }
     }
 
-    /// Parsea marcado en línea / `--compose` en `Vec<SpanSpec>`.
+    /// Parsea el marcado en línea en `Vec<SpanSpec>`.
     /// Los tags desconocidos (por ejemplo `[xyz]`) quedan como texto.
     pub fn parse_spans(input: &str) -> Vec<SpanSpec> {
         let mut spans = Vec::new();
@@ -379,25 +366,8 @@ mod tests {
         let pause = plan_script("Hola. [pause:0.4] Adiós.", MarkupMode::Auto);
         assert!(matches!(pause.script, Script::Spans(_)));
 
-        // `Compose` aplica la paralingüística como el texto normal: `[laugh]` es onomatopeya.
-        let comp = plan_script("Hola. [laugh] Adiós.", MarkupMode::Compose);
-        assert_eq!(comp.paralinguistic, Some((2024, 1.1)));
-        assert_eq!(
-            comp.text,
-            plan_script("Hola. [laugh] Adiós.", MarkupMode::Auto).text
-        );
-        let Script::Spans(spans) = comp.script else {
-            panic!("se esperaba Spans");
-        };
-        assert_eq!(spans.len(), 1);
-        let SpanSpec::Utterance { text, is_filler, .. } = &spans[0] else {
-            panic!("se esperaba Utterance");
-        };
-        assert!(!is_filler);
-        assert!(text.contains('\u{54c8}'), "se obtuvo: {text}");
-
         // `[hmm]` sigue siendo muletilla; `[yawn]` se sustituye; `[pause]` es una pausa.
-        let mix = plan_script("Uno [hmm] dos [yawn] tres [pause:0.2]", MarkupMode::Compose);
+        let mix = plan_script("Uno [hmm] dos [yawn] tres [pause:0.2]", MarkupMode::Auto);
         assert_eq!(mix.paralinguistic, Some((42, 1.1)));
         let Script::Spans(spans) = mix.script else {
             panic!("se esperaba Spans");

@@ -151,7 +151,6 @@ fn test_voice_file_extension_and_version_errors() {
     let opts = VoiceLoadOptions {
         use_icl: true,
         log: LogLevel::Silent,
-        ..Default::default()
     };
 
     // Una extensión distinta de .qvoice se rechaza antes de leer (ni siquiera existe el archivo)
@@ -172,7 +171,7 @@ fn test_voice_file_extension_and_version_errors() {
     let other = dir.join("other_version.qvoice");
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"QVCE");
-    bytes.extend_from_slice(&5u32.to_le_bytes());
+    bytes.extend_from_slice(&4u32.to_le_bytes());
     bytes.extend_from_slice(&1024u32.to_le_bytes());
     fs::write(&other, bytes).unwrap();
     let err = Voice::load(&other, &opts)
@@ -180,7 +179,9 @@ fn test_voice_file_extension_and_version_errors() {
         .unwrap()
         .to_string();
     assert!(
-        err.contains("version 5") && err.contains("other_version.qvoice"),
+        err.contains("version 4")
+            && err.contains("version 5")
+            && err.contains("other_version.qvoice"),
         "se obtuvo: {err}"
     );
 }
@@ -258,24 +259,31 @@ fn test_clone_from_default_voice_e2e() {
 
     // 2. Clonado con ICL (con ref_text) y solo con x-vector
     let icl_path = dir.join("clone_icl.qvoice");
-    let (icl_qv, icl_built) = clone_voice(
+    let icl_qv = clone_voice(
         &runtime,
         &model,
         &ref_wav,
         &CloneOptions {
             ref_text: Some(ref_text.to_string()),
-            name: Some("clone_icl".to_string()),
             language_id: Some(2050),
             log: LogLevel::Silent,
         },
     )
     .unwrap();
     icl_qv.write_to_file(&icl_path).unwrap();
+    let icl_built = Voice::from_qvoice(
+        icl_qv.clone(),
+        "clone_icl".to_string(),
+        &VoiceLoadOptions {
+            use_icl: true,
+            log: LogLevel::Silent,
+        },
+    );
     assert!(icl_built.icl.is_some());
     assert_eq!(icl_built.name, "clone_icl");
 
     let xvec_path = dir.join("xvec.qvoice");
-    let (xvec_qv, xvec_built) = clone_voice(
+    let xvec_qv = clone_voice(
         &runtime,
         &model,
         &ref_wav,
@@ -287,8 +295,15 @@ fn test_clone_from_default_voice_e2e() {
     )
     .unwrap();
     xvec_qv.write_to_file(&xvec_path).unwrap();
+    let xvec_built = Voice::from_qvoice(
+        xvec_qv.clone(),
+        "ref".to_string(),
+        &VoiceLoadOptions {
+            use_icl: true,
+            log: LogLevel::Silent,
+        },
+    );
     assert!(xvec_built.icl.is_none());
-    // Sin `--voice-name` el nombre en memoria es el del WAV; el archivo guarda el nombre vacío
     assert_eq!(xvec_built.name, "ref");
 
     // 3. Tamaño exacto de cada .qvoice
@@ -298,30 +313,25 @@ fn test_clone_from_default_voice_e2e() {
     assert_eq!(icl_file.lang_id, 2050);
     assert_eq!(
         fs::metadata(&icl_path).unwrap().len() as usize,
-        4124 + "clone_icl".len() + ref_text.len() + 64 * icl_file.n_ref_frames()
+        4120 + ref_text.len() + 64 * icl_file.n_ref_frames()
     );
-    assert_eq!(fs::metadata(&xvec_path).unwrap().len() as usize, 4124);
+    assert_eq!(fs::metadata(&xvec_path).unwrap().len() as usize, 4120);
     let xvec_file = QVoiceFile::read_from_file(&xvec_path).unwrap();
     assert!(!xvec_file.has_icl());
     assert_eq!(xvec_file.lang_id, 0, "clonar sin -l no guarda idioma");
-    assert_eq!(xvec_file.voice_name, "");
 
     // 4. Carga de cada voz y síntesis de un texto corto
     let load_opts = VoiceLoadOptions {
         use_icl: true,
         log: LogLevel::Silent,
-        ..Default::default()
     };
     let icl_voice = Voice::load(&icl_path, &load_opts).unwrap();
     assert!(icl_voice.icl.is_some());
-    assert_eq!(icl_voice.name, "clone_icl");
+    assert_eq!(icl_voice.name, "clone_icl", "la voz se llama como su archivo");
     assert_eq!(icl_voice.language_id, Some(2050));
     let xvec_voice = Voice::load(&xvec_path, &load_opts).unwrap();
     assert!(xvec_voice.icl.is_none());
-    assert_eq!(
-        xvec_voice.name, "xvec",
-        "un nombre guardado vacío recurre al nombre del archivo"
-    );
+    assert_eq!(xvec_voice.name, "xvec", "la voz se llama como su archivo");
     assert_eq!(xvec_voice.language_id, None);
 
     // `use_icl = false` al cargar descarta el ICL del archivo
@@ -330,25 +340,10 @@ fn test_clone_from_default_voice_e2e() {
         &VoiceLoadOptions {
             use_icl: false,
             log: LogLevel::Silent,
-            ..Default::default()
         },
     )
     .unwrap();
     assert!(icl_as_xvec.icl.is_none());
-
-    // `ref_text_override` al cargar sustituye el texto ICL del archivo
-    let icl_override = Voice::load(
-        &icl_path,
-        &VoiceLoadOptions {
-            ref_text_override: Some("Another transcript.".to_string()),
-            ..load_opts.clone()
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        icl_override.icl.as_ref().map(|i| i.ref_text.as_str()),
-        Some("Another transcript.")
-    );
 
     for voice in [&icl_voice, &xvec_voice] {
         let out = Synthesizer {

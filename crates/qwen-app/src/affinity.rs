@@ -52,12 +52,14 @@ mod win32 {
         fn SetProcessAffinityMask(h_process: isize, dw_process_affinity_mask: usize) -> i32;
     }
 
-    pub fn pin_one_thread_per_core() -> usize {
+    pub fn pin_one_thread_per_core(silent: bool) -> usize {
         unsafe {
             if GetActiveProcessorGroupCount() > 1 {
-                eprintln!(
-                    "Afinidad: varios grupos de procesadores; no se restringe a un hilo por núcleo"
-                );
+                if !silent {
+                    eprintln!(
+                        "Afinidad: varios grupos de procesadores; no se restringe a un hilo por núcleo"
+                    );
+                }
                 return std::thread::available_parallelism()
                     .map(|n| n.get())
                     .unwrap_or(1);
@@ -115,7 +117,11 @@ mod win32 {
                 return cores.max(1);
             }
             mask &= proc_mask;
-            if mask != 0 && mask != proc_mask && SetProcessAffinityMask(proc_handle, mask) != 0 {
+            // La afinidad se fija siempre; `silent` solo calla el mensaje.
+            let pinned = mask != 0
+                && mask != proc_mask
+                && SetProcessAffinityMask(proc_handle, mask) != 0;
+            if pinned && !silent {
                 eprintln!(
                     "Afinidad: un hilo lógico por núcleo físico ({cores} núcleos, máscara 0x{mask:x})"
                 );
@@ -125,15 +131,17 @@ mod win32 {
     }
 }
 
-pub fn pin_one_thread_per_core() -> usize {
-    #[cfg(target_os = "windows")]
-    {
-        win32::pin_one_thread_per_core()
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-    }
+/// Fija la afinidad (solo en Windows) y devuelve los núcleos físicos. Con `silent` no imprime
+/// el mensaje de afinidad.
+#[cfg(target_os = "windows")]
+pub fn pin_one_thread_per_core(silent: bool) -> usize {
+    win32::pin_one_thread_per_core(silent)
+}
+
+/// Fuera de Windows no hay afinidad que fijar ni mensaje que imprimir.
+#[cfg(not(target_os = "windows"))]
+pub fn pin_one_thread_per_core(_silent: bool) -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }

@@ -16,11 +16,13 @@ use modes::{diag, run_with_model, voice_cmd};
 
 /// Despacha el modo ya resuelto por el parser.
 fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
-    let physical_cores = affinity::pin_one_thread_per_core();
+    // Un entorno no válido es un error en cualquier modo.
+    qwen_kernels::KernelChoice::from_env().map_err(|e| format!("Error: {e}"))?;
 
     if cfg.stdout_pcm {
         cfg.silent = true;
     }
+    let physical_cores = affinity::pin_one_thread_per_core(cfg.silent);
 
     match &cfg.mode {
         CliMode::Caps => Ok(diag::caps(&cfg)),

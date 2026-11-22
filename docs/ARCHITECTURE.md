@@ -13,7 +13,7 @@
   qwen-engine        (#![forbid(unsafe_code)] Modelo 0.6B, Talker, CP, Decoder, Encoder, Audio)
       │
       ▼
-   qwen-core         (Constantes 0.6B, MmapStore, BPE, Sampler, .qvoice v4, planificación de marcado)
+   qwen-core         (Constantes 0.6B, MmapStore, BPE, Sampler, .qvoice v5, planificación de marcado)
       │
       ▼
   qwen-kernels       (AlignedBuf<64>, CpuCaps, ComputePool, FTZ, SIMD, Quant, FFI/Rust BLAS)

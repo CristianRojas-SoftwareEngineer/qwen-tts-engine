@@ -1,6 +1,6 @@
 # Especificación Técnica de Qwen3-TTS `0.6B` (`SPEC_06B.md`)
 
-> Consolida la geometría fija, el mapa de tensores `safetensors`, el formato binario propio (`.qvoice` v4) y las reglas de *prefill*, muestreo y paralingüística de **Qwen3-TTS 0.6B Base**. Pensado para ingenieros del motor y mantenedores.
+> Consolida la geometría fija, el mapa de tensores `safetensors`, el formato binario propio (`.qvoice` v5) y las reglas de *prefill*, muestreo y paralingüística de **Qwen3-TTS 0.6B Base**. Pensado para ingenieros del motor y mantenedores.
 
 ---
 
@@ -75,18 +75,16 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 
 ## 3. Formatos binarios propios (little-endian)
 
-### 3.1 Perfil de voz `.qvoice` (versión 4)
+### 3.1 Perfil de voz `.qvoice` (versión 5)
 
 Único formato de voz, en `qwen-core/src/qvoice.rs`. No tiene secciones con etiqueta: todos los campos son obligatorios y van en este orden, little-endian.
 
 | Campo | Tipo | Valor |
 |---|---|---|
 | `magic` | 4 B | `"QVCE"` |
-| `version` | `u32` | `4` |
+| `version` | `u32` | `5` |
 | `enc_dim` | `u32` | `1024` |
 | `speaker_embedding` | `enc_dim × f32` | x-vector |
-| `voice_name_len` | `u32` | `<= 256` |
-| `voice_name` | `voice_name_len` bytes | UTF-8 |
 | `lang_id` | `u32` | `0` = sin idioma; si no, un id válido de `lookup_language` |
 | `ref_text_len` | `u32` | `<= 1 000 000` |
 | `ref_text` | `ref_text_len` bytes | UTF-8 |
@@ -94,8 +92,8 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 | `ref_codes` | `n_ref_frames × 16 × i32` | códigos ICL |
 
 - **Hay ICL** si `n_ref_frames > 0` y `ref_text` no está vacío. Si un campo es vacío y el otro no, el archivo es inválido.
-- **Tamaño**: `4124 + len(voice_name) + len(ref_text) + 64 · n_ref_frames` bytes; sin ICL, `4124 + len(voice_name)`.
-- **La lectura falla** (con un mensaje que nombra la ruta) si el `magic` no coincide, la versión no es `4` (las voces anteriores se vuelven a clonar), `enc_dim != 1024`, hay UTF-8 inválido, un tamaño excesivo, el archivo está truncado o sobran bytes al final.
+- **Tamaño**: `4120 + len(ref_text) + 64 · n_ref_frames` bytes; sin ICL, `4120`. El nombre de la voz es el del archivo (sin `.qvoice`).
+- **La lectura falla** (con un mensaje que nombra la ruta) si el `magic` no coincide, la versión no es `5` (las voces anteriores se vuelven a clonar), `enc_dim != 1024`, hay UTF-8 inválido, un tamaño excesivo, el archivo está truncado o sobran bytes al final.
 - La voz `default` no es un archivo: su x-vector (`4096 B`, SHA-256 `d2ceafbb…3b94`) va embebido en el binario (`qwen-engine/assets/default_voice.xvec`).
 
 ---
@@ -140,6 +138,6 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 - **Recorte de silencio final (`trim_trailing_silence`)**: activo si `n_samples >= 3 * 24000`. Escanea ventanas de `20 ms` desde el final con umbral `max(0.18 * global_rms, 0.004)`, deja `+50 ms` de margen y limita el recorte al `40 %` de la duración conservando al menos `2 s`.
 - **Refuerzo de EOS (`pipeline.rs`)**: `expected = text_content_len * 3`. Si `0 < text_content_len <= 11`: `start = expected * 3 / 2`, aplica `+1.0/frame` (tope `+15.0`) cuando `frame > start`. Si `> 11`: `start = expected * 2`, aplica `+0.5/frame` (tope `+10.0`) cuando `frame > start`. Suprime tokens `>= 2048` excepto `CODEC_EOS`, y suprime `CODEC_EOS` para `frame < 2`.
 - **Muestreo (`qwen-core/src/sampling.rs`)**: temperatura por defecto `DEFAULT_TEMPERATURE = 0.325` y semilla por defecto `DEFAULT_SEED = 4` (`qwen-core/src/config.rs`); penalización de repetición sobre `prev_tokens` → si `T < 1e-6`, argmax (decodificación voraz); si no, `softmax(logits / T)` → *top-k* → *top-p* → renormalización → LCG `seed = seed.wrapping_mul(1103515245).wrapping_add(12345)`, `r = ((seed >> 16) & 0x7FFF) / 32768.0`.
-- **Paralingüística en línea y `--compose` (`markup.rs`, `compose.rs`)**: `plan_script` aplica los dos pasos, también con `--compose` y con `--stream`/`--stdout`.
+- **Paralingüística y marcado en línea (`markup.rs`, `compose.rs`)**: `plan_script` aplica los dos pasos, también con `--stream`/`--stdout`.
   - Paso 1 (`paralinguistic_substitute`): sustituye `[laugh]`/`[laughs]` (`"哈哈哈"`, `seed=2024, T=1.1`), `[sigh]`/`[sighs]` (`"唉"`, `seed=42, T=1.1`), `[yawn]`/`[yawns]` (`"哈啊"`, `seed=42, T=1.1`), `[wow]` (`"哇"`, `seed=2024, T=1.1`), `[giggle]`/`[giggles]` (`"嘿嘿"`, `seed=42, T=1.1`) y `[scoff]` (`"切"`, `seed=42, T=1.0`).
-  - Paso 2 (`MarkupPlanner::parse_spans`): si persisten `[pause:...]`, `[break:...]`, `[0.5]`, `|` o `--compose`, divide en tramos con *prefill* frío por tramo. Un tag desconocido (por ejemplo `[xyz]`) no es marcado y queda como texto.
+  - Paso 2 (`MarkupPlanner::parse_spans`): si persisten `[pause:...]`, `[break:...]`, `[0.5]`, `|`, divide en tramos con *prefill* frío por tramo. Un tag desconocido (por ejemplo `[xyz]`) no es marcado y queda como texto.

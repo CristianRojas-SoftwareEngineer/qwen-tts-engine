@@ -54,7 +54,6 @@ dependencies = [
  "qwen-core",
  "qwen-engine",
  "qwen-kernels",
- "serde",
  "serde_json",
 ]
 

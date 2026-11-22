@@ -19,7 +19,7 @@ use qwen_kernels::ComputeRuntime;
 use crate::cli::CliArgs;
 use crate::request;
 
-/// Imprime una línea por voz: archivo, nombre, idioma, ICL y tamaño. Un archivo que el lector
+/// Imprime una línea por voz: archivo, idioma, ICL y tamaño. Un archivo que el lector
 /// rechaza se muestra con `no compatible: <mensaje del lector>`.
 fn print_qvoice_info(path: &Path) {
     let basename = path
@@ -29,11 +29,6 @@ fn print_qvoice_info(path: &Path) {
     let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     match QVoiceFile::read_from_file(path) {
         Ok(qv) => {
-            let name = if qv.voice_name.is_empty() {
-                "-"
-            } else {
-                qv.voice_name.as_str()
-            };
             let lang = i32::try_from(qv.lang_id)
                 .ok()
                 .and_then(language_name)
@@ -45,7 +40,7 @@ fn print_qvoice_info(path: &Path) {
                 "no".to_string()
             };
             println!(
-                "  {basename:<30}  name={name}  lang={lang}  icl={icl}  {:.1} KB",
+                "  {basename:<30}  lang={lang}  icl={icl}  {:.1} KB",
                 size as f32 / 1024.0
             );
         }
@@ -115,6 +110,17 @@ pub fn delete_voice(path_str: &str) -> i32 {
     0
 }
 
+/// Nombre de la voz clonada: el archivo de `--save-voice` sin extensión si se guarda; si no,
+/// el WAV de `--ref-audio` sin extensión.
+fn cloned_voice_name(ref_audio: &str, save_voice: Option<&str>) -> Result<String, String> {
+    let source = save_voice.unwrap_or(ref_audio);
+    Path::new(source)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| format!("Error: no se puede obtener el nombre de la voz de '{source}'"))
+}
+
 /// La voz de la sesión: clona `--ref-audio` (y la guarda con `--save-voice`), carga
 /// `--load-voice` o usa la voz `default`.
 pub fn resolve_voice(
@@ -127,33 +133,36 @@ pub fn resolve_voice(
         if let Some(ref save_path) = cfg.save_voice {
             ensure_qvoice_path(Path::new(save_path)).map_err(|e| e.to_string())?;
         }
+        let name = cloned_voice_name(ref_audio_path, cfg.save_voice.as_deref())?;
         let clone_opts = CloneOptions {
-            ref_text: if cfg.xvector_only {
-                None
-            } else {
-                cfg.ref_text.clone()
-            },
-            name: cfg.voice_name.clone(),
+            ref_text: cfg.ref_text.clone(),
             language_id: cli_language_id,
             log: request::log_level(cfg),
         };
-        let (qv, voice) = clone_voice(runtime, model, Path::new(ref_audio_path), &clone_opts)
+        let qv = clone_voice(runtime, model, Path::new(ref_audio_path), &clone_opts)
             .map_err(|e| e.to_string())?;
         if let Some(ref save_path) = cfg.save_voice {
             qv.write_to_file(Path::new(save_path))
                 .map_err(|e| e.to_string())?;
             if !cfg.silent {
-                eprintln!(
-                    "Guardado .qvoice v4 en {} (embedding + {} frames ICL)",
-                    save_path,
-                    qv.n_ref_frames()
-                );
+                let n = qv.n_ref_frames();
+                if n == 0 {
+                    eprintln!("Guardado .qvoice v5 en {save_path} (solo x-vector)");
+                } else {
+                    eprintln!("Guardado .qvoice v5 en {save_path} ({n} frames ICL)");
+                }
             }
         }
-        voice
+        Voice::from_qvoice(
+            qv,
+            name,
+            &VoiceLoadOptions {
+                use_icl: true,
+                log: request::log_level(cfg),
+            },
+        )
     } else if let Some(ref lv_path) = cfg.load_voice {
         let lv_opts = VoiceLoadOptions {
-            ref_text_override: cfg.ref_text.clone(),
             use_icl: !cfg.xvector_only,
             log: request::log_level(cfg),
         };
@@ -186,4 +195,19 @@ pub fn resolve_voice(
     }
 
     Ok(voice)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cloned_voice_name() {
+        assert_eq!(
+            cloned_voice_name("dir/ref.wav", Some("voces/mia.qvoice")),
+            Ok("mia".to_string())
+        );
+        assert_eq!(cloned_voice_name("dir/ref.wav", None), Ok("ref".to_string()));
+        assert!(cloned_voice_name("", None).is_err());
+    }
 }

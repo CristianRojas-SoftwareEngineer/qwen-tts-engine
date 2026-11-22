@@ -386,22 +386,26 @@ impl KernelChoice {
         }
     }
 
-    /// Lee `QWEN_KERNELS` una vez por proceso. Un valor no válido se avisa por stderr y se trata como `auto`.
-    pub fn from_env() -> Self {
-        static CHOICE: std::sync::OnceLock<KernelChoice> = std::sync::OnceLock::new();
-        *CHOICE.get_or_init(|| {
-            Self::parse(std::env::var("QWEN_KERNELS").ok().as_deref()).unwrap_or_else(|e| {
-                eprintln!("Aviso: {e}; se usa auto");
-                Self::Auto
-            })
-        })
+    /// Lee `QWEN_KERNELS` una vez por proceso. Un valor no válido es un error.
+    pub fn from_env() -> Result<Self, String> {
+        static CHOICE: std::sync::OnceLock<Result<KernelChoice, String>> =
+            std::sync::OnceLock::new();
+        CHOICE
+            .get_or_init(|| Self::parse(std::env::var("QWEN_KERNELS").ok().as_deref()))
+            .clone()
     }
 }
 
 impl KernelDispatch {
     /// Tabla de kernels para `caps`, salvo que `QWEN_KERNELS=scalar` fuerce la ruta escalar.
+    ///
+    /// # Panics
+    ///
+    /// Si `QWEN_KERNELS` tiene un valor no válido; valídalo antes con `KernelChoice::from_env`.
     pub fn for_caps(caps: &CpuCaps) -> &'static Self {
-        if KernelChoice::from_env() == KernelChoice::Scalar {
+        let choice = KernelChoice::from_env()
+            .expect("QWEN_KERNELS no es válido; el binario lo valida al arrancar");
+        if choice == KernelChoice::Scalar {
             return &SCALAR_DISPATCH;
         }
         Self::available(caps).last().copied().unwrap_or(&SCALAR_DISPATCH)
@@ -1353,6 +1357,9 @@ pub struct ComputeRuntime {
 }
 
 impl ComputeRuntime {
+    /// # Panics
+    ///
+    /// Si `QWEN_KERNELS` tiene un valor no válido; valídalo antes con `KernelChoice::from_env`.
     pub fn new(threads: Option<usize>) -> Self {
         Self::build(threads, None)
     }
@@ -1398,7 +1405,8 @@ impl ComputeRuntime {
                 Some(detail) => format!("{} ({detail})", self.blas.name()),
                 None => self.blas.name().to_string(),
             },
-            KernelChoice::from_env(),
+            KernelChoice::from_env()
+                .expect("QWEN_KERNELS no es válido; el binario lo valida al arrancar"),
             self.dispatch.name(),
         )
     }

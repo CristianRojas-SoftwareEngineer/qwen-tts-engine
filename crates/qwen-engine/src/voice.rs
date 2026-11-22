@@ -16,7 +16,7 @@ use crate::error::EngineError;
 use crate::model::Model06B;
 use crate::request::LogLevel;
 use crate::speech_encoder::speech_encoder_encode;
-use crate::voice_clone::{load_and_trim_ref_audio, mel_spectrogram, speaker_encoder_forward};
+use crate::voice_clone::{load_ref_audio, mel_spectrogram, speaker_encoder_forward};
 
 /// x-vector de la voz `default` incorporada (1024 `f32` little-endian).
 const DEFAULT_VOICE_XVEC: &[u8] = include_bytes!("../assets/default_voice.xvec");
@@ -49,8 +49,6 @@ pub struct Voice {
 /// Opciones de carga de un perfil `.qvoice`.
 #[derive(Debug, Clone, Default)]
 pub struct VoiceLoadOptions {
-    /// Sustituye la transcripción ICL del archivo.
-    pub ref_text_override: Option<String>,
     /// Usa el contexto ICL si el archivo lo trae; `false` deja solo el x-vector.
     pub use_icl: bool,
     pub log: LogLevel,
@@ -59,10 +57,8 @@ pub struct VoiceLoadOptions {
 /// Opciones para clonar una voz desde un audio de referencia.
 #[derive(Debug, Clone, Default)]
 pub struct CloneOptions {
-    /// Transcripción del audio; sin ella (o vacía) la voz es solo x-vector.
+    /// Transcripción del audio; sin ella la voz es solo x-vector.
     pub ref_text: Option<String>,
-    /// Nombre de la voz; si falta, el nombre del WAV sin extensión.
-    pub name: Option<String>,
     pub language_id: Option<i32>,
     pub log: LogLevel,
 }
@@ -98,37 +94,36 @@ impl Voice {
         }
     }
 
-    /// Carga un perfil `.qvoice` v4. Sin nombre en el archivo, la voz se llama como el archivo
-    /// (sin extensión).
+    /// Carga un perfil `.qvoice` v5. La voz se llama como el archivo (sin extensión).
     pub fn load(path: &Path, opts: &VoiceLoadOptions) -> Result<Self, EngineError> {
         ensure_qvoice_path(path)?;
-        let mut qv = QVoiceFile::read_from_file(path)?;
-        if qv.voice_name.is_empty() {
-            qv.voice_name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-        }
-        let voice = Self::from_qvoice(qv, opts);
+        let qv = QVoiceFile::read_from_file(path)?;
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| {
+                EngineError::InvalidArg(format!(
+                    "no se puede obtener el nombre de la voz de {}",
+                    path.display()
+                ))
+            })?
+            .to_string();
+        let voice = Self::from_qvoice(qv, name, opts);
         if !opts.log.is_silent() {
             eprintln!(
-                "Clonación de voz: .qvoice v4 cargado desde {}",
+                "Clonación de voz: .qvoice v5 cargado desde {}",
                 path.display()
             );
         }
         Ok(voice)
     }
 
-    /// Construye la voz desde un perfil ya leído. `voice_name` vacío da una voz sin nombre.
-    pub fn from_qvoice(qv: QVoiceFile, opts: &VoiceLoadOptions) -> Self {
-        let ref_text = opts
-            .ref_text_override
-            .clone()
-            .unwrap_or_else(|| qv.ref_text.clone());
-        let icl = if opts.use_icl && !qv.ref_codes.is_empty() && !ref_text.is_empty() {
+    /// Construye la voz desde un perfil ya leído, con el nombre dado. Es el único camino que
+    /// construye una voz desde un perfil, al cargar y al clonar.
+    pub fn from_qvoice(qv: QVoiceFile, name: String, opts: &VoiceLoadOptions) -> Self {
+        let icl = if opts.use_icl && !qv.ref_codes.is_empty() && !qv.ref_text.is_empty() {
             Some(IclPrompt {
-                ref_text,
+                ref_text: qv.ref_text,
                 ref_codes: qv.ref_codes,
             })
         } else {
@@ -140,7 +135,7 @@ impl Voice {
             Some(qv.lang_id as i32)
         };
         Self {
-            name: qv.voice_name,
+            name,
             language_id,
             xvector: qv.speaker_embedding,
             icl,
@@ -150,16 +145,23 @@ impl Voice {
 
 /// Clona una voz desde un audio de referencia.
 ///
-/// Devuelve el perfil completo (`QVoiceFile`, `voice_name` vacío si no
-/// se dio nombre y `lang_id` 0 si no se dio idioma), que es lo que se guarda, y la voz ya
-/// construida (con el nombre resuelto: el dado o el del WAV).
+/// Devuelve solo el perfil (`QVoiceFile`, con `lang_id` 0 si no se dio idioma): es lo que se
+/// guarda y de lo que se construye la voz con [`Voice::from_qvoice`]. Hay ICL si y solo si
+/// `opts.ref_text` es `Some`; sin él, el perfil es solo x-vector.
 pub fn clone_voice(
     runtime: &ComputeRuntime,
     model: &Model06B,
     ref_wav: &Path,
     opts: &CloneOptions,
-) -> Result<(QVoiceFile, Voice), EngineError> {
-    let audio = load_and_trim_ref_audio(ref_wav, opts.log.is_silent())?;
+) -> Result<QVoiceFile, EngineError> {
+    let need_icl = opts.ref_text.is_some();
+    if opts.ref_text.as_deref().is_some_and(|t| t.trim().is_empty()) {
+        return Err(EngineError::InvalidArg(
+            "la transcripción de la referencia (ref_text) no puede estar vacía".to_string(),
+        ));
+    }
+
+    let audio = load_ref_audio(ref_wav, opts.log.is_silent())?;
     let (mel, n_frames) = mel_spectrogram(&audio, SAMPLE_RATE)?;
     if !opts.log.is_silent() {
         eprintln!("Espectrograma mel: {n_frames} frames x {MEL_DIM} mels");
@@ -167,7 +169,6 @@ pub fn clone_voice(
     let speaker_embedding =
         speaker_encoder_forward(runtime, &model.speaker_encoder, &mel, n_frames);
 
-    let need_icl = opts.ref_text.as_deref().is_some_and(|t| !t.is_empty());
     let mut ref_codes = Vec::new();
     if need_icl {
         let (codes, frames) = speech_encoder_encode(
@@ -183,41 +184,10 @@ pub fn clone_voice(
         }
     }
 
-    let ref_text = if ref_codes.is_empty() {
-        String::new()
-    } else {
-        opts.ref_text.clone().unwrap_or_default()
-    };
-
-    let qv = QVoiceFile {
+    Ok(QVoiceFile {
         speaker_embedding,
-        voice_name: opts.name.clone().unwrap_or_default(),
         lang_id: opts.language_id.map_or(0, |l| l as u32),
-        ref_text,
+        ref_text: opts.ref_text.clone().unwrap_or_default(),
         ref_codes,
-    };
-
-    let name = match opts.name.as_deref() {
-        Some(n) if !n.is_empty() => n.to_string(),
-        _ => ref_wav
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string(),
-    };
-    let icl = if qv.ref_codes.is_empty() {
-        None
-    } else {
-        Some(IclPrompt {
-            ref_text: qv.ref_text.clone(),
-            ref_codes: qv.ref_codes.clone(),
-        })
-    };
-    let voice = Voice {
-        name,
-        language_id: opts.language_id,
-        xvector: qv.speaker_embedding.clone(),
-        icl,
-    };
-    Ok((qv, voice))
+    })
 }

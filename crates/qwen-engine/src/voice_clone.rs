@@ -721,10 +721,8 @@ pub fn speaker_encoder_forward(
     out_emb
 }
 
-/// Duración máxima, en segundos, del audio de referencia; lo que exceda se descarta.
-const MAX_REF_SECONDS: f32 = 30.0;
-
-pub(crate) fn load_and_trim_ref_audio(
+/// Lee el audio de referencia entero y le quita el silencio final.
+pub(crate) fn load_ref_audio(
     ref_audio_path: &Path,
     silent: bool,
 ) -> Result<Vec<f32>, EngineError> {
@@ -737,17 +735,6 @@ pub(crate) fn load_and_trim_ref_audio(
             SAMPLE_RATE,
             audio.len() as f32 / SAMPLE_RATE as f32
         );
-    }
-    let max_samples = (MAX_REF_SECONDS * SAMPLE_RATE as f32) as usize;
-    if audio.len() > max_samples {
-        if !silent {
-            eprintln!(
-                "  Truncado a {:.0}s (eran {:.1}s)",
-                MAX_REF_SECONDS,
-                audio.len() as f32 / SAMPLE_RATE as f32
-            );
-        }
-        audio.truncate(max_samples);
     }
     trim_trailing_silence(&mut audio, SAMPLE_RATE, silent);
     Ok(audio)

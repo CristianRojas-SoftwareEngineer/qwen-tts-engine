@@ -295,7 +295,7 @@ fn test_available_dispatch_tables() {
     }
     #[cfg(target_arch = "x86_64")]
     assert_eq!(names.contains(&"avx2"), caps.has_avx2_fma(), "{names:?}");
-    if KernelChoice::from_env() == KernelChoice::Auto {
+    if KernelChoice::from_env().unwrap() == KernelChoice::Auto {
         assert_eq!(KernelDispatch::for_caps(&caps).name(), *names.last().unwrap());
     }
 }

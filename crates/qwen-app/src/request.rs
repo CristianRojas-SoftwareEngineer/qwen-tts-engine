@@ -38,14 +38,15 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScrip
     let language_id = effective_language(cli_language_id, voice.language_id);
 
     let max_frames = match cli.max_duration {
-        Some(dur) if dur > 0.0 => ((dur * FRAME_RATE) as usize).max(1),
-        _ => DEFAULT_MAX_FRAMES,
+        Some(dur) => ((dur * FRAME_RATE) as usize).max(1),
+        None => DEFAULT_MAX_FRAMES,
     };
 
-    let (text, mode) = match &cli.compose_spec {
-        Some(spec) => (spec.as_str(), MarkupMode::Compose),
-        None if cli.no_compose => (cli.text.as_deref().unwrap_or_default(), MarkupMode::Literal),
-        None => (cli.text.as_deref().unwrap_or_default(), MarkupMode::Auto),
+    let text = cli.text.as_deref().unwrap_or_default();
+    let mode = if cli.no_compose {
+        MarkupMode::Literal
+    } else {
+        MarkupMode::Auto
     };
     let planned = plan_script(text, mode);
 

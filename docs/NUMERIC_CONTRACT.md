@@ -97,7 +97,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | | `quantize_act_int8`, `bf16_accum_f32`, `bf16_to_f32_vec`, `f32_to_bf16_vec`, suma residual de `rms_norm_residual` | **Bit-idéntico** |
 | | normas RMS, `matvec_bf16`, atención `f32` (con y sin ventana) y BF16 (en serie y repartida), RoPE, `f32_matvec_accum`, *snake* | **`L2_rel <= 1e-6`** (AVX2 da ≤ 6,2e-7) |
 | **Kernels `bf16`** (`--self-test`) | `matvec_bf16` vs `f32` ref | `max_rel < 1e-2` |
-| **Pipeline E2E** (misma semilla/params) | 2 corridas independientes | **Bit-idéntico** entre corridas y entre los cuatro modos: CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream` dan el mismo PCM (mismo calendario de chunks y mismas rampas de borde, invariantes 3 y 5); también con marcado y `--compose`, y con `--stdout`. Comprobado en las 4 combinaciones de idioma y longitud de la tabla de referencia. |
+| **Pipeline E2E** (misma semilla/params) | 2 corridas independientes | **Bit-idéntico** entre corridas y entre los cuatro modos: CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream` dan el mismo PCM (mismo calendario de chunks y mismas rampas de borde, invariantes 3 y 5); también con marcado y con `--stdout`. Comprobado en las 4 combinaciones de idioma y longitud de la tabla de referencia. |
 
 ### Audio de referencia (x86-64)
 

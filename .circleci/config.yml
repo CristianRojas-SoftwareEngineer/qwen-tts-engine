@@ -177,7 +177,6 @@ commands:
           command: |
             export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
             export OPENBLAS_LIB_DIR=C:/openblas/lib
-            unset OPENBLAS_NUM_THREADS
             rustc --version
             cargo build --release -p qwen-app --target x86_64-pc-windows-gnu
 
@@ -217,7 +216,6 @@ jobs:
             set -euo pipefail
             export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
             export OPENBLAS_LIB_DIR=C:/openblas/lib
-            unset OPENBLAS_NUM_THREADS
             cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
             cargo test --workspace --release --target x86_64-pc-windows-gnu
             target/x86_64-pc-windows-gnu/release/qwen_tts.exe --caps
@@ -258,7 +256,6 @@ jobs:
           no_output_timeout: 10m
           command: |
             export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
-            unset OPENBLAS_NUM_THREADS
             BIN=target/x86_64-pc-windows-gnu/release/qwen_tts.exe bash scripts/ci-measure-rtf.sh 4 measurement
       - store_artifacts:
           path: measurement
@@ -296,7 +293,6 @@ jobs:
           no_output_timeout: 15m
           command: |
             export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
-            unset OPENBLAS_NUM_THREADS
             BIN=target/x86_64-pc-windows-gnu/release/qwen_tts.exe bash scripts/ci-compare-kernels.sh kernels
       - store_artifacts:
           path: kernels

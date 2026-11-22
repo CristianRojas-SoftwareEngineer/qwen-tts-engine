@@ -15,7 +15,7 @@
 | `-h`, `--help` | Imprime la ayuda de uso por `stderr` y termina. | `0` |
 | `--caps` | Inicializa el runtime con `-j`, imprime capacidades SIMD/hilos/BLAS a `stdout` y termina. | `0` |
 | `--self-test` | Ejecuta la batería numérica de kernels hacia `stdout`. | `0` si pasa, `1` si falla |
-| `--list-voices <dir>` | Lista los `.qvoice` de `<dir>` (o un archivo `.qvoice` puntual): por voz, archivo, nombre, idioma (`-` si no tiene), ICL (frames y segundos, o `no`) y tamaño. Un archivo que el lector rechaza (por ejemplo, una versión distinta de la 4) aparece con `no compatible: <mensaje>`. La voz `default` no se lista: no es un archivo. | `0` / `1` |
+| `--list-voices <dir>` | Lista los `.qvoice` de `<dir>` (o un archivo `.qvoice` puntual): por voz, archivo, idioma (`-` si no tiene), ICL (frames y segundos, o `no`) y tamaño. Un archivo que el lector rechaza (por ejemplo, una versión distinta de la 5) aparece con `no compatible: <mensaje>`. La voz `default` no se lista: no es un archivo. | `0` / `1` |
 | `--delete-voice <path>` | Valida la extensión `.qvoice` y la cabecera `QVCE` antes de eliminar el archivo. | `0` / `1` |
 
 ### 1.2 Flags de modelo, voz y muestreo
@@ -23,14 +23,14 @@
 | Categoría | Flag(s) | Por defecto | Contrato y validación |
 |---|---|---:|---|
 | **Modelo y texto** | `-d, --model-dir <path>` | *(obligatorio con modelo)* | Directorio del modelo Qwen3-TTS `0.6B` Base. Rechaza cualquier checkpoint que no sea Base (`exit 1`, con el mensaje `Este motor solo carga Qwen3-TTS 0.6B Base: <detalle>`). |
-| | `-t, --text <string>` | `None` | Obligatorio salvo `--serve`, `--compose`, `--save-voice` sin texto (con `--ref-audio`). |
+| | `-t, --text <string>` | `None` | Obligatorio salvo `--serve` y `--save-voice` sin texto. |
 | | `-o, --output <path>` | `output.wav` | Ruta de salida WAV (24 kHz, PCM s16le mono). Lleva una rampa de entrada de 5 ms y otra de salida de 40 ms con y sin `--stream`. El PCM es idéntico en los dos modos (`NUMERIC_CONTRACT.md` §4). |
 | **Voz e idioma** | `-l, --language <name>` | el de la voz cargada o, si no tiene, `Spanish` (`2054`) | Acepta 10 idiomas *sin distinguir mayúsculas*: `english`, `german`, `spanish`, `chinese`, `japanese`, `french`, `korean`, `russian`, `italian`, `portuguese`. Una sola regla en todos los modos: el pedido (`-l`); si no hay, el idioma guardado en la voz (si es distinto de `0`; la voz `default` declara español); si tampoco, español. Desconocido → `exit 1`. |
 | **Muestreo** | `-T, --temperature <f>` | `0.325` | Rango `[0.0, 2.0]`; `0.0` = voraz (siempre el código más probable). Si hay sustitución paralingüística en línea sin `-T`, usa la `T` del tag (`1.1`, o `1.0` en `[scoff]`). |
 | | `-k, --top-k <n>` | `50` | Número de candidatos más probables entre los que se muestrea, en `[0, 3072]`. |
 | | `-p, --top-p <f>` | `1.0` | Probabilidad acumulada máxima de esos candidatos, en `[0.0, 1.0]`. |
 | | `-r, --rep-penalty <f>` | `1.05` | Penalización de repetición sobre tokens previos en `[0.5, 2.0]`. |
-| | `--max-duration <secs>` | `None` | Si es `> 0`, el tope es `max(1, floor(secs * 12.5))`; si no (sin el flag, `0` o negativo), `8192`. |
+| | `--max-duration <secs>` | `None` | Debe ser `> 0`; el tope es `max(1, floor(secs · 12,5))` frames; sin el flag, `8192`; `≤ 0` → `exit 1`. |
 | | `--seed <n>` | `4` (`< 0` reloj) | Entero `0..=u32::MAX` fija semilla; omitido usa `DEFAULT_SEED = 4` (salvo sustitución paralingüística en línea); negativo usa reloj del sistema; `> u32::MAX` → `exit 1`. |
 
 **Cuantización**: no hay flags. El motor usa siempre el mismo perfil: Talker en `Q4_0`; Code Predictor con atención y `lm_head` en `INT8` y FFN en `Q4_0` (`[INT8+Q4_0-FFN]`).
@@ -39,8 +39,8 @@
 
 | Flag(s) | Por defecto | Contrato y validación |
 |---|---|---|
-| `--stream` | off | Escribe el WAV progresivamente conforme se decodifican chunks. Retiene los últimos 40 ms para aplicar la rampa de salida al cerrar. Incompatible con `--rate != 1.0` (`exit 1`). También con marcado y `--compose`: va por el mismo destino y da el mismo PCM que la entrega completa. |
-| `--stdout` | off | Implica `--stream` y `--silent`; emite PCM crudo s16le 24 kHz mono a `stdout`, también con marcado y `--compose`. |
+| `--stream` | off | Escribe el WAV progresivamente conforme se decodifican chunks. Retiene los últimos 40 ms para aplicar la rampa de salida al cerrar. Incompatible con `--rate != 1.0` (`exit 1`). También con marcado: va por el mismo destino y da el mismo PCM que la entrega completa. |
+| `--stdout` | off | Implica `--stream` y `--silent`; emite PCM crudo s16le 24 kHz mono a `stdout`, también con marcado. |
 | `--stream-chunk <n>` | `10` | Frames máximos por chunk (`clamp(2, 250)`). Rampa: `2` en el primer chunk y `min(n, 4 + 2 * (k / 8))` para `k = 0, 1, 2, ...` en los siguientes. |
 | `--volume <f>` | `1.0` | Ganancia lineal en `[0.0, 10.0]` aplicada sobre las muestras PCM con *clamp* a `[-1.0, 1.0]`. |
 | `--rate <f>` | `1.0` | Cambio de velocidad WSOLA en `[0.25, 4.0]` preservando el tono (incompatible con `--stream`). |
@@ -49,15 +49,15 @@
 
 | Categoría | Flag(s) | Por defecto | Contrato y validación |
 |---|---|---|---|
-| **Clonación** | `--ref-audio <path>` | `None` | Valida cabecera `RIFF`/WAV 24 kHz mono antes de cargar el modelo; otros formatos fallan con comando `ffmpeg`. La referencia se recorta siempre a 30 s. |
-| | `--ref-text <string>` | `None` | Transcripción de la referencia para activar modo ICL (o sobrescribir `ref_text` de `.qvoice`). Sin ella, la voz guarda solo el timbre (x-vector). |
-| | `--xvector-only` | off | Usa únicamente el *x-vector* (`1024 × f32`), omitiendo los códigos ICL. |
-| | `--save-voice <path>` | `None` | Guarda `.qvoice` v4 (la extensión debe ser `.qvoice`; otra da `los archivos de voz deben ser .qvoice (se obtuvo <ruta>)`). Con idioma `-l` lo guarda; sin `-l` guarda «sin idioma». Sin `--text` ni `--serve`, crea el perfil y sale (`0`). |
-| | `--load-voice <path>` | voz `default` incorporada | Carga `.qvoice` v4. Otra extensión o una versión distinta de la 4 → `exit 1`. Sin este flag ni `--ref-audio`, se usa la voz `default`. |
-| | `--voice-name <name>` | `None` | Nombre guardado en el `.qvoice`; sin él, la voz clonada al vuelo se llama como el WAV (sin extensión). Al cargar, el nombre es el guardado en el archivo o, si está vacío, el nombre del archivo. |
-| **Marcado y estilo** | `--compose <spec>` | `None` | Síntesis multitramo con pausas `[pause:<s>]`, `[break:<s>]`, `[0.5]` o `\|`, y tags paralingüísticos en línea (`[laugh]`, `[sigh]`, `[yawn]`, `[wow]`, `[giggle]`, `[scoff]`), que se tratan igual que en `--text`. Sirve para la entrega completa y para `--stream`/`--stdout` (mismo PCM, `NUMERIC_CONTRACT.md` §4, invariante 5). Una composición solo de pausas, sin nada que hablar, es un error (`Composición: nada que sintetizar`) en las dos entregas. |
-| | `--compose-pause <s>` | `0.12` | Pausa por defecto entre tramos hablados en `--compose`. |
-| | `--no-compose` | off | Desactiva la sustitución de `[tags]` y la composición automática en `--text`. El marcado en `--text` (`[hmm]`, `[pause:0.4]`...) va por el mismo camino que `--compose`, con `--stream` y `--stdout` incluidos. |
+| **Clonación** | `--ref-audio <path>` | `None` | Valida cabecera `RIFF`/WAV 24 kHz mono antes de cargar el modelo; otros formatos fallan con comando `ffmpeg`. La referencia se usa entera. |
+| | `--ref-text <string>` | `None` | Transcripción exacta de la referencia; con ella la voz clonada es ICL, sin ella solo x-vector. Solo con `--ref-audio`; vacía → error. |
+| | `--xvector-only` | off | Solo con `--load-voice`: usa la voz solo con su x-vector, aunque tenga ICL. |
+| | `--save-voice <path>` | `None` | Guarda `.qvoice` v5; la voz se llama como el archivo (la extensión debe ser `.qvoice`; otra da `los archivos de voz deben ser .qvoice (se obtuvo <ruta>)`). Con idioma `-l` lo guarda; sin `-l` guarda «sin idioma». Sin `--text` ni `--serve`, crea el perfil y sale (`0`). Requiere `--ref-audio`. |
+| | `--load-voice <path>` | voz `default` incorporada | Carga `.qvoice` v5; la voz se llama como el archivo (sin extensión). Otra extensión o una versión distinta de la 5 → `exit 1`. Sin este flag ni `--ref-audio`, se usa la voz `default`. |
+| | Reglas de las opciones de voz (valen en todos los modos; la primera que falle da `exit 1`) | | 1) `--ref-audio` con `--load-voice`; 2) `--ref-text` sin `--ref-audio`; 3) `--ref-text` vacío o solo espacios; 4) `--save-voice` sin `--ref-audio`; 5) `--xvector-only` sin `--load-voice`. Una voz clonada se llama como el archivo de `--save-voice` (sin extensión) o, si no se guarda, como el WAV de `--ref-audio`. |
+| **Marcado y estilo** | Marcado en `--text` | sin flag propio | Síntesis multitramo con pausas `[pause:<s>]`, `[break:<s>]`, `[0.5]` o `\|`, y tags paralingüísticos en línea (`[laugh]`, `[sigh]`, `[yawn]`, `[wow]`, `[giggle]`, `[scoff]`). Sirve para la entrega completa y para `--stream`/`--stdout` (mismo PCM, `NUMERIC_CONTRACT.md` §4, invariante 5). Un texto solo de pausas, sin nada que hablar, es un error (`Composición: nada que sintetizar`) en las dos entregas. |
+| | `--compose-pause <s>` | `0.12` | Pausa entre tramos hablados seguidos del texto con marcado (no se aplica junto a las muletillas, que se funden). |
+| | `--no-compose` | off | Desactiva la sustitución de `[tags]` y la composición automática en `--text`. El marcado en `--text` (`[hmm]`, `[pause:0.4]`...) va por el mismo camino con `--stream` y `--stdout`. |
 
 ### 1.5 Servidor HTTP y sistema
 
@@ -161,8 +161,8 @@ let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, fa
   let voice = Voice::builtin_default(); // nombre: "default"
   let mut scratch = SessionScratch::new(); // reutilizable entre síntesis secuenciales
   ```
-- **Voz desde un `.qvoice` v4** (no toca el modelo): `Voice::load(path, &VoiceLoadOptions { ref_text_override, use_icl, log })` o `Voice::from_qvoice(QVoiceFile, &opts)`. El nombre es el guardado en el archivo o, si está vacío, el del archivo.
-- **Voz clonada desde un WAV**: `clone_voice(&runtime, &model, ref_wav, &CloneOptions { ref_text, name, language_id, log })` devuelve `(QVoiceFile, Voice)`. El audio de referencia se recorta siempre a 30 s antes de codificarse. El `QVoiceFile` es el archivo, listo para guardarse; el `Voice` es el ya construido. `Voice` no guarda archivos: `QVoiceFile` (`qwen-core`) es quien lee y escribe `.qvoice`.
+- **Voz desde un `.qvoice` v5** (no toca el modelo): `Voice::load(path, &VoiceLoadOptions { use_icl, log })` o `Voice::from_qvoice(QVoiceFile, name, &opts)`. `load` llama a la voz como el archivo (sin extensión); `from_qvoice` usa el nombre dado.
+- **Voz clonada desde un WAV**: `clone_voice(&runtime, &model, ref_wav, &CloneOptions { ref_text, language_id, log })` devuelve el `QVoiceFile`, listo para guardarse; la voz se construye con `Voice::from_qvoice`. Hay ICL si y solo si `ref_text` es `Some` (vacío → error). Se usa el audio entero. `Voice` no guarda archivos: `QVoiceFile` (`qwen-core`) es quien lee y escribe `.qvoice`.
 
 ### 3.3 Síntesis: `Synthesizer`, `Script` y `Delivery`
 
@@ -192,7 +192,7 @@ synth.synthesize(
 )?;
 ```
 
-- **`Script`**: `Plain(String)` (texto sin marcado) o `Spans(Vec<SpanSpec>)` (tramos hablados y pausas). `qwen_core::plan_script(text, MarkupMode::{Auto, Literal, Compose})` es el único sitio que decide la sustitución paralingüística y los tramos.
+- **`Script`**: `Plain(String)` (texto sin marcado) o `Spans(Vec<SpanSpec>)` (tramos hablados y pausas). `qwen_core::plan_script(text, MarkupMode::{Auto, Literal})` es el único sitio que decide la sustitución paralingüística y los tramos.
 - **`Delivery`**: `Buffer` devuelve todo el audio en `SynthesisOutput::samples`, con `time_stretch` (`rate`); `Stream(&mut sink)` entrega chunks al destino y rechaza `rate != 1.0`. Los dos dan el mismo PCM (`NUMERIC_CONTRACT.md` §4, invariante 5).
 - **`SynthesisRequest`**: `language_id` (ya resuelto con `effective_language(pedido, voz)`: pedido, voz o español), `sampling: SamplingParams` (`temperature`, `top_k`, `top_p`, `rep_penalty`, `seed`), `max_frames`, `chunk_frames`, `volume`, `rate`, `compose_pause_s` y `log: LogLevel`. Los valores por defecto (0,325 / 50 / 1,0 / 1,05 / 4, 8192 frames, chunks de 10) están en un solo sitio.
 - **Destinos de audio**: el trait `AudioSink` (`write_samples(&mut self, &[f32])` y `finish(&mut self)`) es el único destino del camino. `MemorySink` acumula `f32`; `EdgeRampSink<W: PcmWrite>` aplica las rampas de borde (5 ms de entrada, 40 ms de salida con retención) y convierte a PCM `s16le`, y no aplica ganancia (la aplica `synthesize` antes de escribir). `PcmWrite` (`write_pcm` y `finish`) tiene escritores incluidos —`WavFileWriter` (WAV progresivo), `StdoutWriter` y `Vec<u8>`— o uno propio.
@@ -219,15 +219,14 @@ synth.synthesize(
 
 | Variable | Ámbito | Por defecto | Efecto |
 |---|---|---|---|
-| `OPENBLAS_NUM_THREADS` (o `GOTO_NUM_THREADS`, `OMP_NUM_THREADS`) | OpenBLAS / Windows | `-j` *(lo fija el binario en Windows)* | Opcional. En Windows, el binario fija `OPENBLAS_NUM_THREADS` al `-j` efectivo antes de que se inicialice OpenBLAS. Si el usuario fija cualquiera de las tres, mandan esas: OpenBLAS reserva un buffer de 128 MiB de memoria comprometida (*commit*) por hilo indicado, los hilos de BLAS no superan ese valor aunque `-j` sea mayor y el motor no cambia los hilos de OpenBLAS entre *prefill* y generación (`FfiBlas::set_threads` no actúa). |
+| `OPENBLAS_NUM_THREADS` (o `GOTO_NUM_THREADS`, `OMP_NUM_THREADS`) | OpenBLAS / Windows | `-j` *(lo fija el binario en Windows)* | El motor fija los hilos con `-j` e ignora estas variables. En Windows escribe `OPENBLAS_NUM_THREADS` al `-j` efectivo antes de que OpenBLAS se inicialice. En Linux, OpenBLAS las lee antes de `main`; si alguna está por debajo de `-j`, limita los hilos de BLAS (es la inicialización de OpenBLAS, no un ajuste del motor). |
 | `OPENBLAS_LIB_DIR` | Compilación (`qwen-kernels`) | *(obligatoria en Linux y Windows)* | Directorio del `libopenblas.a` propio, que el motor enlaza estático (`scripts/build-openblas.sh` lo compila). Es obligatoria, sin valor por defecto, y debe contener `libopenblas.a`; si falta, la compilación falla con un mensaje que explica cómo compilarlo. En la documentación: `C:/openblas/lib` en Windows (`x86_64-pc-windows-gnu`) y `$HOME/openblas/lib` en Linux. En macOS no se usa (Accelerate). |
-| `WINDRES` | Compilación (`qwen-app`) | auto | Compilador de recursos COFF para incrustar el manifiesto UTF-8 en Windows GNU. |
-| `QWEN_KERNELS` | Runtime | `auto` | `auto`: los kernels más rápidos que soporte la CPU (AVX2 + FMA en x86-64; en aarch64, NEON en todos los kernels, con `SDOT` en Q4_0 e INT8 si la CPU tiene `dotprod`; `--caps` muestra la ruta en la línea `kernels:`). `scalar`: fuerza la ruta escalar, como referencia para comparar kernels en la misma máquina; `--caps` lo indica con `kernels: scalar (forzado por QWEN_KERNELS=scalar)`. Un valor no válido se avisa por stderr y se trata como `auto`. Cambiar de ruta cambia el redondeo y, por tanto, el audio. |
+| `QWEN_KERNELS` | Runtime | `auto` | `auto`: los kernels más rápidos que soporte la CPU (AVX2 + FMA en x86-64; en aarch64, NEON en todos los kernels, con `SDOT` en Q4_0 e INT8 si la CPU tiene `dotprod`; `--caps` muestra la ruta en la línea `kernels:`). `scalar`: fuerza la ruta escalar, como referencia para comparar kernels en la misma máquina; `--caps` lo indica con `kernels: scalar (forzado por QWEN_KERNELS=scalar)`. Un valor no válido es un error al arrancar (`exit 1`). Cambiar de ruta cambia el redondeo y, por tanto, el audio. |
 
 ### 4.2 Afinidad SMT en Windows y gestión de OpenBLAS
 
-- **Afinidad Win32 (`affinity.rs`)**: al arrancar en Windows con 1 grupo de procesadores, `qwen_tts` fija `SetProcessAffinityMask` a **1 hilo lógico por núcleo físico** para evitar contención SMT del planificador.
-- **OpenBLAS propio**: en Windows con `x86_64-pc-windows-gnu`, el OpenBLAS propio (0.3.34, sin OpenMP) está enlazado estático y se inicializa antes de `main`, reservando 128 MiB de memoria comprometida (*commit*) por hilo. Si no hay `OPENBLAS_NUM_THREADS`, `GOTO_NUM_THREADS` ni `OMP_NUM_THREADS`, el binario fija `OPENBLAS_NUM_THREADS` al `-j` efectivo antes de esa inicialización (`.CRT$XCT`); no hace falta definir nada. `set_threads` llama una vez a `openblas_set_num_threads`, que es global al proceso, y nunca pasa de los hilos iniciales (OpenBLAS 0.3.34 se cuelga si se le piden más). Mantén **sin definir** las tres variables para que el motor pueda ajustar los hilos entre *prefill* (`nt`) y generación (`gen_blas`).
+- **Afinidad Win32 (`affinity.rs`)**: al arrancar en Windows con 1 grupo de procesadores, `qwen_tts` fija `SetProcessAffinityMask` a **1 hilo lógico por núcleo físico** para evitar contención SMT del planificador. El mensaje `Afinidad: …` no sale con `-S`.
+- **OpenBLAS propio**: en Windows con `x86_64-pc-windows-gnu`, el OpenBLAS propio (0.3.34, sin OpenMP) está enlazado estático y se inicializa antes de `main`, reservando 128 MiB de memoria comprometida (*commit*) por hilo. El binario fija `OPENBLAS_NUM_THREADS` al `-j` efectivo antes de esa inicialización (`.CRT$XCT`); no hace falta definir nada. `set_threads` llama una vez a `openblas_set_num_threads`, que es global al proceso, y nunca pasa de los hilos iniciales (OpenBLAS 0.3.34 se cuelga si se le piden más).
 
 ### 4.3 Líneas de log de referencia
 
@@ -235,7 +234,7 @@ Formato actual de las líneas de diagnóstico que el motor escribe en `stderr`. 
 
 - **Carga de Code Predictor** (`model.rs`):
   `  Code Predictor: 5 capas cargadas, q_dim=2048 kv_dim=1024 [INT8+Q4_0-FFN]`
-- **Voz cargada** (`modes/voice_cmd.rs`, salvo con `-S`): `Voz: <nombre>` (`default`, el nombre guardado en el `.qvoice`, el nombre del archivo o el del WAV clonado).
+- **Voz cargada** (`modes/voice_cmd.rs`, salvo con `-S`): `Voz: <nombre>` (`default`, el nombre del archivo `.qvoice` o el del WAV clonado).
 - **Semilla resuelta** (`request.rs`):
   `semilla: <u32>` *(o `semilla: <u32> (automática/temporal)`)*
 - **Generación en pipeline** (`pipeline.rs`):

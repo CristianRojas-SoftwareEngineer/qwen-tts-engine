@@ -21,7 +21,7 @@ use crate::model::{
     lookup_codec_embed, AbortHandle, Model06B, SessionScratch, SynthesisTiming, ROPE_MAX_POS,
 };
 use crate::prompt::{build_prompt, prefill};
-use crate::request::{SynthesisRequest, DEFAULT_CHUNK_FRAMES};
+use crate::request::SynthesisRequest;
 use crate::speech_decoder::speech_decoder_decode_streaming;
 use crate::talker::talker_step;
 use crate::voice::Voice;
@@ -241,11 +241,7 @@ pub(crate) fn generate_to_sink(
     scratch.prev_tokens.clear();
     scratch.prev_tokens.reserve(max_frames);
 
-    let chunk_frames = if req.chunk_frames > 0 {
-        req.chunk_frames.clamp(2, 250)
-    } else {
-        DEFAULT_CHUNK_FRAMES
-    };
+    let chunk_frames = req.chunk_frames.clamp(2, 250);
 
     let mut trim_head_left = prompt.icl_trim_samples;
 

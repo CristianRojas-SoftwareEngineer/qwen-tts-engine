@@ -32,9 +32,9 @@ El caso de uso del motor es local: una síntesis a la vez en un equipo modesto, 
 
 1. **Una sola entrada de síntesis**: `Synthesizer { runtime, model, voice }.synthesize(scratch, &req, &abort, &script, delivery)`.
    - `Script` es `Plain(String)` o `Spans(Vec<SpanSpec>)`; `Delivery` es `Buffer` o `Stream(&mut dyn AudioSink)`.
-   - La petición es un solo tipo, `SynthesisRequest`, con los valores por defecto en un solo sitio; la voz es un solo tipo, `Voice`, con el idioma y el tope de ICL resueltos al construirla.
+   - La petición es un solo tipo, `SynthesisRequest`, con los valores por defecto en un solo sitio; la voz es un solo tipo, `Voice`, con el idioma resuelto al construirla.
 2. **Una regla de idioma**: el del pedido (`-l` o `language`); si no hay, el de la voz; si tampoco, español (`2054`). La voz `default` declara español. El prompt siempre lleva idioma.
-3. **Una composición multi-tramo idéntica en ambas entregas**: ganancia `x·(v·o)` por tramo, pausas, fundido cruzado de 45 ms junto a las muletillas y acabado (`tail_trim`, `onset_fade`) solo en la entrega completa. El marcado, con `--compose` o sin él, aplica la sustitución paralingüística y va por el mismo camino con `--stream` y `--stdout`.
+3. **Una composición multi-tramo idéntica en ambas entregas**: ganancia `x·(v·o)` por tramo, pausas, fundido cruzado de 45 ms junto a las muletillas. El marcado aplica la sustitución paralingüística y va por el mismo camino con `--stream` y `--stdout`.
 4. **Se retiran el procesamiento por lotes y el servidor concurrente**: `batch.rs`, `--batch*`, `--workers`, `--batch-size` y sus planificadores. El servidor queda con un único trabajador que atiende cada conexión en línea, con un solo enrutado y un solo calentamiento.
 5. **Un solo destino de audio con rampas de borde** (`EdgeRampSink<W: PcmWrite>`), que no aplica ganancia; la ganancia la aplica `synthesize` justo antes de escribir. Los escritores (WAV progresivo, `stdout`, memoria, HTTP *chunked*) solo escriben bytes.
 6. **Preparación de la petición en un solo sitio** de `qwen-app` (`from_cli` y `from_http`), y una resolución única del modo de la CLI (`CliMode`).
@@ -61,8 +61,8 @@ El caso de uso del motor es local: una síntesis a la vez en un equipo modesto, 
 
 - **Idioma por defecto español en todos los modos**: sin `-l` ni `language`, la voz `default` habla español; antes la CLI usaba inglés y el servidor no enviaba idioma. `GET /v1/voices` devuelve `"language":"Spanish"` para la voz `default`, y el log `lang=` de las peticiones muestra el idioma efectivo.
 - **`--stream` y `--stdout` con marcado** dan el mismo PCM que el WAV; `--stdout` con marcado sale por `stdout`.
-- **`--compose` en buffer es igual a `--text` con el mismo marcado**: aplica la paralingüística (`[laugh]` y `[sigh]` son onomatopeyas como en el texto normal).
-- **Una composición solo de pausas es un error** (`nothing to synthesize`) también en la entrega completa; antes daba silencio.
+- **`--compose` en buffer es igual a `--text` con el mismo marcado**: aplica la paralingüística (`[laugh]` y `[sigh]` son onomatopeyas como en el texto normal). (El 2026-11-21 se retiró `--compose`: `-t` es la única entrada de texto).
+- **Una composición solo de pausas es un error** (`Composición: nada que sintetizar`) también en la entrega completa; antes daba silencio.
 - **`-S` gana a `-D`**: con los dos, no se imprimen diagnósticos.
 - Los flags `--batch`, `--batch-size`, `--workers` y los demás del lote se rechazan con el error genérico del *parser*.
 - La API Rust de `qwen-engine` cambia sin compatibilidad hacia atrás: `Voice`, `SynthesisRequest`, `Synthesizer`, `Delivery`, `Script` y `EdgeRampSink` sustituyen a `VoiceBindings`, `RequestConfig`, `synthesize_to_samples`, `synthesize_to_sink` y los destinos anteriores ([`INTERFACE_CONTRACT.md`](../INTERFACE_CONTRACT.md) §3).

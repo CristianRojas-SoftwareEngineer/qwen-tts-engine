@@ -20,11 +20,11 @@ pub enum CliMode {
     ListVoices(String),
     /// `--delete-voice <archivo>`.
     DeleteVoice(String),
-    /// `--save-voice` sin `--text` ni `--serve`: solo crea el perfil de voz.
+    /// `--ref-audio` y `--save-voice` sin `--text` ni `--serve`: solo crea el perfil de voz.
     CreateVoice,
     /// `--serve <puerto>`.
     Serve(u16),
-    /// `--text` o `--compose`: una síntesis.
+    /// `--text`: una síntesis.
     Synthesize,
     /// Sin ningún trabajo que hacer (se reporta como error tras exigir `--model-dir`).
     #[default]
@@ -53,7 +53,7 @@ impl CliMode {
         if let Some(port) = cfg.serve_port {
             return Self::Serve(port);
         }
-        if cfg.text.is_some() || cfg.compose_spec.is_some() {
+        if cfg.text.is_some() {
             return Self::Synthesize;
         }
         Self::NoJob
@@ -90,9 +90,7 @@ pub struct CliArgs {
     pub xvector_only: bool,
     pub save_voice: Option<String>,
     pub load_voice: Option<String>,
-    pub voice_name: Option<String>,
 
-    pub compose_spec: Option<String>,
     pub compose_pause: f32,
     pub no_compose: bool,
 
@@ -135,8 +133,6 @@ impl Default for CliArgs {
             xvector_only: false,
             save_voice: None,
             load_voice: None,
-            voice_name: None,
-            compose_spec: None,
             compose_pause: DEFAULT_COMPOSE_PAUSE_S,
             no_compose: false,
             serve_port: None,
@@ -184,13 +180,11 @@ pub fn print_usage(prog: &str) {
     eprintln!("  --max-duration <secs>      Duración máxima del audio en segundos");
     eprintln!("  --ref-audio <path>         WAV de referencia mono de 24 kHz para clonar la voz");
     eprintln!("  --ref-text <string>        Transcripción de --ref-audio para la clonación ICL");
-    eprintln!("  --xvector-only             Usa solo el embedding del locutor (sin ICL)");
+    eprintln!("  --xvector-only             Con --load-voice: usa solo el x-vector de la voz (ignora su ICL)");
     eprintln!("  --save-voice <path>        Guarda la voz (.qvoice)");
     eprintln!("  --load-voice <path>        Carga una voz (.qvoice; por defecto: la voz default integrada)");
-    eprintln!("  --voice-name <name>        Nombre de voz en los metadatos del .qvoice");
     eprintln!("  --list-voices <dir>        Lista los archivos .qvoice de un directorio");
     eprintln!("  --delete-voice <path>      Borra un archivo .qvoice");
-    eprintln!("  --compose <spec>           Síntesis de varios tramos con marcado en línea");
     eprintln!("  --compose-pause <s>        Pausa por defecto entre tramos hablados (por defecto: {DEFAULT_COMPOSE_PAUSE_S})");
     eprintln!("  --no-compose               Pasa el texto tal cual: los [tags] se leen como texto");
     eprintln!("  --serve <port>             Inicia el servidor HTTP en el puerto indicado");
@@ -255,6 +249,30 @@ fn take_usize(
     let s = take_val(args, idx, inline, flag)?;
     s.parse::<usize>()
         .map_err(|_| format!("Error: {name} inválido '{s}'"))
+}
+
+/// Reglas de las opciones de voz, válidas en todos los modos. Se evalúan en
+/// orden y se devuelve el error de la primera que falle.
+fn validate_voice_flags(cfg: &CliArgs) -> Result<(), String> {
+    if cfg.ref_audio.is_some() && cfg.load_voice.is_some() {
+        return Err("Error: --ref-audio y --load-voice no se pueden combinar: clona con --ref-audio o carga con --load-voice".to_string());
+    }
+    if cfg.ref_text.is_some() && cfg.ref_audio.is_none() {
+        return Err("Error: --ref-text solo se usa al clonar, con --ref-audio".to_string());
+    }
+    if cfg.ref_text.as_deref().is_some_and(|t| t.trim().is_empty()) {
+        return Err(
+            "Error: --ref-text no puede estar vacío; para clonar solo el timbre, omítelo"
+                .to_string(),
+        );
+    }
+    if cfg.save_voice.is_some() && cfg.ref_audio.is_none() {
+        return Err("Error: --save-voice requiere --ref-audio".to_string());
+    }
+    if cfg.xvector_only && cfg.load_voice.is_none() {
+        return Err("Error: --xvector-only solo se usa con --load-voice; para clonar solo el timbre, omite --ref-text".to_string());
+    }
+    Ok(())
 }
 
 /// Parsea y valida los argumentos de línea de comandos en [`ParseOutcome`].
@@ -342,7 +360,11 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
             }
             "--max-duration" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
-                out.max_duration = Some(parse_finite_f32(&s, "max-duration")?);
+                let v = parse_finite_f32(&s, "max-duration")?;
+                if v <= 0.0 {
+                    return Err("Error: --max-duration debe ser mayor que 0".to_string());
+                }
+                out.max_duration = Some(v);
             }
             "--stream" => out.stream = true,
             "--stdout" => {
@@ -370,12 +392,6 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
             }
             "--load-voice" => {
                 out.load_voice = Some(take_val(args, &mut i, inline_val, flag)?);
-            }
-            "--voice-name" => {
-                out.voice_name = Some(take_val(args, &mut i, inline_val, flag)?);
-            }
-            "--compose" => {
-                out.compose_spec = Some(take_val(args, &mut i, inline_val, flag)?);
             }
             "--compose-pause" => {
                 let s = take_val(args, &mut i, inline_val, flag)?;
@@ -418,6 +434,7 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
         i += 1;
     }
 
+    validate_voice_flags(&out)?;
     out.mode = CliMode::resolve(&out);
     Ok(ParseOutcome::Run(Box::new(out)))
 }
@@ -450,6 +467,8 @@ mod tests {
             vec!["qwen_tts", "--volume", "-0.5"],
             vec!["qwen_tts", "--rate", "0.1"],
             vec!["qwen_tts", "--seed", "99999999999"],
+            vec!["qwen_tts", "--max-duration", "0"],
+            vec!["qwen_tts", "--max-duration", "-1"],
         ] {
             let args: Vec<String> = bad.into_iter().map(str::to_string).collect();
             assert!(
@@ -474,18 +493,27 @@ mod tests {
     fn test_cli_mode_precedence() {
         assert_eq!(mode_of(&[]), CliMode::NoJob);
         assert_eq!(mode_of(&["-t", "hola"]), CliMode::Synthesize);
-        assert_eq!(mode_of(&["--compose", "hola"]), CliMode::Synthesize);
         assert_eq!(
             mode_of(&["--serve", "8080", "-t", "x"]),
             CliMode::Serve(8080)
         );
-        assert_eq!(mode_of(&["--save-voice", "v.qvoice"]), CliMode::CreateVoice);
         assert_eq!(
-            mode_of(&["--save-voice", "v.qvoice", "-t", "x"]),
+            mode_of(&["--ref-audio", "a.wav", "--save-voice", "v.qvoice"]),
+            CliMode::CreateVoice
+        );
+        assert_eq!(
+            mode_of(&["--ref-audio", "a.wav", "--save-voice", "v.qvoice", "-t", "x"]),
             CliMode::Synthesize
         );
         assert_eq!(
-            mode_of(&["--save-voice", "v.qvoice", "--serve", "8080"]),
+            mode_of(&[
+                "--ref-audio",
+                "a.wav",
+                "--save-voice",
+                "v.qvoice",
+                "--serve",
+                "8080"
+            ]),
             CliMode::Serve(8080)
         );
         assert_eq!(
@@ -499,6 +527,77 @@ mod tests {
         assert_eq!(
             mode_of(&["--caps", "--self-test", "-t", "x"]),
             CliMode::Caps
+        );
+    }
+
+    #[test]
+    fn test_compose_flag_removed() {
+        let args: Vec<String> = ["qwen_tts", "--compose", "x"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let Err(e) = parse_cli(&args) else {
+            panic!("se esperaba un error");
+        };
+        assert_eq!(e, "Error: opción desconocida '--compose'");
+    }
+
+    fn voice_flags_result(args: &[&str]) -> Result<(), String> {
+        let v: Vec<String> = std::iter::once("qwen_tts")
+            .chain(args.iter().copied())
+            .map(str::to_string)
+            .collect();
+        parse_cli(&v).map(|_| ())
+    }
+
+    #[test]
+    fn test_voice_flag_rules() {
+        let r1 = "Error: --ref-audio y --load-voice no se pueden combinar: clona con --ref-audio o carga con --load-voice";
+        let r2 = "Error: --ref-text solo se usa al clonar, con --ref-audio";
+        let r3 = "Error: --ref-text no puede estar vacío; para clonar solo el timbre, omítelo";
+        let r4 = "Error: --save-voice requiere --ref-audio";
+        let r5 = "Error: --xvector-only solo se usa con --load-voice; para clonar solo el timbre, omite --ref-text";
+        assert_eq!(
+            voice_flags_result(&["--ref-audio", "a.wav", "--load-voice", "v.qvoice"]),
+            Err(r1.to_string())
+        );
+        assert_eq!(voice_flags_result(&["--ref-text", "t"]), Err(r2.to_string()));
+        assert_eq!(
+            voice_flags_result(&["--ref-audio", "a.wav", "--ref-text", "  "]),
+            Err(r3.to_string())
+        );
+        assert_eq!(
+            voice_flags_result(&["--save-voice", "v.qvoice"]),
+            Err(r4.to_string())
+        );
+        assert_eq!(voice_flags_result(&["--xvector-only"]), Err(r5.to_string()));
+        // Orden: gana la primera regla que falle.
+        assert_eq!(
+            voice_flags_result(&["--ref-audio", "a", "--load-voice", "b", "--xvector-only"]),
+            Err(r1.to_string())
+        );
+        assert_eq!(voice_flags_result(&["--ref-text", ""]), Err(r2.to_string()));
+        // Valen también con los modos de diagnóstico.
+        assert_eq!(
+            voice_flags_result(&["--caps", "--xvector-only"]),
+            Err(r5.to_string())
+        );
+        // Combinaciones válidas.
+        assert_eq!(voice_flags_result(&["--ref-audio", "a.wav"]), Ok(()));
+        assert_eq!(
+            voice_flags_result(&[
+                "--ref-audio",
+                "a.wav",
+                "--ref-text",
+                "t",
+                "--save-voice",
+                "v.qvoice"
+            ]),
+            Ok(())
+        );
+        assert_eq!(
+            voice_flags_result(&["--load-voice", "v.qvoice", "--xvector-only", "-t", "x"]),
+            Ok(())
         );
     }
 

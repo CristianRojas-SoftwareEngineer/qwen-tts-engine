@@ -135,29 +135,13 @@ fn initial_threads() -> usize {
     *INITIAL.get_or_init(|| unsafe { openblas_get_num_threads() }.max(1) as usize)
 }
 
-/// Indica si el usuario fijó los hilos de OpenBLAS por entorno, con `OPENBLAS_NUM_THREADS`,
-/// `GOTO_NUM_THREADS` u `OMP_NUM_THREADS`, las tres que OpenBLAS lee al arrancar.
-///
-/// Se evalúa la primera vez que se llama y se conserva. Debe llamarse antes de que el propio
-/// binario toque el entorno (`_putenv`): después vería la variable que fija el binario y se
-/// confundiría con una del usuario.
-#[cfg(not(target_os = "macos"))]
-fn user_fixed_threads() -> bool {
-    static FIXED: OnceLock<bool> = OnceLock::new();
-    *FIXED.get_or_init(|| {
-        ["OPENBLAS_NUM_THREADS", "GOTO_NUM_THREADS", "OMP_NUM_THREADS"]
-            .iter()
-            .any(|v| std::env::var_os(v).is_some())
-    })
-}
-
-/// Fija los hilos con que se inicializa OpenBLAS, si el usuario no los fijó por entorno.
+/// Fija los hilos con que se inicializa OpenBLAS.
 ///
 /// En `x86_64-pc-windows-gnu` se enlaza el OpenBLAS propio, estático y sin OpenMP. Su
 /// inicialización corre antes de `main` y reserva 128 MiB de memoria comprometida por cada
-/// hilo. Por eso el binario fija `OPENBLAS_NUM_THREADS` antes, salvo que el usuario haya fijado
-/// alguna de las tres variables de hilos (`OPENBLAS_NUM_THREADS`, `GOTO_NUM_THREADS` u
-/// `OMP_NUM_THREADS`), que se respetan; sin ninguna, OpenBLAS usa un hilo por CPU lógica.
+/// hilo. Por eso el binario fija `OPENBLAS_NUM_THREADS` antes, siempre: OpenBLAS da prioridad a
+/// `OPENBLAS_NUM_THREADS` sobre `GOTO_NUM_THREADS` y `OMP_NUM_THREADS`, así que el valor del
+/// binario manda.
 /// `openblas_set_num_threads` posterior no devuelve esa memoria, y pedir más hilos que los
 /// iniciales cuelga la primera `sgemm`. Por eso el binario llama a esta función antes que los
 /// constructores de OpenBLAS, con el número de hilos que va a usar.
@@ -167,12 +151,6 @@ fn user_fixed_threads() -> bool {
 pub fn set_initial_openblas_threads(n: usize) {
     #[cfg(windows)]
     {
-        // Invariante: `user_fixed_threads` se evalúa siempre antes de cualquier `_putenv`, que
-        // actualiza también el entorno del proceso; evaluada después, vería la variable que fija
-        // el propio binario.
-        if user_fixed_threads() {
-            return;
-        }
         let Ok(var) = std::ffi::CString::new(format!("OPENBLAS_NUM_THREADS={}", n.max(1))) else {
             return;
         };
@@ -218,14 +196,11 @@ impl FfiBlas {
         }
     }
 
-    /// Fija los hilos de OpenBLAS, sin pasar de los iniciales, salvo que el usuario los haya
-    /// fijado por entorno. El número de hilos de OpenBLAS es global al proceso.
+    /// Fija los hilos de OpenBLAS, sin pasar de los iniciales. El número de hilos de OpenBLAS
+    /// es global al proceso.
     pub fn set_threads(&self, n: usize) {
         #[cfg(not(target_os = "macos"))]
         {
-            if user_fixed_threads() {
-                return;
-            }
             unsafe {
                 openblas_set_num_threads(n.max(1).min(initial_threads()) as c_int);
             }
@@ -305,10 +280,6 @@ mod tests {
 
     #[test]
     fn set_threads_acts_on_openblas() {
-        if user_fixed_threads() {
-            eprintln!("se omite: el usuario fijó los hilos de OpenBLAS por entorno");
-            return;
-        }
         // En un equipo de un solo hilo, la comprobación con n = 1 pasa de forma trivial.
         FfiBlas.set_threads(1);
         assert_eq!(unsafe { openblas_get_num_threads() }, 1, "set_threads(1) no fijó un hilo en OpenBLAS");

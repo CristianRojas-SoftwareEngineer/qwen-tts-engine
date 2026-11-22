@@ -49,7 +49,7 @@ pub struct SynthesisRequest {
     pub sampling: SamplingParams,
     /// Máximo de frames generados.
     pub max_frames: usize,
-    /// Tamaño del chunk de decodificación (`0` = `DEFAULT_CHUNK_FRAMES`; se acota a `2..=250`).
+    /// Tamaño del chunk de decodificación; se acota a `2..=250`.
     pub chunk_frames: usize,
     pub volume: f32,
     pub rate: f32,

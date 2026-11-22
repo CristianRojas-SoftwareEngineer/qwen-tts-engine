@@ -13,5 +13,4 @@ path = "src/main.rs"
 qwen-kernels = { path = "../qwen-kernels" }
 qwen-core = { path = "../qwen-core" }
 qwen-engine = { path = "../qwen-engine" }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
