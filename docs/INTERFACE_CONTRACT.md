@@ -33,7 +33,7 @@
 | | `--max-duration <secs>` | `None` | Debe ser `> 0`; el tope es `max(1, floor(secs · 12,5))` frames; sin el flag, `8192`; `≤ 0` → `exit 1`. |
 | | `--seed <n>` | `4` (`< 0` reloj) | Entero `0..=u32::MAX` fija semilla; omitido usa `DEFAULT_SEED = 4` (salvo sustitución paralingüística en línea); negativo usa reloj del sistema; `> u32::MAX` → `exit 1`. |
 
-**Cuantización**: no hay flags. El motor usa siempre el mismo perfil: Talker en `Q4_0`; Code Predictor con atención y `lm_head` en `INT8` y FFN en `Q4_0` (`[INT8+Q4_0-FFN]`).
+**Cuantización**: no hay flags. El motor usa siempre el mismo perfil: Talker con el prefill en `BF16` y el decodificado paso a paso en `INT8`; Code Predictor con atención y `lm_head` en `INT8` y FFN en `Q4_0` (`[INT8+Q4_0-FFN]`).
 
 ### 1.3 Streaming, audio y post-procesado
 
@@ -146,7 +146,7 @@ let runtime = ComputeRuntime::new(Some(4)); // `None` -> min(ncpus, 4)
 let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, false)?;
 ```
 
-- `Model06B::load` valida `config.json` para `0.6B`, abre `safetensors` vía `MmapStore` y cuantiza las matrices con el perfil único (Talker `Q4_0`; Code Predictor `INT8` y `Q4_0`). El encoder del locutor es obligatorio: si falta, es un error de carga.
+- `Model06B::load` valida `config.json` para `0.6B`, abre `safetensors` vía `MmapStore` y cuantiza las matrices con el perfil único (Talker con el prefill en `BF16` y el decodificado paso a paso en `INT8`; Code Predictor `INT8` y `Q4_0`). El encoder del locutor es obligatorio: si falta, es un error de carga.
 
 ### 3.2 `Voice` y `SessionScratch`
 
@@ -230,6 +230,8 @@ synth.synthesize(
 
 Formato actual de las líneas de diagnóstico que el motor escribe en `stderr`. Son texto para personas y no forman parte del contrato: pueden cambiar, y los scripts y las pruebas del repositorio que las leen se actualizan con ellas.
 
+- **Carga del Talker** (`model.rs`):
+  `  Talker: 28 capas cargadas, caché KV de <N> slots [INT8]`
 - **Carga de Code Predictor** (`model.rs`):
   `  Code Predictor: 5 capas cargadas, q_dim=2048 kv_dim=1024 [INT8+Q4_0-FFN]`
 - **Voz cargada** (`modes/voice_cmd.rs`, salvo con `-S`): `Voz: <nombre>` (`default`, el nombre del archivo `.qvoice` o el del WAV clonado).

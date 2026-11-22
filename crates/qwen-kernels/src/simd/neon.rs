@@ -415,18 +415,6 @@ macro_rules! q4_0_int8_kernels {
             }
         }
 
-        /// QKV fusionado: siempre el kernel de 2 filas, como en AVX2.
-        pub(crate) fn q4_0_matvec_qkv_slice(
-            y: &mut [f32],
-            qx: &[i8],
-            sx: f32,
-            w: &[Q4_0Block],
-            cols: usize,
-            rows: usize,
-        ) {
-            unsafe { q4_0_matvec_2row(y.as_mut_ptr(), qx.as_ptr(), sx, w.as_ptr(), cols, rows) }
-        }
-
         #[allow(clippy::too_many_arguments)]
         pub(crate) fn q4_0_matmat_slice(
             y: &mut [f32],

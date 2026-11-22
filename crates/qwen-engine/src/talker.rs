@@ -362,10 +362,11 @@ pub fn talker_step(
             pos,
         );
 
-        d.matvec_q4_0(
+        d.matvec_int8(
             pool,
             &mut tb.dec_proj_out,
-            &l.wo_q,
+            &l.wo.data,
+            &l.wo.scale,
             &tb.dec_attn_out,
             HIDDEN_SIZE,
             Q_DIM,
@@ -380,10 +381,11 @@ pub fn talker_step(
             eps,
         );
 
-        d.matvec_q4_0(
+        d.matvec_int8(
             pool,
             &mut tb.dec_gate,
-            &l.gate_up_q,
+            &l.gate_up.data,
+            &l.gate_up.scale,
             &tb.dec_x_norm,
             2 * INTERMEDIATE_SIZE,
             HIDDEN_SIZE,
@@ -394,10 +396,11 @@ pub fn talker_step(
             INTERMEDIATE_SIZE,
         );
 
-        d.matvec_q4_0(
+        d.matvec_int8(
             pool,
             &mut tb.dec_proj_out,
-            &l.down_q,
+            &l.down.data,
+            &l.down.scale,
             &tb.dec_gate[..INTERMEDIATE_SIZE],
             HIDDEN_SIZE,
             INTERMEDIATE_SIZE,

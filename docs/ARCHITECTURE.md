@@ -36,7 +36,7 @@ El diseño separa los datos en niveles de vida para compartir pesos inmutables e
 Arc<Model06B>  [Inmutable, Send + Sync — compartido por todo el proceso]
  ├── Bf16Weight / F32Ref (mmap)          // Arc<Mmap> manteniendo vivos los safetensors
  ├── tokenizer: BpeTokenizer
- ├── talker: TalkerWeights                // 28 capas `TalkerLayerWeights` (BF16 mmap para el prefill + Q4_0) + embeddings
+ ├── talker: TalkerWeights                // 28 capas `TalkerLayerWeights` (BF16 mmap para el prefill + INT8) + embeddings
  ├── cp: CodePredictorWeights             // 5 capas `CpLayerWeights` (INT8 + Q4_0) + 15 lm_head INT8 + 15 codec_emb
  ├── decoder: SpeechDecoderWeights        // F32 + Codebooks + W_k pre-reordenado
  └── speaker_encoder: Arc<SpeakerEncoderWeights>         // ECAPA-TDNN (0.6B-Base)

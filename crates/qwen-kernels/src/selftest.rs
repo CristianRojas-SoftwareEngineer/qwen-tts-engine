@@ -187,7 +187,7 @@ fn selftest_shape_case(
         failures += 1;
     }
 
-    // 4. q4_0 matvec, matmat, qkv y 1 fila vs bloque
+    // 4. q4_0 matvec, matmat y 1 fila vs bloque
     if cols.is_multiple_of(Q4_0_BLOCK_SIZE) {
         let nb = cols / Q4_0_BLOCK_SIZE;
         let wq = quantize_bf16_to_q4_0(&wb, rows, cols);
@@ -242,25 +242,30 @@ fn selftest_shape_case(
             failures += 1;
         }
 
-        // qkv_q4_0 vs 3*matvec_q4_0
+        // qkv_int8 vs 3*matvec_int8
         let mut yc_col = AlignedBuf::<f32>::new_zeroed(rows);
         let qd = rows / 2;
         let kvd = rows / 4;
-        let wq_slice = &wq[..qd * nb];
-        let wk_slice = &wq[qd * nb..(qd + kvd) * nb];
-        let wv_slice = &wq[(qd + kvd) * nb..(qd + 2 * kvd) * nb];
+        let (wq_slice, sq_slice) = (&wi[..qd * cols], &sc[..qd]);
+        let (wk_slice, sk_slice) = (&wi[qd * cols..(qd + kvd) * cols], &sc[qd..qd + kvd]);
+        let (wv_slice, sv_slice) = (
+            &wi[(qd + kvd) * cols..(qd + 2 * kvd) * cols],
+            &sc[qd + kvd..qd + 2 * kvd],
+        );
         let (q_out, rest) = y.split_at_mut(qd);
         let (k_out, v_rest) = rest.split_at_mut(kvd);
         let v_out = &mut v_rest[..kvd];
-        d.matvec_q4_0_qkv(
-            pool, q_out, k_out, v_out, wq_slice, wk_slice, wv_slice, &x, cols, qd, kvd,
+        d.matvec_int8_qkv(
+            pool, q_out, k_out, v_out, wq_slice, sq_slice, wk_slice, sk_slice, wv_slice, sv_slice,
+            &x, cols, qd, kvd,
         );
-        d.matvec_q4_0(pool, &mut yc_col[..qd], wq_slice, &x, qd, cols);
-        d.matvec_q4_0(pool, &mut yc_col[qd..qd + kvd], wk_slice, &x, kvd, cols);
-        d.matvec_q4_0(
+        d.matvec_int8(pool, &mut yc_col[..qd], wq_slice, sq_slice, &x, qd, cols);
+        d.matvec_int8(pool, &mut yc_col[qd..qd + kvd], wk_slice, sk_slice, &x, kvd, cols);
+        d.matvec_int8(
             pool,
             &mut yc_col[qd + kvd..qd + 2 * kvd],
             wv_slice,
+            sv_slice,
             &x,
             kvd,
             cols,
@@ -268,7 +273,7 @@ fn selftest_shape_case(
         let ok_qkv = (0..qd + 2 * kvd).all(|i| y[i].to_bits() == yc_col[i].to_bits());
         let _ = writeln!(
             out,
-            "  [{:4}x{:4}] qkv_q4_0 frente a 3*matvec_q4_0: {}",
+            "  [{:4}x{:4}] qkv_int8 frente a 3*matvec_int8: {}",
             rows,
             cols,
             if ok_qkv { "OK (exacto)" } else { "FALLO" }
@@ -413,7 +418,6 @@ fn selftest_simd_vs_scalar_case(
     let wb: Vec<u16> = (0..rows * cols).map(|_| f32_to_bf16_round(rng.next_f())).collect();
     let (wi, si) = quantize_bf16_to_int8(&wb, rows, cols);
     let wq = quantize_bf16_to_q4_0(&wb, rows, cols);
-    let nb = cols / Q4_0_BLOCK_SIZE;
     let same_bits = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(p, q)| p.to_bits() == q.to_bits());
 
     let mut results: Vec<(String, bool, String)> = Vec::new();
@@ -436,19 +440,20 @@ fn selftest_simd_vs_scalar_case(
     results.push(("matvec_q4_0".into(), l2 <= Q4_TOL, format!("L2_rel={l2:.2e}")));
 
     let (qd, kvd) = (rows / 2, rows / 4);
-    let (wqq, wqk, wqv) = (
-        &wq[..qd * nb],
-        &wq[qd * nb..(qd + kvd) * nb],
-        &wq[(qd + kvd) * nb..(qd + 2 * kvd) * nb],
+    let (wiq, wik, wiv) = (
+        &wi[..qd * cols],
+        &wi[qd * cols..(qd + kvd) * cols],
+        &wi[(qd + kvd) * cols..(qd + 2 * kvd) * cols],
     );
+    let (siq, sik, siv) = (&si[..qd], &si[qd..qd + kvd], &si[qd + kvd..qd + 2 * kvd]);
     for (d, y) in [(simd, &mut ya), (sc, &mut yb)] {
         let (q, rest) = y.split_at_mut(qd);
         let (k, rest) = rest.split_at_mut(kvd);
-        d.matvec_q4_0_qkv(pool, q, k, &mut rest[..kvd], wqq, wqk, wqv, &x, cols, qd, kvd);
+        d.matvec_int8_qkv(pool, q, k, &mut rest[..kvd], wiq, siq, wik, sik, wiv, siv, &x, cols, qd, kvd);
     }
     let n = qd + 2 * kvd;
-    let l2 = rel_l2_f32(&ya[..n], &yb[..n]);
-    results.push(("qkv_q4_0".into(), l2 <= Q4_TOL, format!("L2_rel={l2:.2e}")));
+    let ok = same_bits(&ya[..n], &yb[..n]);
+    results.push(("qkv_int8".into(), ok, "bit a bit".into()));
 
     for b in BATCHES {
         simd.matmat_q4_0(pool, &mut ya[..rows * b], &wq, &x, rows, cols, b);

@@ -106,7 +106,6 @@ pub struct KernelDispatch {
     int8_matvec_slice_fn: Int8MatvecSliceFn,
     int8_matmat_slice_fn: Int8MatmatSliceFn,
     q4_0_matvec_slice_fn: Q4MatvecSliceFn,
-    q4_0_matvec_qkv_slice_fn: Q4MatvecSliceFn,
     q4_0_matmat_slice_fn: Q4MatmatSliceFn,
     attn_f32_fn: AttnF32Fn,
     attn_bf16kv_fn: AttnBf16KvFn,
@@ -131,7 +130,6 @@ static SCALAR_DISPATCH: KernelDispatch = KernelDispatch {
     int8_matvec_slice_fn: scalar::int8_matvec_slice,
     int8_matmat_slice_fn: scalar::int8_matmat_slice,
     q4_0_matvec_slice_fn: scalar::q4_0_matvec_slice,
-    q4_0_matvec_qkv_slice_fn: scalar::q4_0_matvec_slice,
     q4_0_matmat_slice_fn: scalar::q4_0_matmat_slice,
     attn_f32_fn: scalar::causal_attention_f32_heads,
     attn_bf16kv_fn: scalar::causal_attention_bf16kv_heads,
@@ -210,16 +208,6 @@ mod avx2_wrappers {
         rows: usize,
     ) {
         unsafe { avx2::q4_0_matvec_slice(y, qx, sx, w, cols, rows) }
-    }
-    pub fn q4_0_matvec_qkv_slice(
-        y: &mut [f32],
-        qx: &[i8],
-        sx: f32,
-        w: &[Q4_0Block],
-        cols: usize,
-        rows: usize,
-    ) {
-        unsafe { avx2::q4_0_matvec_qkv_slice(y, qx, sx, w, cols, rows) }
     }
     #[allow(clippy::too_many_arguments)]
     pub fn q4_0_matmat_slice(
@@ -316,7 +304,6 @@ static AVX2_DISPATCH: KernelDispatch = KernelDispatch {
     int8_matvec_slice_fn: avx2_wrappers::int8_matvec_slice,
     int8_matmat_slice_fn: avx2_wrappers::int8_matmat_slice,
     q4_0_matvec_slice_fn: avx2_wrappers::q4_0_matvec_slice,
-    q4_0_matvec_qkv_slice_fn: avx2_wrappers::q4_0_matvec_qkv_slice,
     q4_0_matmat_slice_fn: avx2_wrappers::q4_0_matmat_slice,
     attn_f32_fn: avx2_wrappers::attn_f32,
     attn_bf16kv_fn: avx2_wrappers::attn_bf16kv,
@@ -344,7 +331,6 @@ macro_rules! neon_dispatch {
             int8_matvec_slice_fn: neon::$m::int8_matvec_slice,
             int8_matmat_slice_fn: neon::$m::int8_matmat_slice,
             q4_0_matvec_slice_fn: neon::$m::q4_0_matvec_slice,
-            q4_0_matvec_qkv_slice_fn: neon::$m::q4_0_matvec_qkv_slice,
             q4_0_matmat_slice_fn: neon::$m::q4_0_matmat_slice,
             attn_f32_fn: neon::causal_attention_f32_heads,
             attn_bf16kv_fn: neon::causal_attention_bf16kv_heads,
@@ -926,51 +912,6 @@ impl KernelDispatch {
                     b_dim,
                 );
             });
-        });
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn matvec_q4_0_qkv(
-        &self,
-        pool: &ComputePool,
-        q: &mut [f32],
-        k: &mut [f32],
-        v: &mut [f32],
-        wq: &[Q4_0Block],
-        wk: &[Q4_0Block],
-        wv: &[Q4_0Block],
-        x: &[f32],
-        in_dim: usize,
-        q_dim: usize,
-        kv_dim: usize,
-    ) {
-        ftz_on();
-        assert!(
-            in_dim > 0 && in_dim <= QWEN_QACT_MAX && in_dim.is_multiple_of(Q4_0_BLOCK_SIZE),
-            "matvec_q4_0_qkv: in_dim={in_dim} no válido"
-        );
-        let nb = in_dim / Q4_0_BLOCK_SIZE;
-        assert!(
-            q.len() >= q_dim
-                && k.len() >= kv_dim
-                && v.len() >= kv_dim
-                && x.len() >= in_dim
-                && wq.len() >= q_dim * nb
-                && wk.len() >= kv_dim * nb
-                && wv.len() >= kv_dim * nb
-        );
-        let mut qx_buf = [0i8; QWEN_QACT_MAX];
-        let qx_slice = &mut qx_buf[..in_dim];
-        let sx = self.quantize_act_int8(qx_slice, &x[..in_dim]);
-        let f = self.q4_0_matvec_qkv_slice_fn;
-        let qx_ref: &[i8] = qx_slice;
-        Self::parallel_qkv_split(pool, q, k, v, q_dim, kv_dim, |seg, out, local, len| {
-            let w = match seg {
-                0 => wq,
-                1 => wk,
-                _ => wv,
-            };
-            f(out, qx_ref, sx, &w[local * nb..(local + len) * nb], in_dim, len);
         });
     }
 

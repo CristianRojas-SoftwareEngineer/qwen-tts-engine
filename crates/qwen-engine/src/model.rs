@@ -75,8 +75,8 @@ pub struct Int8Weight {
     pub scale: AlignedBuf<f32>,
 }
 
-/// Pesos de una capa del Talker (atención GQA + MLP SwiGLU). Los pesos BF16 los lee el prefill y
-/// los Q4_0 el decodificado paso a paso.
+/// Pesos de una capa del Talker. Los BF16 los lee el prefill y los INT8 el decodificado paso a paso;
+/// `gate_up` entrelaza las filas de `gate_proj` (pares) y `up_proj` (impares).
 pub struct TalkerLayerWeights {
     pub wq_bf16: Bf16Weight,
     pub wk_bf16: Bf16Weight,
@@ -89,12 +89,12 @@ pub struct TalkerLayerWeights {
     pub gate_bf16: Bf16Weight,
     pub up_bf16: Bf16Weight,
     pub down_bf16: Bf16Weight,
-    pub wq_q: AlignedBuf<Q4_0Block>,
-    pub wk_q: AlignedBuf<Q4_0Block>,
-    pub wv_q: AlignedBuf<Q4_0Block>,
-    pub wo_q: AlignedBuf<Q4_0Block>,
-    pub gate_up_q: AlignedBuf<Q4_0Block>,
-    pub down_q: AlignedBuf<Q4_0Block>,
+    pub wq: Int8Weight,
+    pub wk: Int8Weight,
+    pub wv: Int8Weight,
+    pub wo: Int8Weight,
+    pub gate_up: Int8Weight,
+    pub down: Int8Weight,
 }
 
 impl TalkerLayerWeights {
@@ -110,14 +110,17 @@ impl TalkerLayerWeights {
         q_dim: usize,
         kv_dim: usize,
     ) {
-        runtime.dispatch.matvec_q4_0_qkv(
+        runtime.dispatch.matvec_int8_qkv(
             &runtime.pool,
             q,
             k,
             v,
-            &self.wq_q,
-            &self.wk_q,
-            &self.wv_q,
+            &self.wq.data,
+            &self.wq.scale,
+            &self.wk.data,
+            &self.wk.scale,
+            &self.wv.data,
+            &self.wv.scale,
             x_norm,
             hidden,
             q_dim,
@@ -145,12 +148,21 @@ impl TalkerLayerWeights {
         let up_bf16 = req_bf16(store, &format!("{prefix}.mlp.up_proj.weight"))?;
         let down_bf16 = req_bf16(store, &format!("{prefix}.mlp.down_proj.weight"))?;
 
-        let gate_up_q = quantize_gate_up_q4_0(&gate_bf16, &up_bf16, inter, hidden);
-        let wq_q = quantize_matrix_q4(&wq_bf16, q_dim, hidden);
-        let wk_q = quantize_matrix_q4(&wk_bf16, kv_dim, hidden);
-        let wv_q = quantize_matrix_q4(&wv_bf16, kv_dim, hidden);
-        let wo_q = quantize_matrix_q4(&wo_bf16, hidden, q_dim);
-        let down_q = quantize_matrix_q4(&down_bf16, hidden, inter);
+        // Filas de `gate` y `up` entrelazadas (gate en las pares, up en las impares). Con una escala
+        // por fila, equivale a cuantizar cada matriz por separado.
+        let mut gate_up_bf16 = vec![0u16; 2 * inter * hidden];
+        for r in 0..inter {
+            gate_up_bf16[2 * r * hidden..(2 * r + 1) * hidden]
+                .copy_from_slice(&gate_bf16[r * hidden..(r + 1) * hidden]);
+            gate_up_bf16[(2 * r + 1) * hidden..(2 * r + 2) * hidden]
+                .copy_from_slice(&up_bf16[r * hidden..(r + 1) * hidden]);
+        }
+        let gate_up = quantize_matrix_int8(&gate_up_bf16, 2 * inter, hidden);
+        let wq = quantize_matrix_int8(&wq_bf16, q_dim, hidden);
+        let wk = quantize_matrix_int8(&wk_bf16, kv_dim, hidden);
+        let wv = quantize_matrix_int8(&wv_bf16, kv_dim, hidden);
+        let wo = quantize_matrix_int8(&wo_bf16, hidden, q_dim);
+        let down = quantize_matrix_int8(&down_bf16, hidden, inter);
 
         Ok(Self {
             wq_bf16,
@@ -164,12 +176,12 @@ impl TalkerLayerWeights {
             gate_bf16,
             up_bf16,
             down_bf16,
-            wq_q,
-            wk_q,
-            wv_q,
-            wo_q,
-            gate_up_q,
-            down_q,
+            wq,
+            wk,
+            wv,
+            wo,
+            gate_up,
+            down,
         })
     }
 }
@@ -1227,7 +1239,7 @@ impl Model06B {
 
         if !silent {
             eprintln!(
-                "  Talker: {} capas cargadas, caché KV de {} slots",
+                "  Talker: {} capas cargadas, caché KV de {} slots [INT8]",
                 NUM_LAYERS, KV_INITIAL_POSITIONS
             );
         }

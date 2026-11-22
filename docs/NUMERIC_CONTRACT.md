@@ -19,15 +19,15 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 
 | Formato | Layout por bloque / fila | Regla de cuantización | Uso en `0.6B` |
 |---|---|---|---|
-| **INT8** | `i8[rows, cols]` + `f32 scale[rows]` | Por fila: `s = absmax / 127.0`, `round_ties_even(w * 127.0 / absmax)` saturado a `[-128, 127]`. | Atención y 15 `lm_head` del Code Predictor. |
-| **Q4_0** (`18 B / 32 pesos`) | `scale_f16` (`u16`) + `qs[16]` | **Mínimos cuadrados ponderados (`q4_0s1`)**: toma el elemento de mayor magnitud `vmax` (con signo), fija `isc = -8.0 / vmax`, `q[i] = clamp(round(v[i] * isc), -8, 7)` y reescala `s* = sum(v^2 * v * q) / sum(v^2 * q^2)`. Empaque intercalado: `qs[i] = (q[2i]+8) \| ((q[2i+1]+8) << 4)`. | Talker y FFN del Code Predictor. |
+| **INT8** | `i8[rows, cols]` + `f32 scale[rows]` | Por fila: `s = absmax / 127.0`, `round_ties_even(w * 127.0 / absmax)` saturado a `[-128, 127]`. | Decodificado paso a paso del Talker, y atención y 15 `lm_head` del Code Predictor. |
+| **Q4_0** (`18 B / 32 pesos`) | `scale_f16` (`u16`) + `qs[16]` | **Mínimos cuadrados ponderados (`q4_0s1`)**: toma el elemento de mayor magnitud `vmax` (con signo), fija `isc = -8.0 / vmax`, `q[i] = clamp(round(v[i] * isc), -8, 7)` y reescala `s* = sum(v^2 * v * q) / sum(v^2 * q^2)`. Empaque intercalado: `qs[i] = (q[2i]+8) \| ((q[2i+1]+8) << 4)`. | FFN del Code Predictor. |
 
 - **Ninguna ruta de reserva en coma flotante**: todas las rutas (`AVX2` `maddubs`, NEON `SDOT` o `SMULL` y escalar `i32`) acumulan en producto escalar entero.
-- **Matriz `gate_up` intercalada**: la fila `2r` corresponde a `gate[r]` y la `2r+1` a `up[r]`. Se cuantiza directamente desde `gate_bf16` y `up_bf16`, sin materializar la matriz intercalada en BF16.
+- **Matriz `gate_up` intercalada**: la fila `2r` corresponde a `gate[r]` y la `2r+1` a `up[r]`. En el Code Predictor (`Q4_0`) se cuantiza directamente desde `gate_bf16` y `up_bf16`, sin materializar la matriz intercalada en BF16; en el Talker (`INT8`) se intercalan las filas en BF16 y se cuantiza con una escala por fila, lo que da los mismos pesos que cuantizar `gate` y `up` por separado.
 
-### 1.3 Perfil de precisión único (`[INT8+Q4_0-FFN]`)
+### 1.3 Perfil de precisión único (Talker `INT8`; Code Predictor `[INT8+Q4_0-FFN]`)
 
-- **Talker (28 capas)**: `wq`, `wk`, `wv`, `wo`, `gate_up`, `down` en `Q4_0`; `text_embedding`, `text_projection`, `codec_embedding`, `codec_head` en `BF16`; norms en `F32`; caché KV en `BF16`.
+- **Talker (28 capas)**: `wq`, `wk`, `wv`, `wo`, `gate_up` (filas entrelazadas) y `down` en `INT8` para el decodificado paso a paso (el prefill lee los pesos `BF16`); `text_embedding`, `text_projection`, `codec_embedding`, `codec_head` en `BF16`; norms en `F32`; caché KV en `BF16`.
 - **Code Predictor (5 capas)**: `wq`, `wk`, `wv`, `wo` y 15 `lm_head` en `INT8` *(mantiene salida por `argmax_matvec_int8`, nunca en `Q4_0`)*; `gate_up` y `down` en `Q4_0`; `codec_embedding` en `BF16`; caché KV en `BF16`.
 
 ---
@@ -40,7 +40,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 2. **Alineación a línea de caché**: activaciones, caché KV, pesos cuantizados, `W_k` y workspaces del decoder usan `AlignedBuf<64>`.
 3. **Patrones `AVX2` (`qwen-kernels/src/simd/avx2.rs`)**:
    - **Prefetch**: en `int8`, anticipa `5120` bytes (`QWEN_INT8_PF_DIST = 5120`) por fila procesada; en `q4_0`, 16 bloques (288 bytes). Anticipar 5 120 bytes también en `q4_0` se midió el 2026-11-18 (frase larga con carga): neutro o peor (RTF 0,94–1,00 → 0,97–1,01).
-   - **Filas largas**: en `int8_matvec_slice` y `q4_0_matvec_slice`, procesa **1 fila por iteración** cuando `cols >= 2048` (`QWEN_LONG_ROW_COLS`), manteniendo acumulación idéntica bit a bit frente a 2 filas (`matmat` y `q4_0_matvec_qkv_slice` mantienen 2 filas).
+   - **Filas largas**: en `int8_matvec_slice` y `q4_0_matvec_slice`, procesa **1 fila por iteración** cuando `cols >= 2048` (`QWEN_LONG_ROW_COLS`), manteniendo acumulación idéntica bit a bit frente a 2 filas (`matmat` mantiene 2 filas).
 4. **Kernels NEON (`qwen-kernels/src/simd/neon.rs`, aarch64)**: todas las entradas de la tabla, igual que AVX2. Q4_0 e INT8 (`matvec`, QKV fusionado y `matmat`) en dos variantes; el resto (cuantización de activaciones, normas RMS, BF16, atención, RoPE, conversiones, matvec `f32` del decoder y *snake*) en NEON base, con las mismas operaciones que AVX2 en el mismo orden: cada registro AVX2 de 8 `f32` es un par de registros NEON y la reducción final es la de `hsum256_ps`.
    - **Dos variantes con el mismo código**: `neon-dotprod` usa `SDOT` (emitido con `asm!`, porque `vdotq_s32` no es estable en Rust 1.96) y `neon`, multiplicación ampliada `SMULL` con sumas por pares, para núcleos ARMv8.0 sin `dotprod`. `KernelDispatch::for_caps` elige `neon-dotprod` si la CPU tiene `dotprod`; si no, `neon`. Las dos dan los mismos bits.
    - **Orden de suma de AVX2 en Q4_0**: por bloque, 8 sumas enteras de 4 productos (pesos sin desplazar, `0..15`) menos la suma de las 32 activaciones, conversión a `f32` y FMA en 8 carriles; reducción final en el orden de `hsum256_ps`, `((c0 + c4) + (c2 + c6)) + ((c1 + c5) + (c3 + c7))`. Mismas filas largas (`QWEN_LONG_ROW_COLS`) y mismos microkernels `matmat` de 8 columnas. Así NEON y AVX2 dan los mismos bits en estos kernels (prueba `test_simd_q4_0_matches_avx2_summation_order`, con el hash de la ruta AVX2).
@@ -91,8 +91,9 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | | `argmax_matvec_int8` vs referencia | Índice exacto o empate `< 0.02 * (\|max\| + 1e-3)` |
 | **Kernels `q4_0`** (`--self-test`) | `matmat_q4_0(B=8)` vs `B × matvec_q4_0` | **`L2_rel <= 1e-6`** (`0.0` en `AVX2` y escalar) |
 | | `matvec_q4_0` vs dequant `f32` ref | `rel_L2 < 3e-2` |
-| **Rutas SIMD frente a la escalar** (`--self-test`, cada ruta que pueda ejecutar la CPU: `avx2`, `neon`, `neon-dotprod`) | `matvec_int8`, `matmat_int8(B=3, 8)` | **Bit-idéntico** |
-| | `matvec_q4_0`, `qkv_q4_0`, `matmat_q4_0(B=3, 8)` | **`L2_rel <= 1e-6`** (otro orden de suma; AVX2 y NEON dan ≤ 3,5e-7) |
+| **QKV fusionado `int8`** (`--self-test`) | `qkv_int8` vs `3 × matvec_int8` | **Bit-idéntico** |
+| **Rutas SIMD frente a la escalar** (`--self-test`, cada ruta que pueda ejecutar la CPU: `avx2`, `neon`, `neon-dotprod`) | `matvec_int8`, `matmat_int8(B=3, 8)`, `qkv_int8` | **Bit-idéntico** |
+| | `matvec_q4_0`, `matmat_q4_0(B=3, 8)` | **`L2_rel <= 1e-6`** (otro orden de suma; AVX2 y NEON dan ≤ 3,5e-7) |
 | | `quantize_act_int8`, `bf16_accum_f32`, `bf16_to_f32_vec`, `f32_to_bf16_vec`, suma residual de `rms_norm_residual` | **Bit-idéntico** |
 | | normas RMS, `matvec_bf16`, atención `f32` (con y sin ventana) y BF16 (en serie y repartida), RoPE, `f32_matvec_accum`, *snake* | **`L2_rel <= 1e-6`** (AVX2 da ≤ 6,2e-7) |
 | **Kernels `bf16`** (`--self-test`) | `matvec_bf16` vs `f32` ref | `max_rel < 1e-2` |

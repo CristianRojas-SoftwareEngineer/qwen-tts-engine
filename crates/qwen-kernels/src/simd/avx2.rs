@@ -651,19 +651,6 @@ pub(crate) unsafe fn q4_0_matvec_slice(
     }
 }
 
-#[target_feature(enable = "avx2,fma")]
-pub(crate) unsafe fn q4_0_matvec_qkv_slice(
-    y: &mut [f32],
-    qx: &[i8],
-    sx: f32,
-    w: &[Q4_0Block],
-    cols: usize,
-    out_dim: usize,
-) {
-    // QKV fusionado usa siempre el kernel de 2 filas.
-    q4_0_matvec_2row(y.as_mut_ptr(), qx.as_ptr(), sx, w.as_ptr(), cols, out_dim);
-}
-
 /// Una fila de pesos Q4_0 contra `NB` activaciones: cada bloque se decodifica una
 /// sola vez y se acumula en `NB` registros con la misma secuencia de operaciones que
 /// `q4_0_block` (resta de `sumq`, `cvt`, `fmadd` por bloque y `hsum256_ps` final),
