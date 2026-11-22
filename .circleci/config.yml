@@ -143,6 +143,10 @@ commands:
             $ErrorActionPreference = "Stop"
             choco install msys2 -y --no-progress --params "/NoUpdate /InstallDir:C:\msys64"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            # El paquete msys2 de Chocolatey con /NoUpdate no inicializa el llavero de pacman
+            # (desde msys2-base 20261120): sin él, pacman no puede verificar las bases de datos.
+            & C:\msys64\usr\bin\bash.exe -lc "pacman-key --init && pacman-key --populate msys2"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             & C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --needed --noconfirm --disable-download-timeout mingw-w64-ucrt-x86_64-gcc make mingw-w64-ucrt-x86_64-binutils"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - restore_cache:
