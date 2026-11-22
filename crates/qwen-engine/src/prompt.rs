@@ -8,9 +8,8 @@
 use std::time::Instant;
 
 use qwen_core::config::{
-    CODEBOOK_SIZE, CODEC_BOS, CODEC_PAD, CODEC_THINK, CODEC_THINK_BOS, CODEC_THINK_EOS,
-    HIDDEN_SIZE, HOP_SAMPLES, NUM_CODEBOOKS, TOKEN_ASSISTANT, TOKEN_IM_START, TOKEN_NEWLINE,
-    TOKEN_TTS_BOS, TOKEN_TTS_EOS, TOKEN_TTS_PAD,
+    CODEC_BOS, CODEC_PAD, CODEC_THINK, CODEC_THINK_BOS, CODEC_THINK_EOS, HIDDEN_SIZE,
+    TOKEN_ASSISTANT, TOKEN_IM_START, TOKEN_NEWLINE, TOKEN_TTS_BOS, TOKEN_TTS_EOS, TOKEN_TTS_PAD,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -30,20 +29,6 @@ pub(crate) struct Prompt {
     pub len: usize,
     /// Tokens del texto a sintetizar.
     pub text_len: usize,
-    /// Muestras PCM iniciales a recortar (`0` sin contexto ICL).
-    pub icl_trim_samples: usize,
-}
-
-/// Muestras PCM iniciales que se recortan con contexto ICL activo: 2 frames del codec.
-const ICL_TRIM_SAMPLES: usize = 2 * HOP_SAMPLES;
-
-/// Devuelve el número de muestras PCM iniciales a recortar cuando hay contexto ICL activo.
-fn resolve_icl_trim_samples(icl_mode: bool) -> usize {
-    if icl_mode {
-        ICL_TRIM_SAMPLES
-    } else {
-        0
-    }
 }
 
 fn embed_text_cached(
@@ -102,19 +87,6 @@ pub(crate) fn build_prompt(
         ));
     }
 
-    let (icl_text, ref_codes_slice): (Option<&str>, Option<&[i32]>) = match &voice.icl {
-        Some(icl) => (Some(icl.ref_text.as_str()), Some(icl.ref_codes.as_slice())),
-        None => (None, None),
-    };
-
-    let ref_text_tokens = icl_text
-        .map(|t| model.tokenizer.encode(t))
-        .unwrap_or_default();
-    let ref_n_frames = ref_codes_slice
-        .map(|c| c.len() / NUM_CODEBOOKS)
-        .unwrap_or(0);
-    let icl_mode = !ref_text_tokens.is_empty() && ref_n_frames > 0;
-
     let role_prefix = [TOKEN_IM_START, TOKEN_ASSISTANT, TOKEN_NEWLINE];
     let text_content_len = text_tokens.len();
 
@@ -128,14 +100,7 @@ pub(crate) fn build_prompt(
         .chain([Sec2Token::Speaker, Sec2Token::Codec(CODEC_PAD)])
         .collect();
     let sec2_len = sec2.len();
-    let (sec3_len, sec4_len) = if icl_mode {
-        (
-            ref_text_tokens.len() + text_content_len + 1,
-            ref_n_frames + 1,
-        )
-    } else {
-        (text_content_len + 1, 1)
-    };
+    let (sec3_len, sec4_len) = (text_content_len + 1, 1);
     let prefill_len = role_prefix.len() + sec2_len + sec3_len + sec4_len;
     if prefill_len > ROPE_MAX_POS {
         return Err(EngineError::InvalidArg(format!(
@@ -185,92 +150,40 @@ pub(crate) fn build_prompt(
                 dst[j] += tmp_embed[j];
             }
         } else {
-            let emb_norm = spk_emb.iter().map(|&v| v * v).sum::<f32>().sqrt();
-            let scale = if model.spk_ref_norm > 0.1 && emb_norm > 0.1 {
-                model.spk_ref_norm / emb_norm
-            } else {
-                1.0
-            };
             for j in 0..HIDDEN_SIZE {
-                dst[j] += spk_emb[j] * scale;
+                dst[j] += spk_emb[j];
             }
         }
         pos += 1;
     }
 
-    if icl_mode {
-        let ref_codes = ref_codes_slice.expect("icl_mode implica ref_codes");
-        for i in 0..sec3_len {
-            let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-            if i < ref_text_tokens.len() {
-                embed_text_cached(runtime, model, scratch, ref_text_tokens[i], dst);
-            } else if i < ref_text_tokens.len() + text_content_len {
-                let idx = i - ref_text_tokens.len();
-                embed_text_cached(runtime, model, scratch, text_tokens[idx], dst);
-            } else {
-                dst.copy_from_slice(tts_eos_embed);
-            }
-            for j in 0..HIDDEN_SIZE {
-                dst[j] += codec_pad_embed[j];
-            }
-            pos += 1;
-        }
-
-        for i in 0..sec4_len {
-            let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-            dst.copy_from_slice(tts_pad_embed);
-            if i == 0 {
-                for j in 0..HIDDEN_SIZE {
-                    dst[j] += codec_bos_embed[j];
-                }
-            } else {
-                let frame = i - 1;
-                let code0 = ref_codes[frame * NUM_CODEBOOKS];
-                lookup_codec_embed(d, model, code0, &mut tmp_embed);
-                for j in 0..HIDDEN_SIZE {
-                    dst[j] += tmp_embed[j];
-                }
-                for g in 0..15 {
-                    let code_g = ref_codes[frame * NUM_CODEBOOKS + g + 1];
-                    if code_g >= 0 && (code_g as usize) < CODEBOOK_SIZE {
-                        let off = (code_g as usize) * HIDDEN_SIZE;
-                        let emb = &model.cp.codec_emb_bf16[g][off..off + HIDDEN_SIZE];
-                        d.bf16_accum_f32(dst, emb);
-                    }
-                }
-            }
-            pos += 1;
-        }
-    } else {
-        for &tok in &text_tokens {
-            let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-            embed_text_cached(runtime, model, scratch, tok, dst);
-            for (d_val, &cp_val) in dst.iter_mut().zip(codec_pad_embed.iter()) {
-                *d_val += cp_val;
-            }
-            pos += 1;
-        }
+    for &tok in &text_tokens {
         let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-        dst.copy_from_slice(tts_eos_embed);
+        embed_text_cached(runtime, model, scratch, tok, dst);
         for (d_val, &cp_val) in dst.iter_mut().zip(codec_pad_embed.iter()) {
             *d_val += cp_val;
         }
         pos += 1;
-
-        let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-        dst.copy_from_slice(tts_pad_embed);
-        for j in 0..HIDDEN_SIZE {
-            dst[j] += codec_bos_embed[j];
-        }
-        pos += 1;
     }
+    let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
+    dst.copy_from_slice(tts_eos_embed);
+    for (d_val, &cp_val) in dst.iter_mut().zip(codec_pad_embed.iter()) {
+        *d_val += cp_val;
+    }
+    pos += 1;
+
+    let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
+    dst.copy_from_slice(tts_pad_embed);
+    for j in 0..HIDDEN_SIZE {
+        dst[j] += codec_bos_embed[j];
+    }
+    pos += 1;
 
     debug_assert_eq!(pos, prefill_len);
     Ok(Prompt {
         embeds: input_embeds,
         len: prefill_len,
         text_len: text_content_len,
-        icl_trim_samples: resolve_icl_trim_samples(icl_mode),
     })
 }
 

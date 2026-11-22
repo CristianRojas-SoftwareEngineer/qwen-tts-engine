@@ -4,7 +4,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! El crate `qwen-core` reúne la configuración `0.6B`, el almacenamiento `mmap` de `safetensors`,
-//! el tokenizador BPE, el muestreador determinista, los perfiles `.qvoice` v5 y el planificador de marcado.
+//! el tokenizador BPE, el muestreador determinista, los perfiles `.qvoice` v6 y el planificador de marcado.
 
 pub mod config;
 pub mod error;

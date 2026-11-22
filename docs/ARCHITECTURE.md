@@ -10,10 +10,10 @@
    qwen-app          (Binario CLI + Servidor HTTP; afinidad SMT Win32)
       │
       ▼
-  qwen-engine        (#![forbid(unsafe_code)] Modelo 0.6B, Talker, CP, Decoder, Encoder, Audio)
+  qwen-engine        (#![forbid(unsafe_code)] Modelo 0.6B, Talker, CP, Decoder, Encoder de locutor, Audio)
       │
       ▼
-   qwen-core         (Constantes 0.6B, MmapStore, BPE, Sampler, .qvoice v5, planificación de marcado)
+   qwen-core         (Constantes 0.6B, MmapStore, BPE, Sampler, .qvoice v6, planificación de marcado)
       │
       ▼
   qwen-kernels       (AlignedBuf<64>, CpuCaps, ComputePool, FTZ, SIMD, Quant, FFI/Rust BLAS)
@@ -23,7 +23,7 @@
 |---|---|---|
 | **`qwen-kernels`** | `aligned`, `caps`, `pool`, `ftz`, `blas`, `quant`, `simd/{scalar,avx2,neon}` *(internos del crate)*, `dispatch`, `selftest`. | **Permitido y aislado** (intrínsecos `AVX2+FMA` y NEON, `asm!` para `SDOT`, `std::alloc`, `MXCSR`/`FPCR`, FFI BLAS); la API segura `KernelDispatch` valida límites antes de despachar. |
 | **`qwen-core`** | `config`, `error`, `mmap_store`, `tokenizer`, `sampling`, `qvoice`, `markup`. | **Solo `Mmap::map` y cast de slices alineadas** en `mmap_store.rs`; resto 100 % seguro. |
-| **`qwen-engine`** | `model`, `talker`, `code_predictor`, `speech_decoder`, `speech_encoder`, `voice`, `voice_clone`, `request`, `prompt`, `synth`, `compose`, `audio`, `pipeline`, `error`. | **`#![forbid(unsafe_code)]`** |
+| **`qwen-engine`** | `model`, `talker`, `code_predictor`, `speech_decoder`, `voice`, `voice_clone`, `request`, `prompt`, `synth`, `compose`, `audio`, `pipeline`, `error`. | **`#![forbid(unsafe_code)]`** |
 | **`qwen-app`** | `main`, `cli`, `request`, `affinity`, `build.rs` + manifiesto UTF-8, `modes/{mod,single,serve,voice_cmd,diag}`, `server/{mod,http,validation}`. | **Solo llamada puntual** a Win32 (`SetProcessAffinityMask` / `GetLogicalProcessorInformationEx`). |
 
 ---
@@ -38,15 +38,13 @@ Arc<Model06B>  [Inmutable, Send + Sync — compartido por todo el proceso]
  ├── tokenizer: BpeTokenizer
  ├── talker: TalkerWeights                // 28 capas `TalkerLayerWeights` (BF16 mmap para el prefill + Q4_0) + embeddings
  ├── cp: CodePredictorWeights             // 5 capas `CpLayerWeights` (INT8 + Q4_0) + 15 lm_head INT8 + 15 codec_emb
- ├── decoder: SpeechDecoderWeights        // F32 + Arc<Codebooks> + W_k pre-reordenado
- ├── speaker_encoder: Arc<SpeakerEncoderWeights>         // ECAPA-TDNN (0.6B-Base)
- └── speech_encoder: Arc<SpeechEncoderWeights>           // RVQ encoder (comparte Arc<Codebooks>)
+ ├── decoder: SpeechDecoderWeights        // F32 + Codebooks + W_k pre-reordenado
+ └── speaker_encoder: Arc<SpeakerEncoderWeights>         // ECAPA-TDNN (0.6B-Base)
 
 Voice  [Inmutable por voz — unos pocos KB; la voz `default` va embebida en el binario]
  ├── name: String                         // `default`, el nombre guardado en el `.qvoice` o el del archivo
  ├── language_id: Option<i32>             // idioma declarado (`default` declara español)
- ├── xvector: Vec<f32>                    // x-vector de 1024 valores
- └── icl: Option<IclPrompt>               // { ref_text, ref_codes }
+ └── xvector: Vec<f32>                    // x-vector de 1024 valores
      (`Voice::load` solo lee el `.qvoice`; no modifica `Model06B`.)
 
 Synthesizer<'a>  [Efímero, `Copy`: referencias a los tres niveles anteriores]

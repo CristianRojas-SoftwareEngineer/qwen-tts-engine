@@ -86,8 +86,6 @@ pub struct CliArgs {
     pub rate: f32,
 
     pub ref_audio: Option<String>,
-    pub ref_text: Option<String>,
-    pub xvector_only: bool,
     pub save_voice: Option<String>,
     pub load_voice: Option<String>,
 
@@ -129,8 +127,6 @@ impl Default for CliArgs {
             volume: 1.0,
             rate: 1.0,
             ref_audio: None,
-            ref_text: None,
-            xvector_only: false,
             save_voice: None,
             load_voice: None,
             compose_pause: DEFAULT_COMPOSE_PAUSE_S,
@@ -179,8 +175,6 @@ pub fn print_usage(prog: &str) {
     eprintln!("  --seed <n>                 Semilla aleatoria (por defecto: 4; < 0 para semilla temporal)");
     eprintln!("  --max-duration <secs>      Duración máxima del audio en segundos");
     eprintln!("  --ref-audio <path>         WAV de referencia mono de 24 kHz para clonar la voz");
-    eprintln!("  --ref-text <string>        Transcripción de --ref-audio para la clonación ICL");
-    eprintln!("  --xvector-only             Con --load-voice: usa solo el x-vector de la voz (ignora su ICL)");
     eprintln!("  --save-voice <path>        Guarda la voz (.qvoice)");
     eprintln!("  --load-voice <path>        Carga una voz (.qvoice; por defecto: la voz default integrada)");
     eprintln!("  --list-voices <dir>        Lista los archivos .qvoice de un directorio");
@@ -257,20 +251,8 @@ fn validate_voice_flags(cfg: &CliArgs) -> Result<(), String> {
     if cfg.ref_audio.is_some() && cfg.load_voice.is_some() {
         return Err("Error: --ref-audio y --load-voice no se pueden combinar: clona con --ref-audio o carga con --load-voice".to_string());
     }
-    if cfg.ref_text.is_some() && cfg.ref_audio.is_none() {
-        return Err("Error: --ref-text solo se usa al clonar, con --ref-audio".to_string());
-    }
-    if cfg.ref_text.as_deref().is_some_and(|t| t.trim().is_empty()) {
-        return Err(
-            "Error: --ref-text no puede estar vacío; para clonar solo el timbre, omítelo"
-                .to_string(),
-        );
-    }
     if cfg.save_voice.is_some() && cfg.ref_audio.is_none() {
         return Err("Error: --save-voice requiere --ref-audio".to_string());
-    }
-    if cfg.xvector_only && cfg.load_voice.is_none() {
-        return Err("Error: --xvector-only solo se usa con --load-voice; para clonar solo el timbre, omite --ref-text".to_string());
     }
     Ok(())
 }
@@ -383,10 +365,6 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
             "--ref-audio" => {
                 out.ref_audio = Some(take_val(args, &mut i, inline_val, flag)?);
             }
-            "--ref-text" => {
-                out.ref_text = Some(take_val(args, &mut i, inline_val, flag)?);
-            }
-            "--xvector-only" => out.xvector_only = true,
             "--save-voice" => {
                 out.save_voice = Some(take_val(args, &mut i, inline_val, flag)?);
             }
@@ -553,34 +531,31 @@ mod tests {
     #[test]
     fn test_voice_flag_rules() {
         let r1 = "Error: --ref-audio y --load-voice no se pueden combinar: clona con --ref-audio o carga con --load-voice";
-        let r2 = "Error: --ref-text solo se usa al clonar, con --ref-audio";
-        let r3 = "Error: --ref-text no puede estar vacío; para clonar solo el timbre, omítelo";
         let r4 = "Error: --save-voice requiere --ref-audio";
-        let r5 = "Error: --xvector-only solo se usa con --load-voice; para clonar solo el timbre, omite --ref-text";
         assert_eq!(
             voice_flags_result(&["--ref-audio", "a.wav", "--load-voice", "v.qvoice"]),
             Err(r1.to_string())
-        );
-        assert_eq!(voice_flags_result(&["--ref-text", "t"]), Err(r2.to_string()));
-        assert_eq!(
-            voice_flags_result(&["--ref-audio", "a.wav", "--ref-text", "  "]),
-            Err(r3.to_string())
         );
         assert_eq!(
             voice_flags_result(&["--save-voice", "v.qvoice"]),
             Err(r4.to_string())
         );
-        assert_eq!(voice_flags_result(&["--xvector-only"]), Err(r5.to_string()));
         // Orden: gana la primera regla que falle.
         assert_eq!(
-            voice_flags_result(&["--ref-audio", "a", "--load-voice", "b", "--xvector-only"]),
+            voice_flags_result(&[
+                "--ref-audio",
+                "a",
+                "--load-voice",
+                "b",
+                "--save-voice",
+                "c.qvoice"
+            ]),
             Err(r1.to_string())
         );
-        assert_eq!(voice_flags_result(&["--ref-text", ""]), Err(r2.to_string()));
         // Valen también con los modos de diagnóstico.
         assert_eq!(
-            voice_flags_result(&["--caps", "--xvector-only"]),
-            Err(r5.to_string())
+            voice_flags_result(&["--caps", "--save-voice", "v.qvoice"]),
+            Err(r4.to_string())
         );
         // Combinaciones válidas.
         assert_eq!(voice_flags_result(&["--ref-audio", "a.wav"]), Ok(()));
@@ -588,17 +563,39 @@ mod tests {
             voice_flags_result(&[
                 "--ref-audio",
                 "a.wav",
-                "--ref-text",
-                "t",
                 "--save-voice",
                 "v.qvoice"
             ]),
             Ok(())
         );
         assert_eq!(
-            voice_flags_result(&["--load-voice", "v.qvoice", "--xvector-only", "-t", "x"]),
+            voice_flags_result(&["--load-voice", "v.qvoice", "-t", "x"]),
             Ok(())
         );
+    }
+
+    #[test]
+    fn test_ref_text_flag_removed() {
+        let args: Vec<String> = ["qwen_tts", "--ref-text", "x"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let Err(e) = parse_cli(&args) else {
+            panic!("se esperaba un error");
+        };
+        assert_eq!(e, "Error: opción desconocida '--ref-text'");
+    }
+
+    #[test]
+    fn test_xvector_only_flag_removed() {
+        let args: Vec<String> = ["qwen_tts", "--xvector-only"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let Err(e) = parse_cli(&args) else {
+            panic!("se esperaba un error");
+        };
+        assert_eq!(e, "Error: opción desconocida '--xvector-only'");
     }
 
     #[test]

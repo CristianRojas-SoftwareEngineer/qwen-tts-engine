@@ -27,7 +27,7 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 ## Alcance y capacidades
 
 - **Síntesis local en CPU**: ejecuta **Qwen3-TTS `0.6B`** con cuantización fija (`Q4_0` + `INT8`), despacho en runtime de kernels `AVX2 + FMA` en x86-64 y NEON en ARM64 (con `SDOT` si la CPU tiene `dotprod`; ver [requisitos mínimos](#requisitos-mínimos-recomendados-síntesis-en-tiempo-real)) y *streaming* progresivo.
-- **Una sola forma de voz: la clonada**: el motor trae incorporada la voz `default` y cualquier otra la creas clonándola desde un audio de referencia (x-vector `ECAPA-TDNN` y, con `--ref-text`, contexto ICL con códigos RVQ). Las voces se guardan como perfiles `.qvoice` v5 de unos pocos KB. Además: marcado en línea (`[laugh]`, `[sigh]`, pausas).
+- **Una sola forma de voz: la clonada**: el motor trae incorporada la voz `default` y cualquier otra la creas clonándola desde un audio de referencia (x-vector `ECAPA-TDNN`, que fija el timbre). Las voces se guardan como perfiles `.qvoice` v6 de 4 KB. Además: marcado en línea (`[laugh]`, `[sigh]`, pausas).
 - **Tres interfaces de integración**:
   - **CLI (`qwen_tts`)**: síntesis directa a WAV, *streaming* a WAV o `stdout` PCM crudo y creación de voces.
   - **Servidor HTTP (`--serve`)**: rutas `/v1/tts` y `/v1/tts/stream`, una síntesis a la vez.
@@ -115,12 +115,12 @@ cargo build -p qwen-app --release
 
 ### 2. Clonación de voz
 
-Con solo el audio, el perfil guarda el timbre (x-vector); con `--ref-text` (la transcripción exacta) guarda además el contexto ICL. Al cargar una voz ICL, `--xvector-only` la usa solo con su timbre. El audio de referencia debe ser **WAV PCM de 24 kHz mono** (si parte de MP3/MP4/OGG/FLAC, conviértelo antes con `ffmpeg -i entrada.mp3 -ar 24000 -ac 1 ref_24k.wav`).
+El perfil guarda el timbre (x-vector) y, si das `-l`, el idioma. El audio de referencia debe ser **WAV PCM de 24 kHz mono** (si parte de MP3/MP4/OGG/FLAC, conviértelo antes con `ffmpeg -i entrada.mp3 -ar 24000 -ac 1 ref_24k.wav`).
 
 ```bash
 # 1. Extraer perfil .qvoice reutilizable y sintetizar el primer audio
 ./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 \
-  --ref-audio ref_24k.wav --ref-text "Texto exacto del audio de referencia." \
+  --ref-audio ref_24k.wav \
   --save-voice mi_voz.qvoice -l Spanish --text "Hola, esta es mi voz clonada." -o clon.wav
 
 # 2. Reutilizar el perfil guardado (sin volver a codificar la referencia)
@@ -233,7 +233,7 @@ La documentación sigue el modelo **Diátaxis** para separar guías prácticas, 
 | Documento | Rol Diátaxis | Audiencia principal | Qué contiene |
 |---|---|---|---|
 | [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md) | Referencia | Usuarios avanzados, integradores HTTP y Rust | Flags CLI (`qwen_tts`), endpoints HTTP (`--serve`), API Rust embebida, variables de entorno y líneas de log de referencia. |
-| [`docs/SPEC_06B.md`](docs/SPEC_06B.md) | Referencia | Ingenieros del motor y mantenedores | Geometría fija `0.6B`, mapa de tensores `safetensors`, formato `.qvoice` v5, vocabularios, *prefill* y marcado en línea. |
+| [`docs/SPEC_06B.md`](docs/SPEC_06B.md) | Referencia | Ingenieros del motor y mantenedores | Geometría fija `0.6B`, mapa de tensores `safetensors`, formato `.qvoice` v6, vocabularios, *prefill* y marcado en línea. |
 | [`docs/NUMERIC_CONTRACT.md`](docs/NUMERIC_CONTRACT.md) | Referencia | Ingenieros de kernels y optimización | Cuantización `INT8`/`Q4_0`, `FTZ`/`DAZ`, reglas IEEE-754/`FMA`, determinismo de *streaming* y tolerancias. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Explicación | Desarrolladores y contribuidores | Grafo de *crates* (DAG), política `unsafe`, tiempos de vida del estado, `ComputeRuntime`, camino único de síntesis y servidor. |
 | [`docs/VERIFICATION_PLAN.md`](docs/VERIFICATION_PLAN.md) | Guía operativa | QA, contribuidores y mantenimiento de CI | Suites `cargo test`, verificación numérica de kernels, CI en CircleCI (`.circleci/config.yml`) y protocolo de medición de rendimiento. |

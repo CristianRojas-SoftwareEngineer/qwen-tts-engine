@@ -1,6 +1,6 @@
 # Especificación Técnica de Qwen3-TTS `0.6B` (`SPEC_06B.md`)
 
-> Consolida la geometría fija, el mapa de tensores `safetensors`, el formato binario propio (`.qvoice` v5) y las reglas de *prefill*, muestreo y paralingüística de **Qwen3-TTS 0.6B Base**. Pensado para ingenieros del motor y mantenedores.
+> Consolida la geometría fija, el mapa de tensores `safetensors`, el formato binario propio (`.qvoice` v6) y las reglas de *prefill*, muestreo y paralingüística de **Qwen3-TTS 0.6B Base**. Pensado para ingenieros del motor y mantenedores.
 
 ---
 
@@ -66,34 +66,25 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
   - `decoder.pre_transformer.{input_proj,output_proj}.{weight,bias}`, `norm.weight`, y 8 capas `layers.{0..7}.{input_layernorm.weight,self_attn.{q,k,v,o}_proj.weight,self_attn_layer_scale.scale,post_attention_layernorm.weight,mlp.{gate,up,down}_proj.weight,mlp_layer_scale.scale}`.
   - 2 bloques ConvNeXt: `decoder.upsample.{0,1}.0.conv.{weight,bias}` y `.1.{dwconv.conv,pwconv1,pwconv2,norm}.{weight,bias}` + `.1.gamma`.
   - Red causal: `decoder.decoder.0.conv.{weight,bias}`, 4 bloques `decoder.decoder.{1..4}` (`block.0.{alpha,beta}`, `block.1.conv.{weight,bias}`, 3 residuales `block.{2..4}.{act1.{alpha,beta},conv1.conv.{weight,bias},act2.{alpha,beta},conv2.conv.{weight,bias}}`), `decoder.decoder.5.{alpha,beta}`, `decoder.decoder.6.conv.{weight,bias}`.
-- **Encoder** (solo cuando se usa `--ref-audio` con ICL):
-  - `encoder.encoder.layers.{0,3,6,9,12,14}.conv.{weight,bias}` y bloques residuales `layers.{1,4,7,10}.block.{1,3}.conv.{weight,bias}`.
-  - `encoder.encoder_transformer.layers.{0..7}.*` (`input_layernorm`, `self_attn.{q,k,v,o}_proj`, `self_attn_layer_scale`, `post_attention_layernorm`, `mlp.{fc1,fc2}`, `mlp_layer_scale`).
-  - `encoder.downsample.conv.weight`, `encoder.quantizer.{semantic,acoustic}_residual_vector_quantizer.input_proj.weight`.
 
 ---
 
 ## 3. Formatos binarios propios (little-endian)
 
-### 3.1 Perfil de voz `.qvoice` (versión 5)
+### 3.1 Perfil de voz `.qvoice` (versión 6)
 
 Único formato de voz, en `qwen-core/src/qvoice.rs`. No tiene secciones con etiqueta: todos los campos son obligatorios y van en este orden, little-endian.
 
 | Campo | Tipo | Valor |
 |---|---|---|
 | `magic` | 4 B | `"QVCE"` |
-| `version` | `u32` | `5` |
+| `version` | `u32` | `6` |
 | `enc_dim` | `u32` | `1024` |
 | `speaker_embedding` | `enc_dim × f32` | x-vector |
 | `lang_id` | `u32` | `0` = sin idioma; si no, un id válido de `lookup_language` |
-| `ref_text_len` | `u32` | `<= 1 000 000` |
-| `ref_text` | `ref_text_len` bytes | UTF-8 |
-| `n_ref_frames` | `u32` | `<= 1 000 000` |
-| `ref_codes` | `n_ref_frames × 16 × i32` | códigos ICL |
 
-- **Hay ICL** si `n_ref_frames > 0` y `ref_text` no está vacío. Si un campo es vacío y el otro no, el archivo es inválido.
-- **Tamaño**: `4120 + len(ref_text) + 64 · n_ref_frames` bytes; sin ICL, `4120`. El nombre de la voz es el del archivo (sin `.qvoice`).
-- **La lectura falla** (con un mensaje que nombra la ruta) si el `magic` no coincide, la versión no es `5` (las voces anteriores se vuelven a clonar), `enc_dim != 1024`, hay UTF-8 inválido, un tamaño excesivo, el archivo está truncado o sobran bytes al final.
+- **Tamaño**: `4112` bytes justos. El nombre de la voz es el del archivo (sin `.qvoice`).
+- **La lectura falla** (con un mensaje que nombra la ruta) si el `magic` no coincide, la versión no es `6` (las voces anteriores se vuelven a clonar), `enc_dim != 1024`, `lang_id` es inválido, el archivo está truncado o sobran bytes al final.
 - La voz `default` no es un archivo: su x-vector (`4096 B`, SHA-256 `d2ceafbb…3b94`) va embebido en el binario (`qwen-engine/assets/default_voice.xvec`).
 
 ---
@@ -125,13 +116,9 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 - **Prefijo códec**: `[2154, 2156, lang_id, 2157, <locutor>, 2148, 2149]`. La posición del locutor es explícita en el código (`Sec2Token::Speaker`, entre `CODEC_THINK_EOS` y `CODEC_PAD`); no hay token centinela.
 
 1. **Sección 1 (3 pos)**: `text_proj(role_prefix)` sin par códec.
-2. **Sección 2 (`codec_len - 1` pos)**: `tts_pad * (codec_len - 2) + tts_bos` + `codec_embed(codec[0..codec_len-1])` *(en la posición del locutor, `dst = tts_pad` y `dst[j] += spk[j]·scale`, con `scale = spk_ref_norm / ‖x‖` —la norma L2 de la fila `SPK_REF_CODEC_ROW = 3061` del embedding de códec, escala de referencia de la huella—)*.
-3. **Modo normal (sin ICL)**:
-   - **Sección 3 (`N + 1` pos)**: `text_proj(BPE(text)) + tts_eos` + `codec_pad`.
-   - **Sección 4 (1 pos)**: `tts_pad + codec_bos`.
-4. **Modo ICL (`--ref-text` + `ref_codes`)**:
-   - **Sección 3' (`N_ref + N + 1` pos)**: `text_proj(BPE(ref_text) + BPE(text)) + tts_eos` + `codec_pad`.
-   - **Sección 4' (`n_ref_frames + 1` pos)**: cada posición lleva `tts_pad` sumado con `codec_bos` en `pos 0` y, en `pos 1..n_ref_frames`, con `talker.codec_embedding(ref_codes[f][0]) + sum_{g=1..15} cp_codec_emb[g-1](ref_codes[f][g])`. *(En modo ICL se recortan los primeros `2` frames = `3840` muestras al inicio del audio generado.)*
+2. **Sección 2 (`codec_len - 1` pos)**: `tts_pad * (codec_len - 2) + tts_bos` + `codec_embed(codec[0..codec_len-1])` *(en la posición del locutor, `dst = tts_pad` y `dst[j] += spk[j]`)*.
+3. **Sección 3 (`N + 1` pos)**: `text_proj(BPE(text)) + tts_eos` + `codec_pad`.
+4. **Sección 4 (1 pos)**: `tts_pad + codec_bos`.
 
 ### 4.3 Recorte, refuerzo de EOS, muestreo y marcado
 

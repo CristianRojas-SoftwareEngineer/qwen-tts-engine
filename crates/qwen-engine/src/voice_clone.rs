@@ -736,6 +736,9 @@ pub(crate) fn load_ref_audio(
             audio.len() as f32 / SAMPLE_RATE as f32
         );
     }
+    // La implementación oficial no recorta el silencio final de la referencia; aquí se recorta
+    // porque, de oído, el clon de una grabación con silencio al final suena más consistentemente
+    // bien recortado.
     trim_trailing_silence(&mut audio, SAMPLE_RATE, silent);
     Ok(audio)
 }

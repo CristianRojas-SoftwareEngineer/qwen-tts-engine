@@ -25,11 +25,8 @@ use qwen_kernels::quant::{
 use qwen_kernels::{AlignedBuf, ComputeRuntime, KernelDispatch, Q4_0Block};
 
 use crate::error::EngineError;
-use crate::speech_encoder::SpeechEncoderWeights;
 use crate::voice_clone::SpeakerEncoderWeights;
 
-/// Fila del embedding de códec cuya norma L2 fija la escala de referencia de la huella del locutor.
-pub const SPK_REF_CODEC_ROW: usize = 3061;
 pub const KV_INITIAL_POSITIONS: usize = 256;
 pub const ROPE_MAX_POS: usize = 8192;
 pub const CP_KV_MAX_POS: usize = 64;
@@ -352,7 +349,7 @@ pub struct SdUpsampleBlockWeights {
 }
 
 pub struct SpeechDecoderWeights {
-    pub codebooks: Arc<[AlignedBuf<f32>; NUM_CODEBOOKS]>,
+    pub codebooks: [AlignedBuf<f32>; NUM_CODEBOOKS],
     pub rvq_first_output_proj: F32Ref,
     pub rvq_rest_output_proj: F32Ref,
     pub pre_conv_bias: Option<F32Ref>,
@@ -383,12 +380,9 @@ pub struct Model06B {
     pub cp: CodePredictorWeights,
     pub decoder: SpeechDecoderWeights,
     pub speaker_encoder: Arc<SpeakerEncoderWeights>,
-    pub speech_encoder: Arc<SpeechEncoderWeights>,
     pub cached_tts_pad_embed: AlignedBuf<f32>,
     pub cached_tts_bos_embed: AlignedBuf<f32>,
     pub cached_tts_eos_embed: AlignedBuf<f32>,
-    /// Norma L2 de la fila `SPK_REF_CODEC_ROW` del embedding de códec, referencia de escala de la huella.
-    pub spk_ref_norm: f32,
 }
 
 pub struct TalkerKvCache {
@@ -1167,22 +1161,9 @@ impl Model06B {
         let cp = Self::load_cp(&main_store, silent)?;
         let decoder = Self::load_decoder(&speech_store, silent)?;
         let speaker_encoder = Arc::new(SpeakerEncoderWeights::load(&main_store, silent)?);
-        let speech_encoder = Arc::new(SpeechEncoderWeights::load(
-            &speech_store,
-            Arc::clone(&decoder.codebooks),
-            silent,
-        )?);
 
         let (cached_tts_pad_embed, cached_tts_bos_embed, cached_tts_eos_embed) =
             compute_special_text_embeds(runtime, &talker);
-
-        // Norma L2 de la fila `SPK_REF_CODEC_ROW` del embedding de códec: escala de referencia de la huella.
-        let mut spk_ref_tmp = [0.0f32; HIDDEN_SIZE];
-        runtime.dispatch.bf16_to_f32_vec(
-            &mut spk_ref_tmp,
-            &talker.codec_embedding_bf16[SPK_REF_CODEC_ROW * HIDDEN_SIZE..(SPK_REF_CODEC_ROW + 1) * HIDDEN_SIZE],
-        );
-        let spk_ref_norm = spk_ref_tmp.iter().map(|&v| v * v).sum::<f32>().sqrt();
 
         if !silent {
             eprintln!(
@@ -1198,11 +1179,9 @@ impl Model06B {
             cp,
             decoder,
             speaker_encoder,
-            speech_encoder,
             cached_tts_pad_embed,
             cached_tts_bos_embed,
             cached_tts_eos_embed,
-            spk_ref_norm,
         })
     }
 
@@ -1538,7 +1517,7 @@ impl Model06B {
         }
 
         Ok(SpeechDecoderWeights {
-            codebooks: Arc::new(codebooks),
+            codebooks,
             rvq_first_output_proj,
             rvq_rest_output_proj,
             pre_conv_bias,

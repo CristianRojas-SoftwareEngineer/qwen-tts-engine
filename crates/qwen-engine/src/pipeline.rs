@@ -243,8 +243,6 @@ pub(crate) fn generate_to_sink(
 
     let chunk_frames = req.chunk_frames.clamp(2, 250);
 
-    let mut trim_head_left = prompt.icl_trim_samples;
-
     let gen_blas = if nt > 1 { nt - 1 } else { 1 };
     runtime.blas.set_threads(gen_blas);
 
@@ -331,12 +329,7 @@ pub(crate) fn generate_to_sink(
                     avail,
                 ) {
                     Ok(audio) => {
-                        let mut emit = audio.as_slice();
-                        if trim_head_left > 0 {
-                            let cut = trim_head_left.min(emit.len());
-                            emit = &emit[cut..];
-                            trim_head_left -= cut;
-                        }
+                        let emit = audio.as_slice();
                         if !emit.is_empty() {
                             if ttfa_ms.is_none() {
                                 ttfa_ms = Some(t_start.elapsed().as_secs_f64() * 1000.0);

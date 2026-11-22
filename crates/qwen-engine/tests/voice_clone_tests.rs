@@ -122,7 +122,6 @@ const DEFAULT_VOICE_BITS: [(usize, u32); 3] =
 fn test_default_voice_is_embedded() {
     let voice = Voice::builtin_default();
     assert_eq!(voice.name, "default");
-    assert!(voice.icl.is_none(), "la voz por defecto debe ser un x-vector simple");
     assert_eq!(voice.language_id, Some(2054));
     let emb = &voice.xvector;
     assert_eq!(emb.len(), ENC_DIM);
@@ -149,7 +148,6 @@ fn test_default_voice_is_embedded() {
 fn test_voice_file_extension_and_version_errors() {
     let dir = temp_dir("voice_errors");
     let opts = VoiceLoadOptions {
-        use_icl: true,
         log: LogLevel::Silent,
     };
 
@@ -171,7 +169,8 @@ fn test_voice_file_extension_and_version_errors() {
     let other = dir.join("other_version.qvoice");
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"QVCE");
-    bytes.extend_from_slice(&4u32.to_le_bytes());
+    let old_version = 5u32;
+    bytes.extend_from_slice(&old_version.to_le_bytes());
     bytes.extend_from_slice(&1024u32.to_le_bytes());
     fs::write(&other, bytes).unwrap();
     let err = Voice::load(&other, &opts)
@@ -179,8 +178,8 @@ fn test_voice_file_extension_and_version_errors() {
         .unwrap()
         .to_string();
     assert!(
-        err.contains("version 4")
-            && err.contains("version 5")
+        err.contains(&format!("version {old_version}"))
+            && err.contains("version 6")
             && err.contains("other_version.qvoice"),
         "se obtuvo: {err}"
     );
@@ -229,7 +228,7 @@ fn test_clone_from_default_voice_e2e() {
 
     // 1. Referencia: la voz `default` dice un texto conocido (WAV de 24 kHz)
     let ref_wav = dir.join("ref.wav");
-    let ref_text = "The weather is beautiful today, perfect for a walk in the park.";
+    let ref_phrase = "The weather is beautiful today, perfect for a walk in the park.";
     let req = |lang: i32| SynthesisRequest {
         language_id: lang,
         sampling: SamplingParams {
@@ -249,7 +248,7 @@ fn test_clone_from_default_voice_e2e() {
         &mut scratch,
         &req(2050),
         &abort,
-        &Script::Plain(ref_text.to_string()),
+        &Script::Plain(ref_phrase.to_string()),
         Delivery::Buffer,
     )
     .unwrap();
@@ -257,113 +256,52 @@ fn test_clone_from_default_voice_e2e() {
     assert!(t_ref.frames >= 10 && !ref_samples.is_empty());
     write_wav(&ref_wav, &ref_samples, SAMPLE_RATE as u32).unwrap();
 
-    // 2. Clonado con ICL (con ref_text) y solo con x-vector
-    let icl_path = dir.join("clone_icl.qvoice");
-    let icl_qv = clone_voice(
-        &runtime,
-        &model,
-        &ref_wav,
-        &CloneOptions {
-            ref_text: Some(ref_text.to_string()),
-            language_id: Some(2050),
-            log: LogLevel::Silent,
-        },
-    )
-    .unwrap();
-    icl_qv.write_to_file(&icl_path).unwrap();
-    let icl_built = Voice::from_qvoice(
-        icl_qv.clone(),
-        "clone_icl".to_string(),
-        &VoiceLoadOptions {
-            use_icl: true,
-            log: LogLevel::Silent,
-        },
-    );
-    assert!(icl_built.icl.is_some());
-    assert_eq!(icl_built.name, "clone_icl");
-
+    // 2. Clonado solo con x-vector
     let xvec_path = dir.join("xvec.qvoice");
     let xvec_qv = clone_voice(
         &runtime,
         &model,
         &ref_wav,
         &CloneOptions {
-            ref_text: None,
             log: LogLevel::Silent,
             ..Default::default()
         },
     )
     .unwrap();
     xvec_qv.write_to_file(&xvec_path).unwrap();
-    let xvec_built = Voice::from_qvoice(
-        xvec_qv.clone(),
-        "ref".to_string(),
-        &VoiceLoadOptions {
-            use_icl: true,
-            log: LogLevel::Silent,
-        },
-    );
-    assert!(xvec_built.icl.is_none());
+    let xvec_built = Voice::from_qvoice(xvec_qv.clone(), "ref".to_string());
     assert_eq!(xvec_built.name, "ref");
 
-    // 3. Tamaño exacto de cada .qvoice
-    let icl_file = QVoiceFile::read_from_file(&icl_path).unwrap();
-    assert!(icl_file.has_icl() && icl_file.n_ref_frames() >= 1);
-    assert_eq!(icl_file.ref_text, ref_text);
-    assert_eq!(icl_file.lang_id, 2050);
-    assert_eq!(
-        fs::metadata(&icl_path).unwrap().len() as usize,
-        4120 + ref_text.len() + 64 * icl_file.n_ref_frames()
-    );
-    assert_eq!(fs::metadata(&xvec_path).unwrap().len() as usize, 4120);
+    // 3. Tamaño exacto del .qvoice
+    assert_eq!(fs::metadata(&xvec_path).unwrap().len() as usize, 4112);
     let xvec_file = QVoiceFile::read_from_file(&xvec_path).unwrap();
-    assert!(!xvec_file.has_icl());
     assert_eq!(xvec_file.lang_id, 0, "clonar sin -l no guarda idioma");
 
-    // 4. Carga de cada voz y síntesis de un texto corto
+    // 4. Carga de la voz y síntesis de un texto corto
     let load_opts = VoiceLoadOptions {
-        use_icl: true,
         log: LogLevel::Silent,
     };
-    let icl_voice = Voice::load(&icl_path, &load_opts).unwrap();
-    assert!(icl_voice.icl.is_some());
-    assert_eq!(icl_voice.name, "clone_icl", "la voz se llama como su archivo");
-    assert_eq!(icl_voice.language_id, Some(2050));
     let xvec_voice = Voice::load(&xvec_path, &load_opts).unwrap();
-    assert!(xvec_voice.icl.is_none());
     assert_eq!(xvec_voice.name, "xvec", "la voz se llama como su archivo");
     assert_eq!(xvec_voice.language_id, None);
 
-    // `use_icl = false` al cargar descarta el ICL del archivo
-    let icl_as_xvec = Voice::load(
-        &icl_path,
-        &VoiceLoadOptions {
-            use_icl: false,
-            log: LogLevel::Silent,
-        },
+    let out = Synthesizer {
+        runtime: &runtime,
+        model: &model,
+        voice: &xvec_voice,
+    }
+    .synthesize(
+        &mut scratch,
+        &req(2050),
+        &abort,
+        &Script::Plain(
+            "Hello, this is a test of the cloned voice running with the new engine.".to_string(),
+        ),
+        Delivery::Buffer,
     )
     .unwrap();
-    assert!(icl_as_xvec.icl.is_none());
-
-    for voice in [&icl_voice, &xvec_voice] {
-        let out = Synthesizer {
-            runtime: &runtime,
-            model: &model,
-            voice,
-        }
-        .synthesize(
-            &mut scratch,
-            &req(2050),
-            &abort,
-            &Script::Plain(
-                "Hello, this is a test of the cloned voice running with the new engine.".to_string(),
-            ),
-            Delivery::Buffer,
-        )
-        .unwrap();
-        let (samples, t) = (out.samples.unwrap(), out.timing);
-        assert!(t.frames >= 10 && !samples.is_empty());
-    }
+    let (samples, t) = (out.samples.unwrap(), out.timing);
+    assert!(t.frames >= 10 && !samples.is_empty());
 
     // 5. Guardar con una extensión que no sea .qvoice es un error
     let err = qwen_engine::ensure_qvoice_path(&dir.join("clone.bin"))

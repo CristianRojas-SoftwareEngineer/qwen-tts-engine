@@ -55,7 +55,6 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 | Componente | Regla crítica | Motivo |
 |---|---|---|
 | **Kernels SIMD** | FMA explícito (`_mm256_fmadd_ps`, `vfmaq_f32`) | Evita divergencia observada sin contracción FMA en frases cortas. |
-| **`SpeechEncoder` (RVQ)** | Distancia L2 (`||x - e||^2`) en **IEEE-754 estricto** | Reordenamientos agresivos rompen la búsqueda de vecino más cercano en RVQ. |
 | **`convnext_mlp` (`SpeechDecoder`)** | **LayerNorm de 2 pasadas** (`mean`, luego `var`) | La variante de una pasada altera la señal respecto al streaming validado. |
 | **Activación Snake (`SpeechDecoder`)** | `y = x + exp(-log_beta) * sin^2(exp(log_alpha) * x)` en `F32` | Los parámetros `{alpha, beta}` del checkpoint están en escala logarítmica. |
 | **`causal_conv1d` / `conv_transpose1d`** | `conv_transpose1d`: 1 `FfiBlas::sgemm` + dispersión en orden ascendente de `k`; `causal_conv1d` (`k>1`): `k` `sgemm` acumulados sobre `W_k` `[k][out][in]`, salvo la `conv1` k=7 de los bloques residuales que el *streaming* procesa por tiles (`b >= SD_TILE_FROM_BLOCK`, 192 y 96 canales): **im2col del tile y una sola `sgemm`** con `K = 7 · canales` sobre `conv1_wcat` `[out][k · in]` | Sin `im2col` se ahorran copias con canales anchos; con 96–192 canales, `K = canales` rinde 1,7× peor por FLOP y el im2col del tile (≤ 1,75 MiB) compensa. Cambio medido frente a la referencia vigente: SNR 104,7–105,8 dB, ±1 LSB. |
@@ -79,7 +78,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
    - **Rampas de borde**: 5 ms de entrada y 40 ms de salida, cada una acotada a la mitad del audio, aplicadas después de la ganancia (`apply_gain`) y antes de la conversión a PCM16. El WAV completo las aplica en `encode_wav_bytes`. Las salidas en *streaming* (`--stream`, `--stdout`, `/v1/tts/stream`) las aplican con `EdgeRampSink`, que retiene los últimos 40 ms hasta el chunk siguiente o el cierre y no emite nada hasta reunir 80 ms. Ambos caminos usan las mismas operaciones en el mismo orden (prueba `audio::tests`).
    - **Ganancia**: la aplica siempre `synthesize`, elemento a elemento (`(s·g)` con *clamp* a `[-1, 1]`), justo antes de escribir en el destino; `EdgeRampSink` no aplica ganancia. En texto plano es `x·v`. Con `rate != 1`, la ganancia va antes de `time_stretch`.
    - **Composición multi-tramo** (`Script::Spans`, una sola implementación para las dos entregas): cada tramo hablado se sintetiza como texto plano con ganancia `x·(v·o)` (`v` el volumen de la petición, `o` el del tramo) y, si el tramo trae `rate`, `time_stretch` después de la ganancia. Entre tramos hablados va una pausa (`compose_pause_s`); junto a una muletilla (`[hmm]` y similares) no hay pausa y los tramos se unen con un **fundido cruzado de 45 ms**, para lo que se retienen las últimas 45 ms emitidas. Las pausas explícitas (`[pause:<s>]`) son silencio exacto.
-   - Verificado por `qwen-engine/tests/synthesis_paths_tests.rs`: `Delivery::Buffer` y `Delivery::Stream(EdgeRampSink)` dan los mismos bytes PCM en texto plano, con ICL y con marcado.
+   - Verificado por `qwen-engine/tests/synthesis_paths_tests.rs`: `Delivery::Buffer` y `Delivery::Stream(EdgeRampSink)` dan los mismos bytes PCM en texto plano, con voz clonada y con marcado.
 
 ---
 

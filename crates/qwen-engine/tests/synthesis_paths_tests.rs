@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use qwen_core::config::{DEFAULT_SEED, ENC_DIM, NUM_CODEBOOKS, SAMPLE_RATE};
+use qwen_core::config::{DEFAULT_SEED, ENC_DIM, SAMPLE_RATE};
 use qwen_core::{plan_script, MarkupMode, QVoiceFile, SamplingParams, Script};
 use qwen_engine::{
     clone_voice, encode_wav_bytes, write_wav, AbortHandle, CloneOptions, Delivery, EdgeRampSink,
@@ -66,84 +66,64 @@ fn load_model(runtime: &ComputeRuntime) -> Option<Model06B> {
     )
 }
 
-/// Un perfil `.qvoice` en memoria, con `n_frames` frames ICL deterministas.
-fn sample_qvoice(lang_id: u32, ref_text: &str, n_frames: usize) -> QVoiceFile {
+/// Un perfil `.qvoice` en memoria con un x-vector determinista.
+fn sample_qvoice(lang_id: u32) -> QVoiceFile {
     QVoiceFile {
         speaker_embedding: (0..ENC_DIM)
             .map(|i| ((i % 37) as f32 - 18.0) * 0.01)
             .collect(),
         lang_id,
-        ref_text: ref_text.to_string(),
-        ref_codes: (0..n_frames * NUM_CODEBOOKS)
-            .map(|i| ((i * 37 + 11) % 2048) as i32)
-            .collect(),
     }
 }
 
-/// Bytes esperados de un `.qvoice` v5, escritos a mano campo a campo.
+/// Bytes esperados de un `.qvoice` v6 (4112 bytes), escritos a mano campo a campo.
 fn expected_qvoice_bytes(qv: &QVoiceFile) -> Vec<u8> {
     let mut b = Vec::new();
     b.extend_from_slice(b"QVCE");
-    b.extend_from_slice(&5u32.to_le_bytes());
+    b.extend_from_slice(&6u32.to_le_bytes());
     b.extend_from_slice(&(ENC_DIM as u32).to_le_bytes());
     for v in &qv.speaker_embedding {
         b.extend_from_slice(&v.to_le_bytes());
     }
     b.extend_from_slice(&qv.lang_id.to_le_bytes());
-    b.extend_from_slice(&(qv.ref_text.len() as u32).to_le_bytes());
-    b.extend_from_slice(qv.ref_text.as_bytes());
-    b.extend_from_slice(&(qv.n_ref_frames() as u32).to_le_bytes());
-    for c in &qv.ref_codes {
-        b.extend_from_slice(&c.to_le_bytes());
-    }
+    assert_eq!(b.len(), 4112);
     b
 }
 
 #[test]
 fn test_voice_load_on_construction() {
     let dir = temp_dir("voice_load");
-    let ref_text = "Texto de referencia.";
 
-    // Con ICL e idioma
-    let icl_qv = sample_qvoice(2050, ref_text, 10);
-    let icl_path = dir.join("icl.qvoice");
-    icl_qv.write_to_file(&icl_path).unwrap();
-    // Solo x-vector, sin idioma
-    let xv_qv = sample_qvoice(0, "", 0);
-    let xv_path = dir.join("solo_x.qvoice");
-    xv_qv.write_to_file(&xv_path).unwrap();
+    // Con idioma
+    let lang_qv = sample_qvoice(2050);
+    let lang_path = dir.join("con_idioma.qvoice");
+    lang_qv.write_to_file(&lang_path).unwrap();
+    // Sin idioma
+    let no_lang_qv = sample_qvoice(0);
+    let no_lang_path = dir.join("sin_idioma.qvoice");
+    no_lang_qv.write_to_file(&no_lang_path).unwrap();
 
     let opts = VoiceLoadOptions {
-        use_icl: true,
         log: LogLevel::Silent,
     };
-    let full = Voice::load(&icl_path, &opts).unwrap();
-    assert_eq!(full.name, "icl", "la voz se llama como su archivo");
-    assert_eq!(full.language_id, Some(2050));
-    assert_eq!(full.xvector, icl_qv.speaker_embedding);
+    let with_lang = Voice::load(&lang_path, &opts).unwrap();
+    assert_eq!(
+        with_lang.name, "con_idioma",
+        "la voz se llama como su archivo"
+    );
+    assert_eq!(with_lang.language_id, Some(2050));
+    assert_eq!(with_lang.xvector, lang_qv.speaker_embedding);
 
-    let xv = Voice::load(&xv_path, &opts).unwrap();
-    assert_eq!(xv.name, "solo_x", "la voz se llama como su archivo");
-    assert_eq!(xv.language_id, None);
-    assert!(xv.icl.is_none());
+    let no_lang = Voice::load(&no_lang_path, &opts).unwrap();
+    assert_eq!(
+        no_lang.name, "sin_idioma",
+        "la voz se llama como su archivo"
+    );
+    assert_eq!(no_lang.language_id, None);
+    assert_eq!(no_lang.xvector, no_lang_qv.speaker_embedding);
 
     // Sin `.qvoice` en la ruta: error
     assert!(Voice::load(&dir.join("voz.bin"), &opts).is_err());
-
-    // `use_icl = false` descarta el ICL
-    let no_icl = Voice::load(
-        &icl_path,
-        &VoiceLoadOptions {
-            use_icl: false,
-            log: LogLevel::Silent,
-        },
-    )
-    .unwrap();
-    assert!(no_icl.icl.is_none());
-
-    let full_icl = full.icl.as_ref().unwrap();
-    assert_eq!(full_icl.ref_text, ref_text);
-    assert_eq!(full_icl.ref_codes, icl_qv.ref_codes);
 }
 
 #[test]
@@ -171,8 +151,8 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         ..Default::default()
     };
 
-    // Referencia con la voz `default`, para clonar una voz con ICL
-    let ref_text = "Esta es una referencia para clonar con contexto.";
+    // Referencia con la voz `default`, para clonar una voz
+    let ref_phrase = "Esta es una referencia para clonar.";
     let ref_req = SynthesisRequest {
         max_frames: 8192,
         volume: 1.0,
@@ -187,7 +167,7 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         &mut scratch,
         &ref_req,
         &abort,
-        &Script::Plain(ref_text.to_string()),
+        &Script::Plain(ref_phrase.to_string()),
         Delivery::Buffer,
     )
     .unwrap()
@@ -202,7 +182,6 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         &model,
         &ref_wav,
         &CloneOptions {
-            ref_text: Some(ref_text.to_string()),
             language_id: None,
             log: LogLevel::Silent,
         },
@@ -210,22 +189,10 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
     .unwrap();
     assert_eq!(qv.speaker_embedding.len(), ENC_DIM);
     assert_eq!(qv.lang_id, 0, "sin idioma dado, el archivo guarda 0");
-    assert_eq!(qv.ref_text, ref_text);
-    assert!(qv.n_ref_frames() > 0, "el archivo trae los fotogramas ICL");
-    let built = Voice::from_qvoice(
-        qv.clone(),
-        "ref".to_string(),
-        &VoiceLoadOptions {
-            use_icl: true,
-            log: LogLevel::Silent,
-        },
-    );
+    let built = Voice::from_qvoice(qv.clone(), "ref".to_string());
     assert_eq!(built.name, "ref");
     assert_eq!(built.language_id, None);
     assert_eq!(built.xvector, qv.speaker_embedding);
-    let built_icl = built.icl.as_ref().unwrap();
-    assert_eq!(built_icl.ref_text, ref_text);
-    assert_eq!(built_icl.ref_codes, qv.ref_codes);
     let qv_path = dir.join("clone.qvoice");
     qv.write_to_file(&qv_path).unwrap();
     assert_eq!(fs::read(&qv_path).unwrap(), expected_qvoice_bytes(&qv));
@@ -234,14 +201,12 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         &model,
         &ref_wav,
         &CloneOptions {
-            ref_text: None,
             language_id: Some(2050),
             log: LogLevel::Silent,
         },
     )
     .unwrap();
     assert_eq!(named.lang_id, 2050);
-    assert!(named.ref_codes.is_empty() && named.ref_text.is_empty());
     assert_eq!(named.speaker_embedding, qv.speaker_embedding);
     let named_path = dir.join("named.qvoice");
     named.write_to_file(&named_path).unwrap();
@@ -250,16 +215,14 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         expected_qvoice_bytes(&named)
     );
 
-    // Buffer frente a Stream: mismos bytes PCM en texto plano, ICL y marcado
-    let icl_voice = Voice::load(
+    // Buffer frente a Stream: mismos bytes PCM en texto plano, con voz clonada y marcado
+    let cloned_voice = Voice::load(
         &qv_path,
         &VoiceLoadOptions {
-            use_icl: true,
             log: LogLevel::Silent,
         },
     )
     .unwrap();
-    assert!(icl_voice.icl.is_some());
     let marked = plan_script("Hola. [pause:0.3] Adiós.", MarkupMode::Auto);
     assert!(matches!(marked.script, Script::Spans(_)));
     let cases = [
@@ -268,7 +231,11 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
             &default_voice,
             Script::Plain("Hola mundo.".to_string()),
         ),
-        ("ICL", &icl_voice, Script::Plain("Hola mundo.".to_string())),
+        (
+            "voz clonada",
+            &cloned_voice,
+            Script::Plain("Hola mundo.".to_string()),
+        ),
         ("marcado", &default_voice, marked.script),
     ];
     for (label, voice, script) in &cases {

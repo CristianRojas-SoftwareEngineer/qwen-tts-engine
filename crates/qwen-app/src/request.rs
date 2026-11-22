@@ -134,7 +134,6 @@ mod tests {
             name: "v".to_string(),
             language_id,
             xvector: Vec::new(),
-            icl: None,
         }
     }
 

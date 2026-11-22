@@ -17,7 +17,6 @@ pub mod pipeline;
 mod prompt;
 pub mod request;
 pub mod speech_decoder;
-pub mod speech_encoder;
 pub mod synth;
 pub mod talker;
 pub mod voice;
@@ -35,5 +34,5 @@ pub use request::{
 };
 pub use speech_decoder::speech_decoder_decode_streaming;
 pub use synth::{Delivery, SynthesisOutput, Synthesizer};
-pub use voice::{clone_voice, ensure_qvoice_path, CloneOptions, IclPrompt, Voice, VoiceLoadOptions};
+pub use voice::{clone_voice, ensure_qvoice_path, CloneOptions, Voice, VoiceLoadOptions};
 pub use voice_clone::mel_spectrogram;

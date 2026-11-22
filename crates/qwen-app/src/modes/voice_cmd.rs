@@ -9,7 +9,7 @@
 use std::fs;
 use std::path::Path;
 
-use qwen_core::config::{language_name, FRAME_RATE};
+use qwen_core::config::language_name;
 use qwen_core::QVoiceFile;
 use qwen_engine::{
     clone_voice, ensure_qvoice_path, CloneOptions, Model06B, Voice, VoiceLoadOptions,
@@ -19,7 +19,7 @@ use qwen_kernels::ComputeRuntime;
 use crate::cli::CliArgs;
 use crate::request;
 
-/// Imprime una línea por voz: archivo, idioma, ICL y tamaño. Un archivo que el lector
+/// Imprime una línea por voz: archivo, idioma y tamaño. Un archivo que el lector
 /// rechaza se muestra con `no compatible: <mensaje del lector>`.
 fn print_qvoice_info(path: &Path) {
     let basename = path
@@ -33,14 +33,8 @@ fn print_qvoice_info(path: &Path) {
                 .ok()
                 .and_then(language_name)
                 .unwrap_or("-");
-            let icl = if qv.has_icl() {
-                let n = qv.n_ref_frames();
-                format!("{n} frames ({:.1}s)", n as f32 / FRAME_RATE)
-            } else {
-                "no".to_string()
-            };
             println!(
-                "  {basename:<30}  lang={lang}  icl={icl}  {:.1} KB",
+                "  {basename:<30}  lang={lang}  {:.1} KB",
                 size as f32 / 1024.0
             );
         }
@@ -135,7 +129,6 @@ pub fn resolve_voice(
         }
         let name = cloned_voice_name(ref_audio_path, cfg.save_voice.as_deref())?;
         let clone_opts = CloneOptions {
-            ref_text: cfg.ref_text.clone(),
             language_id: cli_language_id,
             log: request::log_level(cfg),
         };
@@ -145,25 +138,12 @@ pub fn resolve_voice(
             qv.write_to_file(Path::new(save_path))
                 .map_err(|e| e.to_string())?;
             if !cfg.silent {
-                let n = qv.n_ref_frames();
-                if n == 0 {
-                    eprintln!("Guardado .qvoice v5 en {save_path} (solo x-vector)");
-                } else {
-                    eprintln!("Guardado .qvoice v5 en {save_path} ({n} frames ICL)");
-                }
+                eprintln!("Guardado .qvoice v6 en {save_path}");
             }
         }
-        Voice::from_qvoice(
-            qv,
-            name,
-            &VoiceLoadOptions {
-                use_icl: true,
-                log: request::log_level(cfg),
-            },
-        )
+        Voice::from_qvoice(qv, name)
     } else if let Some(ref lv_path) = cfg.load_voice {
         let lv_opts = VoiceLoadOptions {
-            use_icl: !cfg.xvector_only,
             log: request::log_level(cfg),
         };
         let v = Voice::load(Path::new(lv_path), &lv_opts).map_err(|e| e.to_string())?;

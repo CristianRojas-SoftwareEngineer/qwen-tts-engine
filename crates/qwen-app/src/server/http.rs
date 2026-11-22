@@ -258,16 +258,15 @@ pub fn handle_health(stream: &mut TcpStream) {
     send_json(stream, 200, "{\"status\":\"ok\"}");
 }
 
-/// `GET /v1/voices`: voz cargada con su idioma y si lleva ICL.
+/// `GET /v1/voices`: voz cargada con su idioma.
 pub fn handle_voices(stream: &mut TcpStream, voice: &Voice) {
     let language = voice
         .language_id
         .and_then(language_name)
         .map(serde_json::Value::from)
         .unwrap_or(serde_json::Value::Null);
-    let icl = voice.icl.is_some();
     let body = serde_json::json!({
-        "voices": [{ "name": voice.name, "language": language, "icl": icl }]
+        "voices": [{ "name": voice.name, "language": language }]
     });
     send_json(stream, 200, &body.to_string());
 }

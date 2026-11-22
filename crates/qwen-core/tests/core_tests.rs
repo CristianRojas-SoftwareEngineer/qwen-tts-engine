@@ -192,27 +192,21 @@ fn qvoice_emb() -> Vec<f32> {
     (0..1024).map(|i| ((i % 37) as f32 - 18.0) * 0.01).collect()
 }
 
-/// Bytes de un `.qvoice` v5 escritos a mano, para probar el lector sin pasar por el escritor.
-fn qvoice_v5_bytes(lang_id: u32, ref_text: &str, n_frames: u32) -> Vec<u8> {
+/// Bytes de un `.qvoice` v6 escritos a mano, para probar el lector sin pasar por el escritor.
+fn qvoice_v6_bytes(lang_id: u32) -> Vec<u8> {
     let mut b = Vec::new();
     b.extend_from_slice(b"QVCE");
-    b.extend_from_slice(&5u32.to_le_bytes());
+    b.extend_from_slice(&6u32.to_le_bytes());
     b.extend_from_slice(&1024u32.to_le_bytes());
     for v in qvoice_emb() {
         b.extend_from_slice(&v.to_le_bytes());
     }
     b.extend_from_slice(&lang_id.to_le_bytes());
-    b.extend_from_slice(&(ref_text.len() as u32).to_le_bytes());
-    b.extend_from_slice(ref_text.as_bytes());
-    b.extend_from_slice(&n_frames.to_le_bytes());
-    for i in 0..(n_frames as usize * 16) {
-        b.extend_from_slice(&(i as i32).to_le_bytes());
-    }
     b
 }
 
 fn read_qvoice_bytes(name: &str, bytes: &[u8]) -> Result<QVoiceFile, qwen_core::CoreError> {
-    let path = std::env::temp_dir().join(format!("qwen_core_qv5_{name}.qvoice"));
+    let path = std::env::temp_dir().join(format!("qwen_core_qv6_{name}.qvoice"));
     std::fs::write(&path, bytes).unwrap();
     let res = QVoiceFile::read_from_file(&path);
     let _ = std::fs::remove_file(&path);
@@ -220,64 +214,55 @@ fn read_qvoice_bytes(name: &str, bytes: &[u8]) -> Result<QVoiceFile, qwen_core::
 }
 
 #[test]
-fn test_qvoice_v5_roundtrip_without_and_with_icl() {
-    // Sin ICL: tamaño exacto 4120
+fn test_qvoice_v6_roundtrip_with_and_without_language() {
+    // Sin idioma (lang_id 0): tamaño exacto 4112
     let plain = QVoiceFile {
         speaker_embedding: qvoice_emb(),
         lang_id: 0,
-        ref_text: String::new(),
-        ref_codes: Vec::new(),
     };
-    let p1 = std::env::temp_dir().join("qwen_core_rt_plain.qvoice");
+    let p1 = std::env::temp_dir().join("qwen_core_qv6_rt_plain.qvoice");
     plain.write_to_file(&p1).unwrap();
-    assert_eq!(std::fs::metadata(&p1).unwrap().len() as usize, 4120);
+    assert_eq!(std::fs::metadata(&p1).unwrap().len() as usize, 4112);
     let back = QVoiceFile::read_from_file(&p1).unwrap();
     assert_eq!(back, plain);
-    assert!(!back.has_icl());
     let _ = std::fs::remove_file(&p1);
 
-    // Con ICL: 4120 + len(ref_text) + 64 * n_frames
-    let icl = QVoiceFile {
+    // Con idioma válido: mismo tamaño
+    let with_lang = QVoiceFile {
         speaker_embedding: qvoice_emb(),
         lang_id: 2054,
-        ref_text: "Hello test, ¿qué tal?".to_string(),
-        ref_codes: (0..16 * 4).collect(),
     };
-    let p2 = std::env::temp_dir().join("qwen_core_rt_icl.qvoice");
-    icl.write_to_file(&p2).unwrap();
-    let expected = 4120 + icl.ref_text.len() + 64 * 4;
-    assert_eq!(std::fs::metadata(&p2).unwrap().len() as usize, expected);
+    let p2 = std::env::temp_dir().join("qwen_core_qv6_rt_lang.qvoice");
+    with_lang.write_to_file(&p2).unwrap();
+    assert_eq!(std::fs::metadata(&p2).unwrap().len() as usize, 4112);
     let back = QVoiceFile::read_from_file(&p2).unwrap();
-    assert_eq!(back, icl);
-    assert!(back.has_icl());
-    assert_eq!(back.n_ref_frames(), 4);
+    assert_eq!(back, with_lang);
     let _ = std::fs::remove_file(&p2);
 
     // El escritor y el lector manual coinciden byte a byte
-    let by_hand = qvoice_v5_bytes(2054, "Hello test, ¿qué tal?", 4);
-    let p3 = std::env::temp_dir().join("qwen_core_rt_hand.qvoice");
-    icl.write_to_file(&p3).unwrap();
-    assert_eq!(std::fs::read(&p3).unwrap(), by_hand);
+    let p3 = std::env::temp_dir().join("qwen_core_qv6_rt_hand.qvoice");
+    with_lang.write_to_file(&p3).unwrap();
+    assert_eq!(std::fs::read(&p3).unwrap(), qvoice_v6_bytes(2054));
     let _ = std::fs::remove_file(&p3);
 }
 
 #[test]
-fn test_qvoice_v5_rejects_invalid_files() {
-    let good = qvoice_v5_bytes(2050, "text", 2);
+fn test_qvoice_v6_rejects_invalid_files() {
+    let good = qvoice_v6_bytes(2050);
+    assert_eq!(good.len(), 4112);
     assert!(read_qvoice_bytes("good", &good).is_ok());
 
-    // Cualquier versión distinta de 5 se rechaza con un mensaje que pide clonar de nuevo
-    let mut other = Vec::new();
-    other.extend_from_slice(b"QVCE");
-    other.extend_from_slice(&4u32.to_le_bytes());
-    other.extend_from_slice(&1024u32.to_le_bytes());
-    let err = read_qvoice_bytes("other_version", &other).unwrap_err().to_string();
+    // Un archivo v5 (u otra versión) se rechaza con un mensaje que pide clonar de nuevo
+    let mut old = good.clone();
+    let old_version = 5u32;
+    old[4..8].copy_from_slice(&old_version.to_le_bytes());
+    let err = read_qvoice_bytes("other_version", &old).unwrap_err().to_string();
     assert!(
-        err.contains("version 4") && err.contains("version 5"),
+        err.contains(&format!("version {old_version}")) && err.contains("version 6"),
         "se obtuvo: {err}"
     );
     assert!(
-        err.contains("qwen_core_qv5_other_version.qvoice"),
+        err.contains("qwen_core_qv6_other_version.qvoice"),
         "el mensaje debe nombrar la ruta: {err}"
     );
 
@@ -292,6 +277,9 @@ fn test_qvoice_v5_rejects_invalid_files() {
     bad_dim[8..12].copy_from_slice(&512u32.to_le_bytes());
     assert!(read_qvoice_bytes("dim", &bad_dim).is_err());
 
+    // lang_id inválido
+    assert!(read_qvoice_bytes("lang", &qvoice_v6_bytes(9999)).is_err());
+
     // truncado (en cada punto) y bytes sobrantes
     for cut in [0usize, 3, 11, 100, 4096, good.len() - 1] {
         let err = read_qvoice_bytes("trunc", &good[..cut]).unwrap_err().to_string();
@@ -304,35 +292,6 @@ fn test_qvoice_v5_rejects_invalid_files() {
     extra.push(0);
     let err = read_qvoice_bytes("extra", &extra).unwrap_err().to_string();
     assert!(err.contains("sobran bytes"), "se obtuvo: {err}");
-
-    // tamaños excesivos (sin reservar memoria)
-    let mut huge_frames = qvoice_v5_bytes(0, "", 0);
-    let n = huge_frames.len();
-    huge_frames[n - 4..].copy_from_slice(&1_000_001u32.to_le_bytes());
-    assert!(read_qvoice_bytes("huge_frames", &huge_frames).is_err());
-
-    // UTF-8 inválido en ref_text: el texto empieza en el offset 4116
-    let mut bad_utf8 = qvoice_v5_bytes(0, "text", 2);
-    bad_utf8[4116] = 0xFF;
-    assert!(read_qvoice_bytes("utf8", &bad_utf8).is_err());
-
-    // lang_id inválido
-    assert!(read_qvoice_bytes("lang", &qvoice_v5_bytes(9999, "", 0)).is_err());
-
-    // ICL incoherente: texto sin códigos, o códigos sin texto
-    assert!(read_qvoice_bytes("text_only", &qvoice_v5_bytes(0, "text", 0)).is_err());
-    assert!(read_qvoice_bytes("codes_only", &qvoice_v5_bytes(0, "", 3)).is_err());
-
-    // El escritor tampoco emite ICL incoherente
-    let incoherent = QVoiceFile {
-        speaker_embedding: qvoice_emb(),
-        lang_id: 0,
-        ref_text: "text".to_string(),
-        ref_codes: Vec::new(),
-    };
-    let p = std::env::temp_dir().join("qwen_core_incoherent.qvoice");
-    assert!(incoherent.write_to_file(&p).is_err());
-    let _ = std::fs::remove_file(&p);
 }
 
 #[test]

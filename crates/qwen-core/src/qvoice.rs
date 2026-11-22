@@ -3,37 +3,28 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Formato de voz `.qvoice` versión 5 (`QVCE`), el único formato de voz del motor.
+//! Formato de voz `.qvoice` versión 6 (`QVCE`), el único formato de voz del motor.
 //!
 //! Sin secciones con etiqueta: todos los campos son obligatorios y van en este
-//! orden, little-endian: `magic` (4 B), `version` (`u32` = 5), `enc_dim` (`u32` = 1024),
-//! x-vector (`enc_dim × f32`), `lang_id` (`u32`, 0 = sin idioma), `ref_text_len` (`u32`) y
-//! texto UTF-8, `n_ref_frames` (`u32`) y `n_ref_frames × 16 × i32` códigos ICL. El nombre
-//! de la voz es el nombre del archivo.
+//! orden, little-endian: `magic` (4 B), `version` (`u32` = 6), `enc_dim` (`u32` = 1024),
+//! x-vector (`enc_dim × f32`) y `lang_id` (`u32`, 0 = sin idioma): 4112 bytes justos. El
+//! nombre de la voz es el nombre del archivo.
 
 use std::path::Path;
 
-use crate::config::{language_name, ENC_DIM, NUM_CODEBOOKS};
+use crate::config::{language_name, ENC_DIM};
 use crate::error::CoreError;
 
 pub const QVCE_MAGIC: &[u8; 4] = b"QVCE";
-pub const QVOICE_VERSION: u32 = 5;
-/// Tamaño máximo del texto de referencia, en bytes.
-pub const MAX_REF_TEXT_LEN: usize = 1_000_000;
-/// Número máximo de frames de referencia ICL.
-pub const MAX_REF_FRAMES: usize = 1_000_000;
+pub const QVOICE_VERSION: u32 = 6;
 
-/// Representación en memoria de un perfil de voz `.qvoice` v5.
+/// Representación en memoria de un perfil de voz `.qvoice` v6.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QVoiceFile {
     /// x-vector del locutor (`ENC_DIM` valores).
     pub speaker_embedding: Vec<f32>,
     /// Id de idioma (`lookup_language`), o 0 si la voz no tiene idioma.
     pub lang_id: u32,
-    /// Transcripción del audio de referencia (vacía si no hay ICL).
-    pub ref_text: String,
-    /// Códigos del audio de referencia, `n_ref_frames × 16` (vacío si no hay ICL).
-    pub ref_codes: Vec<i32>,
 }
 
 struct Reader<'a> {
@@ -64,16 +55,6 @@ fn valid_lang_id(lang_id: u32) -> bool {
 }
 
 impl QVoiceFile {
-    /// Indica si la voz lleva ICL (texto y códigos de referencia).
-    pub fn has_icl(&self) -> bool {
-        !self.ref_codes.is_empty() && !self.ref_text.is_empty()
-    }
-
-    /// Número de frames de referencia ICL.
-    pub fn n_ref_frames(&self) -> usize {
-        self.ref_codes.len() / NUM_CODEBOOKS
-    }
-
     /// `true` si el archivo empieza por la firma `QVCE`, sea cual sea su versión.
     pub fn has_magic(path: &Path) -> bool {
         use std::io::Read;
@@ -125,39 +106,13 @@ impl QVoiceFile {
             return Err(corrupt(&format!("lang_id {lang_id} inválido")));
         }
 
-        let text_len = r.u32().ok_or_else(trunc)? as usize;
-        if text_len > MAX_REF_TEXT_LEN {
-            return Err(corrupt("ref_text_len demasiado grande"));
-        }
-        let text_raw = r.take(text_len).ok_or_else(trunc)?;
-        let ref_text = std::str::from_utf8(text_raw)
-            .map_err(|_| corrupt("ref_text no es UTF-8 válido"))?
-            .to_string();
-
-        let n_frames = r.u32().ok_or_else(trunc)? as usize;
-        if n_frames > MAX_REF_FRAMES {
-            return Err(corrupt("n_ref_frames demasiado grande"));
-        }
-        let codes_raw = r.take(n_frames * NUM_CODEBOOKS * 4).ok_or_else(trunc)?;
-        let ref_codes: Vec<i32> = codes_raw
-            .chunks_exact(4)
-            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
-
         if r.pos != bytes.len() {
             return Err(corrupt("sobran bytes tras el último campo"));
-        }
-        if ref_text.is_empty() != (n_frames == 0) {
-            return Err(corrupt(
-                "datos ICL incoherentes (ref_text y ref_codes deben estar ambos presentes o ambos vacíos)",
-            ));
         }
 
         Ok(Self {
             speaker_embedding,
             lang_id,
-            ref_text,
-            ref_codes,
         })
     }
 
@@ -172,24 +127,8 @@ impl QVoiceFile {
         if !valid_lang_id(self.lang_id) {
             return Err(err(&format!("lang_id {} inválido", self.lang_id)));
         }
-        if self.ref_text.len() > MAX_REF_TEXT_LEN {
-            return Err(err("ref_text excede 1000000 bytes"));
-        }
-        if self.n_ref_frames() * NUM_CODEBOOKS != self.ref_codes.len() {
-            return Err(err("la longitud de ref_codes no es múltiplo de 16"));
-        }
-        let n_frames = self.n_ref_frames();
-        if n_frames > MAX_REF_FRAMES {
-            return Err(err("demasiados frames de referencia"));
-        }
-        if self.ref_text.is_empty() != (n_frames == 0) {
-            return Err(err(
-                "datos ICL incoherentes (ref_text y ref_codes deben estar ambos presentes o ambos vacíos)",
-            ));
-        }
 
-        let mut out =
-            Vec::with_capacity(4120 + self.ref_text.len() + self.ref_codes.len() * 4);
+        let mut out = Vec::with_capacity(4112);
         out.extend_from_slice(QVCE_MAGIC);
         out.extend_from_slice(&QVOICE_VERSION.to_le_bytes());
         out.extend_from_slice(&(ENC_DIM as u32).to_le_bytes());
@@ -197,12 +136,6 @@ impl QVoiceFile {
             out.extend_from_slice(&v.to_le_bytes());
         }
         out.extend_from_slice(&self.lang_id.to_le_bytes());
-        out.extend_from_slice(&(self.ref_text.len() as u32).to_le_bytes());
-        out.extend_from_slice(self.ref_text.as_bytes());
-        out.extend_from_slice(&(n_frames as u32).to_le_bytes());
-        for &c in &self.ref_codes {
-            out.extend_from_slice(&c.to_le_bytes());
-        }
         std::fs::write(path, out)?;
         Ok(())
     }

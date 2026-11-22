@@ -1,5 +1,7 @@
 # ADR-006: Un único camino de síntesis
 
+Parcialmente reemplazado por el ADR 007 (`.qvoice` v6 y fin de la clonación ICL).
+
 > Registro de decisión arquitectónica sobre cómo se sintetiza el audio: una sola entrada, dos entregas (completa y *streaming*), una regla de idioma y una composición multi-tramo idéntica en ambas.
 
 - **Estado**: Aceptado

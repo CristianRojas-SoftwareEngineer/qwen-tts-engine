@@ -15,7 +15,7 @@
 | `-h`, `--help` | Imprime la ayuda de uso por `stderr` y termina. | `0` |
 | `--caps` | Inicializa el runtime con `-j`, imprime capacidades SIMD/hilos/BLAS a `stdout` y termina. | `0` |
 | `--self-test` | Ejecuta la batería numérica de kernels hacia `stdout`. | `0` si pasa, `1` si falla |
-| `--list-voices <dir>` | Lista los `.qvoice` de `<dir>` (o un archivo `.qvoice` puntual): por voz, archivo, idioma (`-` si no tiene), ICL (frames y segundos, o `no`) y tamaño. Un archivo que el lector rechaza (por ejemplo, una versión distinta de la 5) aparece con `no compatible: <mensaje>`. La voz `default` no se lista: no es un archivo. | `0` / `1` |
+| `--list-voices <dir>` | Lista los `.qvoice` de `<dir>` (o un archivo `.qvoice` puntual): por voz, archivo, idioma (`-` si no tiene) y tamaño. Un archivo que el lector rechaza (por ejemplo, una versión distinta de la 6) aparece con `no compatible: <mensaje>`. La voz `default` no se lista: no es un archivo. | `0` / `1` |
 | `--delete-voice <path>` | Valida la extensión `.qvoice` y la cabecera `QVCE` antes de eliminar el archivo. | `0` / `1` |
 
 ### 1.2 Flags de modelo, voz y muestreo
@@ -50,11 +50,9 @@
 | Categoría | Flag(s) | Por defecto | Contrato y validación |
 |---|---|---|---|
 | **Clonación** | `--ref-audio <path>` | `None` | Valida cabecera `RIFF`/WAV 24 kHz mono antes de cargar el modelo; otros formatos fallan con comando `ffmpeg`. La referencia se usa entera. |
-| | `--ref-text <string>` | `None` | Transcripción exacta de la referencia; con ella la voz clonada es ICL, sin ella solo x-vector. Solo con `--ref-audio`; vacía → error. |
-| | `--xvector-only` | off | Solo con `--load-voice`: usa la voz solo con su x-vector, aunque tenga ICL. |
-| | `--save-voice <path>` | `None` | Guarda `.qvoice` v5; la voz se llama como el archivo (la extensión debe ser `.qvoice`; otra da `los archivos de voz deben ser .qvoice (se obtuvo <ruta>)`). Con idioma `-l` lo guarda; sin `-l` guarda «sin idioma». Sin `--text` ni `--serve`, crea el perfil y sale (`0`). Requiere `--ref-audio`. |
-| | `--load-voice <path>` | voz `default` incorporada | Carga `.qvoice` v5; la voz se llama como el archivo (sin extensión). Otra extensión o una versión distinta de la 5 → `exit 1`. Sin este flag ni `--ref-audio`, se usa la voz `default`. |
-| | Reglas de las opciones de voz (valen en todos los modos; la primera que falle da `exit 1`) | | 1) `--ref-audio` con `--load-voice`; 2) `--ref-text` sin `--ref-audio`; 3) `--ref-text` vacío o solo espacios; 4) `--save-voice` sin `--ref-audio`; 5) `--xvector-only` sin `--load-voice`. Una voz clonada se llama como el archivo de `--save-voice` (sin extensión) o, si no se guarda, como el WAV de `--ref-audio`. |
+| | `--save-voice <path>` | `None` | Guarda `.qvoice` v6; la voz se llama como el archivo (la extensión debe ser `.qvoice`; otra da `los archivos de voz deben ser .qvoice (se obtuvo <ruta>)`). Con idioma `-l` lo guarda; sin `-l` guarda «sin idioma». Sin `--text` ni `--serve`, crea el perfil y sale (`0`). Requiere `--ref-audio`. |
+| | `--load-voice <path>` | voz `default` incorporada | Carga `.qvoice` v6; la voz se llama como el archivo (sin extensión). Otra extensión o una versión distinta de la 6 → `exit 1`. Sin este flag ni `--ref-audio`, se usa la voz `default`. |
+| | Reglas de las opciones de voz (valen en todos los modos; la primera que falle da `exit 1`) | | 1) `--ref-audio` con `--load-voice`; 2) `--save-voice` sin `--ref-audio`. Una voz clonada se llama como el archivo de `--save-voice` (sin extensión) o, si no se guarda, como el WAV de `--ref-audio`. |
 | **Marcado y estilo** | Marcado en `--text` | sin flag propio | Síntesis multitramo con pausas `[pause:<s>]`, `[break:<s>]`, `[0.5]` o `\|`, y tags paralingüísticos en línea (`[laugh]`, `[sigh]`, `[yawn]`, `[wow]`, `[giggle]`, `[scoff]`). Sirve para la entrega completa y para `--stream`/`--stdout` (mismo PCM, `NUMERIC_CONTRACT.md` §4, invariante 5). Un texto solo de pausas, sin nada que hablar, es un error (`Composición: nada que sintetizar`) en las dos entregas. |
 | | `--compose-pause <s>` | `0.12` | Pausa entre tramos hablados seguidos del texto con marcado (no se aplica junto a las muletillas, que se funden). |
 | | `--no-compose` | off | Desactiva la sustitución de `[tags]` y la composición automática en `--text`. El marcado en `--text` (`[hmm]`, `[pause:0.4]`...) va por el mismo camino con `--stream` y `--stdout`. |
@@ -88,7 +86,7 @@
 | Método y Ruta | Entrada | Respuesta exitosa | Reglas específicas |
 |---|---|---|---|
 | `GET /v1/health` | — | `200` `{"status":"ok"}` | Comprobación de disponibilidad. |
-| `GET /v1/voices` | — | `200` `{"voices":[{"name":"<nombre>","language":"<nombre o null>","icl":<bool>}]}` | Devuelve la voz cargada. `"language"` es el idioma declarado por la voz (la voz `default` declara `"Spanish"`; `null` si una voz cargada no declara ninguno). |
+| `GET /v1/voices` | — | `200` `{"voices":[{"name":"<nombre>","language":"<nombre o null>"}]}` | Devuelve la voz cargada. `"language"` es el idioma declarado por la voz (la voz `default` declara `"Spanish"`; `null` si una voz cargada no declara ninguno). |
 | `POST /v1/tts` | JSON TTS | `200` `audio/wav` (24 kHz s16le mono) | WAV completo con rampas de 5 ms (entrada) y 40 ms (salida); mismo PCM que `/v1/tts/stream` y que la CLI. Usa `DEFAULT_CHUNK_FRAMES = 10`; `max_frames = 8192`. |
 | `POST /v1/tts/stream` | JSON TTS | `200` `audio/pcm` (`Transfer-Encoding: chunked`) | Cabeceras: `X-Sample-Rate: 24000`, `X-Sample-Format: s16le`, `X-Channels: 1`. No admite el campo `rate` (`400`); `max_frames = 8192`. |
 
@@ -148,11 +146,11 @@ let runtime = ComputeRuntime::new(Some(4)); // `None` -> min(ncpus, 4)
 let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, false)?;
 ```
 
-- `Model06B::load` valida `config.json` para `0.6B`, abre `safetensors` vía `MmapStore` y cuantiza las matrices con el perfil único (Talker `Q4_0`; Code Predictor `INT8` y `Q4_0`). Los encoders del locutor y de voz son obligatorios: si faltan, es un error de carga.
+- `Model06B::load` valida `config.json` para `0.6B`, abre `safetensors` vía `MmapStore` y cuantiza las matrices con el perfil único (Talker `Q4_0`; Code Predictor `INT8` y `Q4_0`). El encoder del locutor es obligatorio: si falta, es un error de carga.
 
 ### 3.2 `Voice` y `SessionScratch`
 
-`Voice` es la única representación de una voz: `name`, `language_id: Option<i32>` (idioma declarado; `None` si no declara ninguno), `xvector: Vec<f32>` e `icl: Option<IclPrompt>`. `IclPrompt { ref_text, ref_codes }` lleva todos los frames de la referencia.
+`Voice` es la única representación de una voz: `name`, `language_id: Option<i32>` (idioma declarado; `None` si no declara ninguno) y `xvector: Vec<f32>`.
 
 - **Voz `default` incorporada**, que declara español (`2054`):
   ```rust
@@ -161,8 +159,8 @@ let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, fa
   let voice = Voice::builtin_default(); // nombre: "default"
   let mut scratch = SessionScratch::new(); // reutilizable entre síntesis secuenciales
   ```
-- **Voz desde un `.qvoice` v5** (no toca el modelo): `Voice::load(path, &VoiceLoadOptions { use_icl, log })` o `Voice::from_qvoice(QVoiceFile, name, &opts)`. `load` llama a la voz como el archivo (sin extensión); `from_qvoice` usa el nombre dado.
-- **Voz clonada desde un WAV**: `clone_voice(&runtime, &model, ref_wav, &CloneOptions { ref_text, language_id, log })` devuelve el `QVoiceFile`, listo para guardarse; la voz se construye con `Voice::from_qvoice`. Hay ICL si y solo si `ref_text` es `Some` (vacío → error). Se usa el audio entero. `Voice` no guarda archivos: `QVoiceFile` (`qwen-core`) es quien lee y escribe `.qvoice`.
+- **Voz desde un `.qvoice` v6** (no toca el modelo): `Voice::load(path, &VoiceLoadOptions { log })` o `Voice::from_qvoice(QVoiceFile, name)`. `load` llama a la voz como el archivo (sin extensión); `from_qvoice` usa el nombre dado.
+- **Voz clonada desde un WAV**: `clone_voice(&runtime, &model, ref_wav, &CloneOptions { language_id, log })` devuelve el `QVoiceFile`, listo para guardarse; la voz se construye con `Voice::from_qvoice`. Antes de calcular el x-vector se recorta el silencio final de la referencia con el criterio de `trim_trailing_silence`. La implementación oficial no recorta; aquí se conserva porque, de oído, el clon de una grabación con silencio al final suena mejor recortado. `Voice` no guarda archivos: `QVoiceFile` (`qwen-core`) es quien lee y escribe `.qvoice`.
 
 ### 3.3 Síntesis: `Synthesizer`, `Script` y `Delivery`
 
