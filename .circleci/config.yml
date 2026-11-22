@@ -141,15 +141,11 @@ commands:
           name: Instalar MSYS2 UCRT64 (gcc, make, binutils)
           command: |
             $ErrorActionPreference = "Stop"
-            choco install msys2 -y --no-progress --params "/NoUpdate /InstallDir:C:\msys64"
+            # Versión fijada: la 20261120 de Chocolatey no inicializa el llavero de pacman y, ya
+            # inicializado a mano, pacman se cuelga en sus hooks finales.
+            choco install msys2 --version 20260927.0.0 -y --no-progress --params "/NoUpdate /InstallDir:C:\msys64"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            # El paquete msys2 de Chocolatey con /NoUpdate no inicializa el llavero de pacman
-            # (desde msys2-base 20261120): sin él, pacman no puede verificar las bases de datos.
-            # El gpg-agent que arrancan pacman-key y pacman se cierra en la misma orden: si queda
-            # vivo, retiene la salida y el paso no termina.
-            & C:\msys64\usr\bin\bash.exe -lc "pacman-key --init && pacman-key --populate msys2; st=`$?; gpgconf --kill all; exit `$st"
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --needed --noconfirm --disable-download-timeout mingw-w64-ucrt-x86_64-gcc make mingw-w64-ucrt-x86_64-binutils; st=`$?; gpgconf --kill all; exit `$st"
+            & C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --needed --noconfirm --disable-download-timeout mingw-w64-ucrt-x86_64-gcc make mingw-w64-ucrt-x86_64-binutils"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - restore_cache:
           keys:
