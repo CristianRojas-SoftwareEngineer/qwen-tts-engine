@@ -29,6 +29,10 @@ pub(crate) struct Prompt {
     pub len: usize,
     /// Tokens del texto a sintetizar.
     pub text_len: usize,
+    /// Diferencia entre el embedding de texto de cada paso y `tts_pad`; se suma a la entrada del paso
+    /// `i`, que ya lleva `tts_pad`. Sumar la diferencia, y no sustituir `tts_pad`, fija el orden de
+    /// redondeo con el que se validó el audio.
+    pub trailing_text_delta: Vec<f32>,
 }
 
 fn embed_text_cached(
@@ -72,6 +76,10 @@ enum Sec2Token {
 }
 
 /// Construye el prompt de `text` con la voz `voice` y el idioma `language_id`.
+///
+/// El texto entra un token por paso, como en el modo por defecto de la implementación oficial: el
+/// prompt lleva solo el primer token con `codec_bos`; los siguientes y `tts_eos` se suman a la
+/// entrada de los pasos 0, 1, 2…
 pub(crate) fn build_prompt(
     runtime: &ComputeRuntime,
     model: &Model06B,
@@ -100,11 +108,13 @@ pub(crate) fn build_prompt(
         .chain([Sec2Token::Speaker, Sec2Token::Codec(CODEC_PAD)])
         .collect();
     let sec2_len = sec2.len();
-    let (sec3_len, sec4_len) = (text_content_len + 1, 1);
-    let prefill_len = role_prefix.len() + sec2_len + sec3_len + sec4_len;
-    if prefill_len > ROPE_MAX_POS {
+    // Una sola posición de texto en el prompt; el resto entra paso a paso.
+    let prefill_len = role_prefix.len() + sec2_len + 1;
+    let n_trailing = text_content_len;
+    if prefill_len + n_trailing > ROPE_MAX_POS {
+        let n = prefill_len + n_trailing;
         return Err(EngineError::InvalidArg(format!(
-            "Prompt demasiado largo ({prefill_len} tokens > caché RoPE {ROPE_MAX_POS}); acorta el texto."
+            "Prompt demasiado largo ({n} posiciones > caché RoPE {ROPE_MAX_POS}); acorta el texto."
         )));
     }
 
@@ -115,9 +125,7 @@ pub(crate) fn build_prompt(
     );
 
     let d = runtime.dispatch;
-    let mut codec_pad_embed = [0.0f32; HIDDEN_SIZE];
     let mut codec_bos_embed = [0.0f32; HIDDEN_SIZE];
-    lookup_codec_embed(d, model, CODEC_PAD, &mut codec_pad_embed);
     lookup_codec_embed(d, model, CODEC_BOS, &mut codec_bos_embed);
 
     let mut input_embeds = vec![0.0f32; prefill_len * HIDDEN_SIZE];
@@ -157,33 +165,38 @@ pub(crate) fn build_prompt(
         pos += 1;
     }
 
-    for &tok in &text_tokens {
-        let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-        embed_text_cached(runtime, model, scratch, tok, dst);
-        for (d_val, &cp_val) in dst.iter_mut().zip(codec_pad_embed.iter()) {
-            *d_val += cp_val;
-        }
-        pos += 1;
-    }
+    // Sección 3: primer token del texto más `codec_bos`; los demás entran en los pasos del bucle.
     let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-    dst.copy_from_slice(tts_eos_embed);
-    for (d_val, &cp_val) in dst.iter_mut().zip(codec_pad_embed.iter()) {
-        *d_val += cp_val;
+    embed_text_cached(runtime, model, scratch, text_tokens[0], dst);
+    for (d_val, &cb_val) in dst.iter_mut().zip(codec_bos_embed.iter()) {
+        *d_val += cb_val;
     }
     pos += 1;
 
-    let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-    dst.copy_from_slice(tts_pad_embed);
-    for j in 0..HIDDEN_SIZE {
-        dst[j] += codec_bos_embed[j];
+    // Diferencias de los pasos 0, 1, 2…: cada token restante del texto y, al final, `tts_eos`.
+    let mut trailing_text_delta = vec![0.0f32; n_trailing * HIDDEN_SIZE];
+    for (i, &tok) in text_tokens[1..].iter().enumerate() {
+        let delta = &mut trailing_text_delta[i * HIDDEN_SIZE..(i + 1) * HIDDEN_SIZE];
+        embed_text_cached(runtime, model, scratch, tok, delta);
+        for (d_val, &pad_val) in delta.iter_mut().zip(tts_pad_embed.iter()) {
+            *d_val -= pad_val;
+        }
     }
-    pos += 1;
+    let delta = &mut trailing_text_delta[(n_trailing - 1) * HIDDEN_SIZE..];
+    for ((d_val, &eos_val), &pad_val) in delta
+        .iter_mut()
+        .zip(tts_eos_embed.iter())
+        .zip(tts_pad_embed.iter())
+    {
+        *d_val = eos_val - pad_val;
+    }
 
     debug_assert_eq!(pos, prefill_len);
     Ok(Prompt {
         embeds: input_embeds,
         len: prefill_len,
         text_len: text_content_len,
+        trailing_text_delta,
     })
 }
 

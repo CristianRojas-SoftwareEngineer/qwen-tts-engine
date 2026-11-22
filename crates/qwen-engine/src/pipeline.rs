@@ -121,6 +121,10 @@ pub(crate) fn apply_talker_logit_rules(
         logits[CODEC_EOS as usize] = -1e30;
     }
 
+    // Refuerzo progresivo del EOS. En textos muy cortos (p. ej., «Hola.» o «Hmmm...» como tramos
+    // sueltos del marcado) el modelo apenas propone terminar: sin el refuerzo, la probabilidad del
+    // EOS se queda por debajo de 1e-6 durante decenas de frames y el tramo se alarga y repite, también
+    // en la implementación oficial. En frases normales el EOS llega antes de que empiece y no actúa.
     let expected_frames = text_content_len * 3;
     let is_short = text_content_len > 0 && text_content_len <= 11;
     let boost_start = if is_short {
@@ -209,6 +213,7 @@ pub(crate) fn generate_to_sink(
     let prompt = build_prompt(runtime, model, voice, req.language_id, text, scratch)?;
     let prefill_len = prompt.len;
     let text_content_len = prompt.text_len;
+    let n_trailing = prompt.trailing_text_delta.len() / HIDDEN_SIZE;
     let silent = req.log.is_silent();
     let debug = req.log.is_debug();
     let sp = &req.sampling;
@@ -431,6 +436,13 @@ pub(crate) fn generate_to_sink(
 
             let mut step_embed_copy = [0.0f32; HIDDEN_SIZE];
             step_embed_copy.copy_from_slice(&scratch.talker_bufs.step_embed);
+            // Texto por pasos: el token (o `tts_eos`) de este paso se suma a la entrada.
+            if frame < n_trailing {
+                let delta = &prompt.trailing_text_delta[frame * HIDDEN_SIZE..(frame + 1) * HIDDEN_SIZE];
+                for (e, &dv) in step_embed_copy.iter_mut().zip(delta.iter()) {
+                    *e += dv;
+                }
+            }
             if debug && frame < 2 {
                 eprintln!(
                     "  [frame {}] step_embed[:5]=[{:.6},{:.6},{:.6},{:.6},{:.6}]",

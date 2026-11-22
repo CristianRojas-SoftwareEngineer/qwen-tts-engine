@@ -117,8 +117,9 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 
 1. **Sección 1 (3 pos)**: `text_proj(role_prefix)` sin par códec.
 2. **Sección 2 (`codec_len - 1` pos)**: `tts_pad * (codec_len - 2) + tts_bos` + `codec_embed(codec[0..codec_len-1])` *(en la posición del locutor, `dst = tts_pad` y `dst[j] += spk[j]`)*.
-3. **Sección 3 (`N + 1` pos)**: `text_proj(BPE(text)) + tts_eos` + `codec_pad`.
-4. **Sección 4 (1 pos)**: `tts_pad + codec_bos`.
+3. **Sección 3 (1 pos)**: `text_proj(BPE(text)[0]) + codec_bos`. El *prefill* tiene así 10 posiciones.
+
+**Texto por pasos.** El texto entra un token por paso, como en el modo por defecto de la implementación oficial (`non_streaming_mode=False`). Los `N` tokens restantes del texto y `tts_eos` (`N` entradas en total, con `N` el número de tokens del texto) se suman a la entrada de los pasos 0, 1, 2… del bucle, uno por paso, y a partir de ahí la entrada solo lleva `tts_pad`. Cada paso parte de su entrada habitual (los 16 códigos del frame anterior más `tts_pad`) y le suma `text_proj(token) - tts_pad` (o `tts_eos - tts_pad`), restando en `f32` elemento a elemento. Eso fija el orden de redondeo con el que se validó el audio. El límite de longitud cuenta las posiciones que necesita el texto: `10 + N <= ROPE_MAX_POS`.
 
 ### 4.3 Recorte, refuerzo de EOS, muestreo y marcado
 

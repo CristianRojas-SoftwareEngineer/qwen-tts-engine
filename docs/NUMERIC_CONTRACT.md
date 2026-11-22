@@ -112,9 +112,9 @@ Tras cualquier cambio que no deba tocar el audio, el PCM tiene que coincidir con
 
 | Voz | `-l` | Frase | Duración (s) | Hash del PCM |
 |---|---|---|---|---|
-| `default` | English | corta | 2,88 | `0002d3b1ae511917` |
-| `default` | English | larga | 12,40 | `e32b61667f9dd29c` |
-| `default` | Spanish | corta | 4,64 | `3559b8998d4938a4` |
-| `default` | Spanish | larga | 15,04 | `84a0bd04327a6376` |
+| `default` | English | corta | 2,88 | `4db60f3c3f122f36` |
+| `default` | English | larga | 12,64 | `8fff98d6eb4be7ce` |
+| `default` | Spanish | corta | 3,28 | `a909a48b5037fdba` |
+| `default` | Spanish | larga | 14,88 | `b5f2f4be7a5540c7` |
 
 Cambian esta tabla, y exigen regenerarla: el tamaño de bloque del prefill, cualquier cambio de redondeo en el Talker o el Code Predictor, el calendario de chunks y las rampas de borde. En ARM64 el audio se compara con la ruta escalar de la misma máquina (`QWEN_KERNELS=scalar`), no con esta tabla (§2.4).
