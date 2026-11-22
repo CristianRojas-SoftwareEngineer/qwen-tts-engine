@@ -9,7 +9,7 @@ use qwen_core::config::{
 use qwen_kernels::{AlignedBuf, ComputeRuntime, Transpose};
 
 use crate::error::EngineError;
-use crate::model::{Model06B, SessionScratch};
+use crate::model::{int8_qkv, Model06B, SessionScratch};
 use crate::request::LogLevel;
 
 /// Elementos F32 del bloque de pesos convertidos del *prefill* (4 MiB).
@@ -309,8 +309,11 @@ pub fn talker_step(
             );
         }
 
-        l.dispatch_qkv(
+        int8_qkv(
             runtime,
+            &l.wq,
+            &l.wk,
+            &l.wv,
             &tb.dec_x_norm,
             &mut tb.dec_q,
             &mut tb.dec_k,

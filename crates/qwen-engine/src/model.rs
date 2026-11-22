@@ -97,37 +97,40 @@ pub struct TalkerLayerWeights {
     pub down: Int8Weight,
 }
 
-impl TalkerLayerWeights {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn dispatch_qkv(
-        &self,
-        runtime: &ComputeRuntime,
-        x_norm: &[f32],
-        q: &mut [f32],
-        k: &mut [f32],
-        v: &mut [f32],
-        hidden: usize,
-        q_dim: usize,
-        kv_dim: usize,
-    ) {
-        runtime.dispatch.matvec_int8_qkv(
-            &runtime.pool,
-            q,
-            k,
-            v,
-            &self.wq.data,
-            &self.wq.scale,
-            &self.wk.data,
-            &self.wk.scale,
-            &self.wv.data,
-            &self.wv.scale,
-            x_norm,
-            hidden,
-            q_dim,
-            kv_dim,
-        );
-    }
+/// QKV fusionado en INT8 sobre las tres matrices de una capa.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn int8_qkv(
+    runtime: &ComputeRuntime,
+    wq: &Int8Weight,
+    wk: &Int8Weight,
+    wv: &Int8Weight,
+    x_norm: &[f32],
+    q: &mut [f32],
+    k: &mut [f32],
+    v: &mut [f32],
+    hidden: usize,
+    q_dim: usize,
+    kv_dim: usize,
+) {
+    runtime.dispatch.matvec_int8_qkv(
+        &runtime.pool,
+        q,
+        k,
+        v,
+        &wq.data,
+        &wq.scale,
+        &wk.data,
+        &wk.scale,
+        &wv.data,
+        &wv.scale,
+        x_norm,
+        hidden,
+        q_dim,
+        kv_dim,
+    );
+}
 
+impl TalkerLayerWeights {
     fn load(
         store: &MmapStore,
         prefix: &str,
@@ -201,36 +204,6 @@ pub struct CpLayerWeights {
 }
 
 impl CpLayerWeights {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn dispatch_qkv(
-        &self,
-        runtime: &ComputeRuntime,
-        x_norm: &[f32],
-        q: &mut [f32],
-        k: &mut [f32],
-        v: &mut [f32],
-        hidden: usize,
-        q_dim: usize,
-        kv_dim: usize,
-    ) {
-        runtime.dispatch.matvec_int8_qkv(
-            &runtime.pool,
-            q,
-            k,
-            v,
-            &self.wq.data,
-            &self.wq.scale,
-            &self.wk.data,
-            &self.wk.scale,
-            &self.wv.data,
-            &self.wv.scale,
-            x_norm,
-            hidden,
-            q_dim,
-            kv_dim,
-        );
-    }
-
     fn load(
         store: &MmapStore,
         prefix: &str,
@@ -487,7 +460,6 @@ pub struct TalkerBuffers {
     pub dec_attn_out: AlignedBuf<f32>,
     pub dec_proj_out: AlignedBuf<f32>,
     pub dec_gate: AlignedBuf<f32>,
-    pub dec_ffn_out: AlignedBuf<f32>,
     pub swiglu_tmp: AlignedBuf<f32>,
     pub pref_residual: AlignedBuf<f32>,
     pub pref_x_norm: AlignedBuf<f32>,
@@ -516,7 +488,6 @@ impl TalkerBuffers {
             dec_attn_out: AlignedBuf::new_zeroed(Q_DIM),
             dec_proj_out: AlignedBuf::new_zeroed(HIDDEN_SIZE),
             dec_gate: AlignedBuf::new_zeroed(2 * INTERMEDIATE_SIZE),
-            dec_ffn_out: AlignedBuf::new_zeroed(HIDDEN_SIZE),
             swiglu_tmp: AlignedBuf::new_zeroed(INTERMEDIATE_SIZE.max(CP_INTERMEDIATE_SIZE)),
             pref_residual: AlignedBuf::new_zeroed(0),
             pref_x_norm: AlignedBuf::new_zeroed(0),

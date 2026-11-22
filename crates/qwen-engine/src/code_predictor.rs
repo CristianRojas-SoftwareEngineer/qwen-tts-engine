@@ -9,7 +9,7 @@ use qwen_core::config::{
 };
 use qwen_kernels::{AlignedBuf, ComputeRuntime, KernelDispatch};
 
-use crate::model::{lookup_codec_embed, Model06B, SessionScratch};
+use crate::model::{int8_qkv, lookup_codec_embed, Model06B, SessionScratch};
 
 #[inline]
 fn cp_ilv2(dst: &mut [f32], a: &[f32], b: &[f32], n: usize) {
@@ -247,8 +247,11 @@ fn cp_transformer_step(
     for layer_idx in 0..CP_NUM_LAYERS {
         let l = &model.cp.layers[layer_idx];
 
-        l.dispatch_qkv(
+        int8_qkv(
             runtime,
+            &l.wq,
+            &l.wk,
+            &l.wv,
             x_norm,
             &mut cb.dec_q,
             &mut cb.dec_k,
