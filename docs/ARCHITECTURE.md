@@ -12,11 +12,12 @@
       ▼
   qwen-engine        (#![forbid(unsafe_code)] Modelo 0.6B, Talker, CP, Decoder, Encoder de locutor, Audio)
       │
-      ▼
+      ├────────────────────┐
+      ▼                    ▼
+   qwen-core          qwen-kernels
+
    qwen-core         (Constantes 0.6B, MmapStore, BPE, Sampler, .qvoice v6, planificación de marcado)
-      │
-      ▼
-  qwen-kernels       (AlignedBuf<64>, CpuCaps, ComputePool, FTZ, SIMD, Quant, FFI/Rust BLAS)
+  qwen-kernels       (AlignedBuf<64>, CpuCaps, ComputePool, FTZ, SIMD, Quant, FFI BLAS)
 ```
 
 | Crate | Módulos principales | Política `unsafe` |
@@ -33,13 +34,13 @@
 El diseño separa los datos en niveles de vida para compartir pesos inmutables entre hilos sin copias superficiales ni fugas de estado entre peticiones:
 
 ```text
-Arc<Model06B>  [Inmutable, Send + Sync — compartido por todo el proceso]
+Model06B  [Inmutable, Send + Sync — se puede compartir entre hilos]
  ├── Bf16Ref / F32Ref (mmap)             // Arc<Mmap> manteniendo vivos los safetensors
  ├── tokenizer: BpeTokenizer
  ├── talker: TalkerWeights                // 28 capas `TalkerLayerWeights` (BF16 mmap para el prefill + INT8) + embeddings
  ├── cp: CodePredictorWeights             // 5 capas `CpLayerWeights` (INT8 + Q4_0) + 15 lm_head INT8 + 15 codec_emb
  ├── decoder: SpeechDecoderWeights        // F32 + Codebooks + W_k pre-reordenado
- └── speaker_encoder: Arc<SpeakerEncoderWeights>         // ECAPA-TDNN (0.6B-Base)
+ └── speaker_encoder: SpeakerEncoderWeights  // ECAPA-TDNN (0.6B-Base)
 
 Voice  [Inmutable por voz — unos pocos KB; la voz `default` va embebida en el binario]
  ├── name: String                         // `default`, el nombre guardado en el `.qvoice` o el del archivo
@@ -59,7 +60,7 @@ SessionScratch  [Mutable, exclusivo por sesión — cero locks internos]
 SynthesisRequest  [Efímero por síntesis — plano, `Clone`]
  ├── language_id: i32                     // ya resuelto: pedido, voz o español
  ├── sampling: SamplingParams             // temperature (0.325), top_k, top_p, rep_penalty, seed (4)
- └── max_frames, chunk_frames, volume, rate, compose_pause_s, log
+ └── max_frames, chunk_frames, volume, rate, compose_pause_s, silent
 
 AbortHandle  [Efímero por síntesis]      // Arc<AtomicBool> + poll opcional acoplado por RAII (Drop); es un parámetro, no parte de la petición
 ```

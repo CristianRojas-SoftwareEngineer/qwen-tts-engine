@@ -155,8 +155,8 @@ let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, fa
   let voice = Voice::builtin_default(); // nombre: "default"
   let mut scratch = SessionScratch::new(); // reutilizable entre síntesis secuenciales
   ```
-- **Voz desde un `.qvoice` v6** (no toca el modelo): `Voice::load(path, &VoiceLoadOptions { log })` o `Voice::from_qvoice(QVoiceFile, name)`. `load` llama a la voz como el archivo (sin extensión); `from_qvoice` usa el nombre dado.
-- **Voz clonada desde un WAV**: `clone_voice(&runtime, &model, ref_wav, &CloneOptions { language_id, log })` devuelve el `QVoiceFile`, listo para guardarse; la voz se construye con `Voice::from_qvoice`. Antes de calcular el x-vector se recorta el silencio final de la referencia con el criterio de `trim_trailing_silence`. La implementación oficial no recorta; aquí se conserva porque, de oído, el clon de una grabación con silencio al final suena mejor recortado. `Voice` no guarda archivos: `QVoiceFile` (`qwen-core`) es quien lee y escribe `.qvoice`.
+- **Voz desde un `.qvoice` v6** (no toca el modelo): `Voice::load(path, silent)` o `Voice::from_qvoice(QVoiceFile, name)`. `load` llama a la voz como el archivo (sin extensión); `from_qvoice` usa el nombre dado.
+- **Voz clonada desde un WAV**: `clone_voice(&runtime, &model, ref_wav, &CloneOptions { language_id, silent })` devuelve el `QVoiceFile`, listo para guardarse; la voz se construye con `Voice::from_qvoice`. Antes de calcular el x-vector se recorta el silencio final de la referencia con el criterio de `trim_trailing_silence`. La implementación oficial no recorta; aquí se conserva porque, de oído, el clon de una grabación con silencio al final suena mejor recortado. `Voice` no guarda archivos: `QVoiceFile` (`qwen-core`) es quien lee y escribe `.qvoice`.
 
 ### 3.3 Síntesis: `Synthesizer`, `Script` y `Delivery`
 
@@ -188,7 +188,7 @@ synth.synthesize(
 
 - **`Script`**: `Plain(String)` (texto sin marcado) o `Spans(Vec<SpanSpec>)` (tramos hablados y pausas). `qwen_core::plan_script(text, MarkupMode::{Auto, Literal})` es el único sitio que divide el texto en tramos.
 - **`Delivery`**: `Buffer` devuelve todo el audio en `SynthesisOutput::samples`, con `time_stretch` (`rate`); `Stream(&mut sink)` entrega chunks al destino y rechaza `rate != 1.0`. Los dos dan el mismo PCM (`NUMERIC_CONTRACT.md` §4, invariante 5).
-- **`SynthesisRequest`**: `language_id` (ya resuelto con `effective_language(pedido, voz)`: pedido, voz o español), `sampling: SamplingParams` (`temperature`, `top_k`, `top_p`, `rep_penalty`, `seed`), `max_frames`, `chunk_frames`, `volume`, `rate`, `compose_pause_s` y `log: LogLevel`. Los valores por defecto (0,325 / 50 / 1,0 / 1,05 / 4, 8192 frames, chunks de 10) están en un solo sitio.
+- **`SynthesisRequest`**: `language_id` (ya resuelto con `effective_language(pedido, voz)`: pedido, voz o español), `sampling: SamplingParams` (`temperature`, `top_k`, `top_p`, `rep_penalty`, `seed`), `max_frames`, `chunk_frames`, `volume`, `rate`, `compose_pause_s` y `silent: bool`. Los valores por defecto (0,325 / 50 / 1,0 / 1,05 / 4, 8192 frames, chunks de 10) están en un solo sitio.
 - **Destinos de audio**: el trait `AudioSink` (`write_samples(&mut self, &[f32])` y `finish(&mut self)`) es el único destino del camino. `MemorySink` acumula `f32`; `EdgeRampSink<W: PcmWrite>` aplica las rampas de borde (5 ms de entrada, 40 ms de salida con retención) y convierte a PCM `s16le`, y no aplica ganancia (la aplica `synthesize` antes de escribir). `PcmWrite` (`write_pcm` y `finish`) tiene escritores incluidos —`StdoutWriter` y `Vec<u8>`— o uno propio.
 
 ### 3.4 Cancelación cooperativa (`AbortHandle`) y marcado
