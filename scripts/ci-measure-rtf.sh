@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
 # Mide el motor en la máquina actual (pensado para CircleCI): --caps, --self-test y síntesis de la
 # frase corta y la larga de referencia (voz default, inglés, --seed 4), 3 corridas cada una.
 # Uso: scripts/ci-measure-rtf.sh <hilos> <carpeta de salida>   (BIN = ruta del binario)

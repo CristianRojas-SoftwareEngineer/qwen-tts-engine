@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
 [workspace]
 resolver = "2"
 members = [
@@ -11,6 +15,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MPL-2.0"
+publish = false
 repository = "https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine"
 description = "Motor de inferencia independiente en Rust para CPU y servidor HTTP para Qwen3-TTS 0.6B"
 readme = "README.md"

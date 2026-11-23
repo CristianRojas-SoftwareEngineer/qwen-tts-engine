@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
 [toolchain]
 # Versión fija: la CI y los equipos locales compilan con el mismo Rust (lints de clippy y código
 # generado iguales, y por tanto el mismo audio). Actualizarla es una decisión explícita.

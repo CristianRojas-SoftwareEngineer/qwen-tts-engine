@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
 # Compara la ruta de kernels por defecto (QWEN_KERNELS=auto) con la escalar (QWEN_KERNELS=scalar) en
 # la máquina actual, intercaladas por corrida para que la deriva de la máquina no favorezca a ninguna.
 # Frase corta y larga de referencia (ci-common.sh), 3 corridas, -j 4.

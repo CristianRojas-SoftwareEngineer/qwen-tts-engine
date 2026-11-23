@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
 # Compila OpenBLAS estático para enlazarlo en el binario, en Linux y en Windows: solo BLAS (sin
 # LAPACK ni Fortran), el servidor de hilos propio de OpenBLAS (sin OpenMP) y DYNAMIC_ARCH, que
 # elige al arrancar el kernel de la CPU (en aarch64, Neoverse N1/V1/N2, Cortex-A57/A72/A76,
