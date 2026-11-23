@@ -193,7 +193,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &Script::Plain("Hola desde Rust.".to_string()),
         Delivery::Buffer,
     )?;
-    write_wav(Path::new("out.wav"), &out.samples.unwrap(), 24_000)?;
+    write_wav(Path::new("out.wav"), &out.samples.unwrap())?;
     Ok(())
 }
 ```

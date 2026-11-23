@@ -34,7 +34,7 @@ El diseño separa los datos en niveles de vida para compartir pesos inmutables e
 
 ```text
 Arc<Model06B>  [Inmutable, Send + Sync — compartido por todo el proceso]
- ├── Bf16Weight / F32Ref (mmap)          // Arc<Mmap> manteniendo vivos los safetensors
+ ├── Bf16Ref / F32Ref (mmap)             // Arc<Mmap> manteniendo vivos los safetensors
  ├── tokenizer: BpeTokenizer
  ├── talker: TalkerWeights                // 28 capas `TalkerLayerWeights` (BF16 mmap para el prefill + INT8) + embeddings
  ├── cp: CodePredictorWeights             // 5 capas `CpLayerWeights` (INT8 + Q4_0) + 15 lm_head INT8 + 15 codec_emb
@@ -54,7 +54,7 @@ SessionScratch  [Mutable, exclusivo por sesión — cero locks internos]
  ├── talker_kv / cp_kv                    // cachés KV BF16 (Talker inicia en KV_INITIAL_POSITIONS = 256 y duplica bajo demanda)
  ├── talker_bufs / cp_bufs                // AlignedBuf<64> (el staging F32 de pesos del prefill es local y transitorio de talker_prefill)
  ├── sd_stream + sd_ws                    // colas/acarreos streaming + 8 slots DecoderWorkspace
- └── emb_lru + sampler + rng: LcgRng      // caché texto local + muestreador + RNG propio
+ └── sampler + rng: LcgRng                // muestreador + RNG propio
 
 SynthesisRequest  [Efímero por síntesis — plano, `Clone`]
  ├── language_id: i32                     // ya resuelto: pedido, voz o español

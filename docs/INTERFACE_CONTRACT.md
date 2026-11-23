@@ -69,11 +69,10 @@
 
 ## 2. Interfaz HTTP (`--serve`)
 
-### 2.1 Seguridad de red, límites y CORS
+### 2.1 Seguridad de red y límites
 
 - **Enlace por defecto**: `127.0.0.1:<port>` (solo expone otra interfaz con `--host`).
 - **Límite de cuerpo**: máximo `1 MiB` (`1_048_576` bytes) por petición HTTP.
-- **CORS**: todas las respuestas incluyen `Access-Control-Allow-Origin: *`; `OPTIONS` responde `204 No Content`.
 - **Formato de error**: `{"error":"<causa>"}` con `Content-Type: application/json`.
 - **Una conexión a la vez**: el servidor atiende cada conexión en línea, con un único trabajador y sin cola.
 - **Calentamiento al arrancar**: el servidor sintetiza y descarta 12 frames de «Hello.» antes de aceptar conexiones (~1 s), para que la primera petición no pague el arranque en frío. La memoria comprometida (*commit*) en reposo queda en el nivel que antes alcanzaba tras la primera petición; el audio de las peticiones no cambia. Log: `[HTTP] Calentamiento: <ms> ms`.
@@ -176,11 +175,11 @@ let req = SynthesisRequest { language_id: 2050 /* English */, ..Default::default
 let out = synth.synthesize(
     &mut scratch, &req, &abort, &Script::Plain("Hello from Rust!".into()), Delivery::Buffer,
 )?;
-write_wav(Path::new("buffer.wav"), &out.samples.unwrap(), 24_000)?;
+write_wav(Path::new("buffer.wav"), &out.samples.unwrap())?;
 
 // B) Streaming progresivo hacia cualquier AudioSink + Send; aquí, PCM s16le hacia un
 // destino propio `mi_destino` que implementa `PcmWrite`
-let mut sink = EdgeRampSink::new(mi_destino, 24_000);
+let mut sink = EdgeRampSink::new(mi_destino);
 synth.synthesize(
     &mut scratch, &req, &abort, &Script::Plain("Streaming audio!".into()),
     Delivery::Stream(&mut sink),

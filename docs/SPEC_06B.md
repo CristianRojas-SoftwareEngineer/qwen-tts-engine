@@ -28,13 +28,13 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 | **Speaker Encoder** (`Base`) | `enc_dim` / `mel_dim` | `1024` / `128` |
 
 > **RoPE NeoX split-half**: `inv_freq[i] = 1.0 / theta^(2*i / head_dim)` para `i = 0..head_dim/2 - 1`, rotando pares `(x[i], x[i + head_dim/2])`.
-> **Validación de carga**: `ModelConfig06B::load_and_validate` exige `hidden_size == 1024`, `intermediate_size == 3072`, `cp_hidden_size == 1024` y rechaza todo checkpoint que no sea Base (`tts_model_type == "base"` con `speaker_encoder_config` presente) con el mensaje `Este motor solo carga Qwen3-TTS 0.6B Base: <detalle>`.
+> **Validación de carga**: `validate_model_config` exige `hidden_size == 1024`, `intermediate_size == 3072`, `cp_hidden_size == 1024` y rechaza todo checkpoint que no sea Base (`tts_model_type == "base"` con `speaker_encoder_config` presente) con el mensaje `Este motor solo carga Qwen3-TTS 0.6B Base: <detalle>`; también rechaza un `config.json` al que le falte cualquier clave que comprueba o con `rms_norm_eps` distinto de `1e-6`.
 
 ---
 
 ## 2. Mapa de tensores (`safetensors`)
 
-### 2.1 Modelo principal (`model.safetensors` o shards vía `model.safetensors.index.json`)
+### 2.1 Modelo principal (`model.safetensors`)
 
 - **Talker global** (`BF16`, salvo biases/norm en `F32`):
   - `talker.model.text_embedding.weight` `[151936, 2048]` (`BF16`)
