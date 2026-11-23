@@ -237,13 +237,14 @@ La documentación sigue el modelo **Diátaxis** para separar guías prácticas, 
 | [`docs/NUMERIC_CONTRACT.md`](docs/NUMERIC_CONTRACT.md) | Referencia | Ingenieros de kernels y optimización | Cuantización `INT8`/`Q4_0`, `FTZ`/`DAZ`, reglas IEEE-754/`FMA`, determinismo de *streaming* y tolerancias. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Explicación | Desarrolladores y contribuidores | Grafo de *crates* (DAG), política `unsafe`, tiempos de vida del estado, `ComputeRuntime`, camino único de síntesis y servidor. |
 | [`docs/VERIFICATION_PLAN.md`](docs/VERIFICATION_PLAN.md) | Guía operativa | QA, contribuidores y mantenimiento de CI | Suites `cargo test`, verificación numérica de kernels, CI en CircleCI (`.circleci/config.yml`) y protocolo de medición de rendimiento. |
+| [`docs/BACKLOG.md`](docs/BACKLOG.md) | Planificación | Mantenedores y contribuidores | Funcionalidades aplazadas: qué son, por qué esperan, cuándo retomarlas, lo decidido y lo pendiente. |
 | [`docs/adr/001-only-06b.md`](docs/adr/001-only-06b.md) | ADR | Mantenedores | Especialización del motor para Qwen3-TTS `0.6B`. |
 | [`docs/adr/002-blas-strategy.md`](docs/adr/002-blas-strategy.md) | ADR | Mantenedores | Estrategia BLAS (OpenBLAS propio y Accelerate). |
 | [`docs/adr/003-concurrency-pool.md`](docs/adr/003-concurrency-pool.md) | ADR | Mantenedores | Pool de hilos `ComputePool` y control de sobresuscripción. |
 | [`docs/adr/004-simd-baseline.md`](docs/adr/004-simd-baseline.md) | ADR | Mantenedores | Despacho SIMD en runtime sobre Rust estable (AVX2, NEON y escalar). |
 | [`docs/adr/005-cpu-inference-optimizations.md`](docs/adr/005-cpu-inference-optimizations.md) | ADR | Mantenedores | Optimizaciones de la inferencia en CPU adoptadas y descartadas, con su efecto medido, y rendimiento por plataforma. |
 | [`docs/adr/006-single-synthesis-path.md`](docs/adr/006-single-synthesis-path.md) | ADR | Mantenedores | Un único camino de síntesis (`Synthesizer`, `Script` × `Delivery`), una regla de idioma y un servidor de un solo trabajador. |
-| [`docs/adr/007-voz-natural-texto-por-pasos-talker-int8.md`](docs/adr/007-voz-natural-texto-por-pasos-talker-int8.md) | ADR | Mantenedores | Texto por pasos, Talker `INT8` en el decodificado, clonación solo por x-vector y `.qvoice` v6, con la evidencia de cada decisión. |
+| [`docs/adr/007-natural-voice-stepwise-text-int8-talker.md`](docs/adr/007-natural-voice-stepwise-text-int8-talker.md) | ADR | Mantenedores | Texto por pasos, Talker `INT8` en el decodificado, clonación solo por x-vector y `.qvoice` v6, con la evidencia de cada decisión. |
 
 ---
 
