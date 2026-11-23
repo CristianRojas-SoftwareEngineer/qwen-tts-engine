@@ -75,7 +75,7 @@
 - **Límite de cuerpo**: máximo `1 MiB` (`1_048_576` bytes) por petición HTTP.
 - **Formato de error**: `{"error":"<causa>"}` con `Content-Type: application/json`.
 - **Una conexión a la vez**: el servidor atiende cada conexión en línea, con un único trabajador y sin cola.
-- **Calentamiento al arrancar**: el servidor sintetiza y descarta 12 frames de «Hello.» antes de aceptar conexiones (~1 s), para que la primera petición no pague el arranque en frío. La memoria comprometida (*commit*) en reposo queda en el nivel que antes alcanzaba tras la primera petición; el audio de las peticiones no cambia. Log: `[HTTP] Calentamiento: <ms> ms`.
+- **Calentamiento al arrancar**: el servidor sintetiza y descarta 12 frames de «Hello.» antes de aceptar conexiones (~1 s), para que la primera petición no pague el arranque en frío. La memoria comprometida (*commit*) en reposo queda en el nivel de después de una petición; el audio de las peticiones no cambia. Log: `[HTTP] Calentamiento: <ms> ms`.
 
 ### 2.2 Endpoints y esquema JSON
 
@@ -92,7 +92,7 @@
 |---|---|---|---|
 | `text` | `string` | *(obligatorio)* | No vacío ni solo espacios/escapes `\n`, `\t`, `\r`; `<= 8192` bytes. |
 | `voice` | `string` | *(opcional)* | Si viene, debe coincidir (sin distinguir mayúsculas) con el nombre de la voz cargada; si no, `400` con `la voz '<x>' no está cargada (cargada: '<nombre>')`. |
-| `language` | `string` | idioma de la voz cargada o, si no tiene, `Spanish` | Debe existir en `lookup_language`. Es el idioma efectivo: el pedido, el de la voz o español, la misma regla que la CLI. El log `lang=` de las peticiones muestra el idioma efectivo. |
+| `language` | `string` | idioma de la voz cargada o, si no tiene, `Spanish` | Debe existir en `lookup_language`. Es el idioma efectivo: el pedido, el de la voz o español, la misma regla que la CLI. El log `idioma=` de las peticiones muestra el idioma efectivo. |
 | `temperature` | `number` | `0.325` | Rango válido `[0.0, 2.0]`. |
 | `top_k` | `integer` | `50` | Rango válido `[0, 3072]`. |
 | `top_p` | `number` | `1.0` | Rango válido `[0.0, 1.0]`. |
@@ -142,7 +142,7 @@ let runtime = ComputeRuntime::new(Some(4)); // `None` -> min(ncpus, 4)
 let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, false)?;
 ```
 
-- `Model06B::load` valida `config.json` para `0.6B`, abre `safetensors` vía `MmapStore` y cuantiza las matrices con el perfil único (Talker con el prefill en `BF16` y el decodificado paso a paso en `INT8`; Code Predictor `INT8` y `Q4_0`). El encoder del locutor es obligatorio: si falta, es un error de carga.
+- `Model06B::load` valida `config.json` para `0.6B`, abre `safetensors` vía `MmapStore` y cuantiza las matrices con el perfil único en paralelo con el pool de `-j` hilos (Talker con el prefill en `BF16` y el decodificado paso a paso en `INT8`; Code Predictor `INT8` y `Q4_0`). El encoder del locutor es obligatorio: si falta, es un error de carga.
 
 ### 3.2 `Voice` y `SessionScratch`
 
@@ -156,7 +156,7 @@ let model = Model06B::load(Path::new("models/qwen3-tts-0.6b-base"), &runtime, fa
   let mut scratch = SessionScratch::new(); // reutilizable entre síntesis secuenciales
   ```
 - **Voz desde un `.qvoice` v6** (no toca el modelo): `Voice::load(path, silent)` o `Voice::from_qvoice(QVoiceFile, name)`. `load` llama a la voz como el archivo (sin extensión); `from_qvoice` usa el nombre dado.
-- **Voz clonada desde un WAV**: `clone_voice(&runtime, &model, ref_wav, &CloneOptions { language_id, silent })` devuelve el `QVoiceFile`, listo para guardarse; la voz se construye con `Voice::from_qvoice`. Antes de calcular el x-vector se recorta el silencio final de la referencia con el criterio de `trim_trailing_silence`. La implementación oficial no recorta; aquí se conserva porque, de oído, el clon de una grabación con silencio al final suena mejor recortado. `Voice` no guarda archivos: `QVoiceFile` (`qwen-core`) es quien lee y escribe `.qvoice`.
+- **Voz clonada desde un WAV**: `clone_voice(&runtime, &model, ref_wav, &CloneOptions { language_id, silent })` devuelve el `QVoiceFile`, listo para guardarse; la voz se construye con `Voice::from_qvoice`. Antes de calcular el x-vector se recorta el silencio final de la referencia con el criterio de `trim_trailing_silence`. La implementación oficial no recorta; aquí se recorta porque, de oído, el clon de una grabación con silencio al final suena mejor recortado. `Voice` no guarda archivos: `QVoiceFile` (`qwen-core`) es quien lee y escribe `.qvoice`.
 
 ### 3.3 Síntesis: `Synthesizer`, `Script` y `Delivery`
 
@@ -220,7 +220,7 @@ synth.synthesize(
 ### 4.2 Afinidad SMT en Windows y gestión de OpenBLAS
 
 - **Afinidad Win32 (`affinity.rs`)**: al arrancar en Windows con 1 grupo de procesadores, `qwen_tts` fija `SetProcessAffinityMask` a **1 hilo lógico por núcleo físico** para evitar contención SMT del planificador. El mensaje `Afinidad: …` no sale con `-S`. Fuera de Windows no se fija afinidad y el motor cuenta los hilos lógicos como núcleos. En ARM64 coinciden con los físicos (sin SMT). En Linux x86_64 con SMT, la espera de los pools solo cambia cuando `-j` es mayor o igual que los núcleos físicos y menor que los hilos lógicos, lo que no ocurre con el mínimo documentado (8 núcleos) y el `-j` por defecto (4).
-- **OpenBLAS propio**: en Windows con `x86_64-pc-windows-gnu`, el OpenBLAS propio (0.3.34, sin OpenMP) está enlazado estático y se inicializa antes de `main`, reservando 128 MiB de memoria comprometida (*commit*) por hilo. El binario fija `OPENBLAS_NUM_THREADS` al `-j` efectivo antes de esa inicialización (`.CRT$XCT`); no hace falta definir nada. `set_threads` llama una vez a `openblas_set_num_threads`, que es global al proceso, y nunca pasa de los hilos iniciales (OpenBLAS 0.3.34 se cuelga si se le piden más).
+- **OpenBLAS propio**: en Windows con `x86_64-pc-windows-gnu`, el OpenBLAS propio (0.3.34, sin OpenMP) está enlazado estático y se inicializa antes de `main`, reservando 128 MiB de memoria comprometida (*commit*) por hilo. El binario fija `OPENBLAS_NUM_THREADS` al `-j` efectivo antes de esa inicialización (`.CRT$XCT`); no hace falta definir nada. Cada `set_threads` hace una sola llamada, global al proceso, a `openblas_set_num_threads` y nunca pasa de los hilos iniciales (OpenBLAS 0.3.34 se cuelga si se le piden más).
 
 ### 4.3 Líneas de log de referencia
 
@@ -236,6 +236,9 @@ Formato actual de las líneas de diagnóstico que el motor escribe en `stderr`. 
 - **Generación en pipeline** (`pipeline.rs`):
   `  Generados <N> frames (<S>s de audio)`
 - **Servidor HTTP al arrancar** (`http.rs`): `[HTTP] Calentamiento: <ms> ms` (o `[HTTP] Calentamiento fallido (sin efecto en las peticiones): <causa>`).
+- **Servidor HTTP al recibir una petición** (`http.rs`):
+  `[HTTP] TTS: "<texto>" (voz=<nombre>, idioma=<id>, semilla=<n>)`
+  `[HTTP] TTS stream: "<texto>" (voz=<nombre>, idioma=<id>, semilla=<n>)`
 - **Servidor HTTP en petición exitosa** (`http.rs`):
   ```text
   [HTTP] Enviados <bytes> bytes de WAV (<dur>s de audio) en <sec>s (RTF <rtf>)

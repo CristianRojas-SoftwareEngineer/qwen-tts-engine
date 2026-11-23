@@ -31,7 +31,7 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 - **Tres interfaces de integración**:
   - **CLI (`qwen_tts`)**: síntesis directa a WAV, PCM crudo por `stdout` y creación de voces.
   - **Servidor HTTP (`--serve`)**: rutas `/v1/tts` y `/v1/tts/stream`, una síntesis a la vez.
-  - **Biblioteca Rust (`qwen-engine`)**: API segura (`#![forbid(unsafe_code)]`) para incrustar el motor compartiendo `Arc<Model06B>` entre hilos.
+  - **Biblioteca Rust (`qwen-engine`)**: API segura (`#![forbid(unsafe_code)]`) para incrustar el motor compartiendo `&Model06B` (`Send + Sync`) entre hilos.
 
 > **Modelo soportado (`Qwen3-TTS 0.6B Base`)**: este motor ejecuta exclusivamente el checkpoint **Qwen3-TTS `0.6B` Base**; cualquier otro se rechaza al cargar. Al cargar un modelo, `config.json` valida automáticamente esta geometría (`HIDDEN_SIZE=1024`, `28` capas Talker, `5` capas Code Predictor).
 
@@ -45,26 +45,26 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 
 | Plataforma | CPU | Núcleos físicos | RAM | Disco | Estado |
 |---|---|---|---|---|---|
-| **Windows x86_64** (`x86_64-pc-windows-gnu`) | x86_64 con **AVX2 y FMA** (Intel Core de 4.ª generación / Haswell o posterior; AMD Ryzen / Zen o posterior) | **8** | 8 GB, doble canal | ~2,5 GB (el modelo) | ✅ Verificado en el equipo de referencia (AMD Ryzen 7 5825U, 8 núcleos), frase larga: RTF 0,58–0,64 sin carga y 0,89–0,92 con carga |
+| **Windows x86_64** (`x86_64-pc-windows-gnu`) | x86_64 con **AVX2 y FMA** (Intel Core de 4.ª generación / Haswell o posterior; AMD Ryzen / Zen o posterior) | **8** | 8 GB, doble canal | ~2,5 GB (el modelo) | ✅ Verificado en el equipo de referencia (AMD Ryzen 7 5825U, 8 núcleos), frase larga en español con voz clonada, CLI y servidor: RTF 0,66 sin carga y 0,93–0,95 con carga. En CircleCI, con 4 núcleos (`large`): 0,89–0,98 sin carga |
 | **Linux x86_64** (`x86_64-unknown-linux-gnu`) | Igual que Windows | **8** | 8 GB, doble canal | ~2,5 GB | ⚠️ Misma ruta de kernels AVX2 que Windows; requisitos esperados iguales, sin medición propia en Linux. Sin afinidad de hilos: el motor cuenta los hilos lógicos; con SMT y `-j` entre los núcleos físicos y los hilos lógicos, los hilos esperan girando |
-| **macOS ARM64** (`aarch64-apple-darwin`) | Apple Silicon (M1 o posterior) | — | 8 GB | ~2,5 GB | ✅ Sin carga: RTF 0,25–0,26 en un Apple M4 Pro virtual de 6 núcleos (CircleCI `m4pro.medium`), con todos los kernels en NEON; la ruta escalar daba 1,36–1,56 en la misma máquina. Sin medir con carga ni en otros Mac, así que no hay mínimo de núcleos verificado. |
-| **Linux ARM64** (`aarch64-unknown-linux-gnu`) | ARMv8.2 o posterior con NEON y `dotprod` (Neoverse N1/V1, Cortex-A76 o posterior); también corre en ARMv8.0, más lento | más de 4 (sin verificar) | 8 GB | ~2,5 GB | ❌ Sin tiempo real con 4 vCPU, aunque cerca: RTF 1,12–1,21 en un Arm Neoverse V1 de 4 vCPU con el OpenBLAS propio (1,20–1,33 con el de Ubuntu 22.04) y 1,54–1,62 en un Neoverse N1 de 4 vCPU; la ruta escalar daba ~5,4. Con 4 núcleos, el productor (85–118 ms por frame de 80) y el decoder se reparten las mismas CPU, igual que en x86 con 4 núcleos. No se ha podido medir con 8 vCPU: CircleCI no ofrece a este proyecto máquinas ARM más grandes. |
+| **macOS ARM64** (`aarch64-apple-darwin`) | Apple Silicon (M1 o posterior) | — | 8 GB | ~2,5 GB | ✅ Sin carga: RTF 0,23–0,26 en un Apple M4 Pro virtual de 6 núcleos (CircleCI `m4pro.medium`), con todos los kernels en NEON. Sin medir con carga ni en otros Mac, así que no hay mínimo de núcleos verificado. |
+| **Linux ARM64** (`aarch64-unknown-linux-gnu`) | ARMv8.2 o posterior con NEON y `dotprod` (Neoverse N1/V1, Cortex-A76 o posterior); también corre en ARMv8.0, más lento | más de 4 (sin verificar) | 8 GB | ~2,5 GB | ❌ Sin tiempo real con 4 vCPU: RTF 1,46–2,09 en un Arm Neoverse N1 de 4 vCPU (CircleCI Docker `arm.large`). Con 4 núcleos, el productor (109–147 ms por frame de 80 ms) y el decoder se reparten las mismas CPU. No se ha podido medir con 8 vCPU: CircleCI no ofrece a este proyecto máquinas ARM más grandes. |
 
 Notas sobre estos requisitos:
-- **De dónde salen las cifras.** Windows x86_64 se midió en el equipo de referencia, con y sin carga. macOS y Linux ARM64 se midieron en máquinas virtuales de CircleCI, solo sin carga, con la mayor máquina disponible (6 y 4 núcleos), así que no son comparables entre sí ni con Windows. Detalle de cada medición en [ADR-005](docs/adr/005-cpu-inference-optimizations.md).
+- **De dónde salen las cifras.** Windows x86_64 se midió en el equipo de referencia, con y sin carga (1 hilo copiando 256 MiB en bucle); macOS, Linux ARM64 y el Windows de 4 núcleos, en máquinas virtuales de CircleCI, solo sin carga, con la voz `default` en inglés (frase corta y larga), así que no son comparables entre sí ni con el equipo de referencia. Detalle de cada medición en [ADR-005](docs/adr/005-cpu-inference-optimizations.md).
 - **Núcleos físicos, no hilos.** El motor se fija a un hilo lógico por núcleo físico (Windows). Con menos de 8 núcleos, el decoder y OpenBLAS compiten con el productor por las mismas CPU. Mediciones en el mismo equipo, limitado por afinidad:
-  - **6 núcleos:** RTF 0,89 sin carga, pero 1,13 con carga.
-  - **4 núcleos:** 0,97 sin carga y 1,45 con carga.
-- **Sin AVX2**, el motor usa la ruta escalar y va unas 5–6 veces más lento (RTF ~3,8 en el mismo equipo).
-- **Memoria.** El proceso usa ~1,3 GB en el pico. El motor está limitado por el ancho de banda de memoria, por eso se recomienda doble canal.
-- **Ajuste de hilos.** `-j` fija los hilos del productor (4 por defecto). Menos hilos no compensa la falta de núcleos: con 4 núcleos, `-j 2` tampoco bajó de RTF 1.
+  - **6 núcleos:** RTF 0,93 sin carga y 1,30 con carga.
+  - **4 núcleos:** 1,01 sin carga y 1,49 con carga.
+- **Sin AVX2**, el motor usa la ruta escalar y va unas 5 veces más lento (RTF ~3,6 en el mismo equipo).
+- **Memoria.** El proceso llega a ~1 353 MiB de memoria comprometida privada en el pico (CLI, frase larga); el *working set* llega a ~2 362 MiB porque incluye los pesos del modelo mapeados desde el disco. El motor está limitado por el ancho de banda de memoria, por eso se recomienda doble canal.
+- **Ajuste de hilos.** `-j` fija los hilos del productor (4 por defecto). Con 4 núcleos, `-j 2` rinde algo mejor que `-j 4` (RTF 0,92 sin carga y 1,31 con carga, una corrida), pero con carga tampoco llega a tiempo real.
 
 ### Dependencias por plataforma (BLAS nativo)
 
 | Plataforma | Toolchain y bibliotecas | Notas |
 |---|---|---|
 | **Windows (`x86_64-pc-windows-gnu`)** | Rust con host `x86_64-pc-windows-gnu` (`rustup set default-host x86_64-pc-windows-gnu`; no hace falta Visual Studio) + MSYS2 UCRT64 (`mingw-w64-ucrt-x86_64-gcc`, `make`, `mingw-w64-ucrt-x86_64-binutils`) en `PATH` (`C:\msys64\ucrt64\bin`), más el OpenBLAS propio (abajo) | El motor enlaza un OpenBLAS 0.3.34 propio, estático y sin OpenMP ni Fortran: `OPENBLAS_LIB_DIR` es obligatoria (`C:/openblas/lib`). |
-| **Linux** | Rust estable + OpenBLAS propio | El motor enlaza siempre un OpenBLAS propio: `scripts/build-openblas.sh "$HOME/openblas"` (OpenBLAS 0.3.34 estático, solo BLAS, `DYNAMIC_ARCH`: elige el kernel de cada CPU al arrancar; ~4–6 min en 4 vCPU ARM, medido con la 0.3.30) y `OPENBLAS_LIB_DIR="$HOME/openblas/lib" cargo build --release -p qwen-app`; `OPENBLAS_LIB_DIR` es obligatoria. El de la distribución puede traer solo el kernel genérico: Ubuntu 22.04 en ARM64 usa `armv8` y el decoder va un 30 % más lento. `qwen_tts --caps` muestra el kernel en la línea `BLAS (prefill)`. |
+| **Linux** | Rust estable + OpenBLAS propio | El motor enlaza siempre un OpenBLAS propio: `scripts/build-openblas.sh "$HOME/openblas"` (OpenBLAS 0.3.34 estático, solo BLAS, `DYNAMIC_ARCH`: elige el kernel de cada CPU al arrancar; ~4–6 min en 4 vCPU ARM) y `OPENBLAS_LIB_DIR="$HOME/openblas/lib" cargo build --release -p qwen-app`; `OPENBLAS_LIB_DIR` es obligatoria. El de la distribución puede traer solo el kernel genérico: Ubuntu 22.04 en ARM64 usa `armv8`. `qwen_tts --caps` muestra el kernel en la línea `BLAS (prefill)`. |
 | **macOS** | Rust estable + Xcode Command Line Tools | Enlaza con el framework del sistema `Accelerate`. |
 
 ---
@@ -242,7 +242,7 @@ La documentación sigue el modelo **Diátaxis** para separar guías prácticas, 
 | [`docs/adr/003-concurrency-pool.md`](docs/adr/003-concurrency-pool.md) | ADR | Mantenedores | Pool de hilos `ComputePool` y control de sobresuscripción. |
 | [`docs/adr/004-simd-baseline.md`](docs/adr/004-simd-baseline.md) | ADR | Mantenedores | Despacho SIMD en runtime sobre Rust estable (AVX2, NEON y escalar). |
 | [`docs/adr/005-cpu-inference-optimizations.md`](docs/adr/005-cpu-inference-optimizations.md) | ADR | Mantenedores | Optimizaciones de la inferencia en CPU adoptadas y descartadas, con su efecto medido, y rendimiento por plataforma. |
-| [`docs/adr/006-single-synthesis-path.md`](docs/adr/006-single-synthesis-path.md) | ADR | Mantenedores | Un único camino de síntesis (`Synthesizer`, `Script` × `Delivery`), una regla de idioma y retirada del procesamiento por lotes. |
+| [`docs/adr/006-single-synthesis-path.md`](docs/adr/006-single-synthesis-path.md) | ADR | Mantenedores | Un único camino de síntesis (`Synthesizer`, `Script` × `Delivery`), una regla de idioma y un servidor de un solo trabajador. |
 | [`docs/adr/007-voz-natural-texto-por-pasos-talker-int8.md`](docs/adr/007-voz-natural-texto-por-pasos-talker-int8.md) | ADR | Mantenedores | Texto por pasos, Talker `INT8` en el decodificado, clonación solo por x-vector y `.qvoice` v6, con la evidencia de cada decisión. |
 
 ---
@@ -256,4 +256,12 @@ La documentación sigue el modelo **Diátaxis** para separar guías prácticas, 
 
 ## Licencia
 
-Este proyecto está licenciado bajo **Mozilla Public License Version 2.0 (`MPL-2.0`)**. Consulta [`LICENSE`](LICENSE) para el texto completo de la licencia y [`NOTICE`](NOTICE) para los avisos de atribución.
+Este proyecto está licenciado bajo **Mozilla Public License Version 2.0 (`MPL-2.0`)**.
+
+Copyright (c) 2026 Cristián Rojas Arredondo y colaboradores de qwen-tts-engine.
+
+- [`LICENSE`](LICENSE): texto completo de la MPL-2.0.
+- [`NOTICE`](NOTICE): titular, atribución al motor original en C y avisos del proyecto.
+- [`THIRD-PARTY-LICENSES.md`](THIRD-PARTY-LICENSES.md): avisos y licencias de los componentes de terceros que entran en el binario.
+
+La voz `default` incorporada en el binario es un x-vector calculado de una grabación propia del autor, cedido bajo la licencia del proyecto (MPL-2.0). Los pesos del modelo Qwen3-TTS 0.6B Base no forman parte del repositorio ni del binario y tienen su propia licencia.

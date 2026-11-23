@@ -1,6 +1,6 @@
 # ADR-007: Voz más natural: texto por pasos, Talker INT8 y clonación solo por timbre
 
-Reemplaza parcialmente a [ADR-001](001-only-06b.md) y [ADR-006](006-single-synthesis-path.md) en lo que toca al formato `.qvoice` y a la clonación con transcripción.
+Relacionado: [ADR-001](001-only-06b.md) y [ADR-006](006-single-synthesis-path.md); este ADR decide el formato `.qvoice` v6 y la clonación solo por x-vector.
 
 > Registro de decisión sobre los cambios que acercan la voz del motor a la de la implementación oficial: el texto entra paso a paso, el Talker calcula en `INT8` y la clonación pasa a depender solo del x-vector.
 
@@ -27,7 +27,7 @@ El caso de uso es local: una síntesis a la vez en un equipo modesto, con la CPU
    - **Evidencia:** con 16 semillas, la mediana del silencio interno más largo baja de 0,92 s a 0,14 s (Mann-Whitney bilateral, p = 0,0001), y el TTFA de unos 698 ms a unos 406 ms. El usuario lo confirmó de oído.
 2. **Talker en `INT8` en el decodificado paso a paso.** `wq`, `wk`, `wv`, `wo`, `gate_up` y `down` en `INT8`, con una escala por fila. El prefill sigue en `BF16`.
    - **Precisión:** se forzaron en el motor los códigos de la implementación oficial y se comparó lo que cada versión del Talker predice frente a ella (mediana de la diferencia absoluta de logits): 2,75 en `Q4_0`, 1,04 en `INT8` y 0,06 en `BF16`.
-   - **Velocidad**, frase larga con texto por pasos: RTF 0,62 en `Q4_0`, 0,65 en `INT8` (el mismo que antes) y 0,80 en `BF16`.
+   - **Velocidad**, frase larga con texto por pasos: RTF 0,62 en `Q4_0`, 0,65 en `INT8` y 0,80 en `BF16`.
    - El usuario lo eligió de oído.
    - **Memoria:** se aceptan unos 185 MiB más de RAM. El Talker tiene 440,4 M pesos, que ocupan unos 236 MiB en `Q4_0` y unos 422 MiB en `INT8` (cálculo con las dimensiones de `qwen-core/src/config.rs`).
 3. **Se conserva el refuerzo del EOS**, con un comentario que explica qué evita.
@@ -43,7 +43,7 @@ El caso de uso es local: una síntesis a la vez en un equipo modesto, con la CPU
 7. **Se conserva el recorte del silencio final de la referencia** (`trim_trailing_silence` en `load_ref_audio`). La implementación oficial no recorta; de oído, el clon de una grabación con silencio final suena más consistentemente bien con el recorte.
 8. **Se conservan sin cambios** el argmax del Code Predictor, la penalización de repetición por aparición y la temperatura por defecto, 0,325: el usuario prefirió de oído la configuración actual frente a la de la implementación oficial, en 3 de 3 pares.
 
-Decisiones de implementación derivadas: `SpeechDecoderWeights.codebooks` deja de ser `Arc`, porque solo se compartía con el codificador ICL; el autotest sustituye la comprobación del núcleo QKV `Q4_0` por la del QKV `INT8`, que pasa a usar el Talker; `--delete-voice` y `--list-voices` siguen aceptando archivos `QVCE` de cualquier versión, para ver y borrar las voces v5 que dejan de cargarse.
+Decisiones de implementación derivadas: `SpeechDecoderWeights.codebooks` no es `Arc`, porque nada más lo comparte; el autotest comprueba el núcleo QKV `INT8`, que es el que usa el Talker; `--list-voices` muestra `no compatible` y el motivo para un archivo `.qvoice` de otra versión.
 
 ---
 
@@ -59,7 +59,7 @@ Decisiones de implementación derivadas: `SpeechDecoderWeights.codebooks` deja d
 
 - Unos 185 MiB más de RAM según el cálculo; medido, unos 174 MiB (sección «Medición»).
 - `.qvoice` v6: las voces anteriores se clonan de nuevo.
-- No hay clonación con transcripción: desaparecen `--ref-text` y `--xvector-only`, y el codificador de voz.
+- No hay clonación con transcripción.
 - El tope de una síntesis que no termina es `min(DEFAULT_MAX_FRAMES, ROPE_MAX_POS − prefill_len)`, y el prompt solo se rechaza si `prefill_len + n_tokens_de_texto > ROPE_MAX_POS`.
 - El audio de referencia de [`NUMERIC_CONTRACT.md`](../NUMERIC_CONTRACT.md) se regenera.
 
@@ -96,7 +96,7 @@ Ryzen 7 5825U, Windows, `-j 4 --seed 4 -l Spanish`, sin otras cargas, una sínte
 | Larga | este ADR | 0,67 [0,67, 0,72] | 430 [420, 442] | 2302 [2273, 2350] | 2371 |
 
 - **TTFA:** baja entre un 22 % y un 35 %, porque el prefill pasa a 10 posiciones.
-- **Carga:** baja a la mitad. Ya no se carga el codificador de voz ni se cuantiza a `Q4_0` el Talker.
+- **Carga:** baja a la mitad frente al motor anterior, que cargaba el codificador de voz de la clonación con transcripción y cuantizaba a `Q4_0` el Talker.
 - **Memoria:** sube unos 174 MiB. Coincide con los ~185 MiB calculados para el Talker en `INT8`.
 - **RTF:** el paso del Talker pasa de unos 13 a unos 16 ms por frame (`INT8` frente a `Q4_0`), y el RTF sube un poco en la frase larga.
   - En la frase corta el audio es otro (3,28 s frente a 4,64 s), así que su RTF no se compara directamente.

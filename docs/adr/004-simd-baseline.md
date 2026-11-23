@@ -3,7 +3,7 @@
 > Registro de decisión arquitectónica sobre la selección dinámica de kernels SIMD y la portabilidad multiplataforma mediante un único binario compilado en Rust estable.
 
 - **Estado**: Aceptado
-- **Fecha**: 2026-11-16 (revisado el 2026-11-19: kernels NEON en ARM64)
+- **Fecha**: 2026-11-16
 
 ---
 
@@ -34,4 +34,4 @@ Compilar un binario atado a una única ISA SIMD obliga a distribuir variantes po
 ### Riesgos y mitigación
 
 - Cada kernel existe tres veces (AVX2, NEON y escalar). Las pruebas `test_simd_q4_0_matches_avx2_summation_order` y `test_simd_float_kernels_match_avx2_summation_order` fijan el hash de AVX2, así que un cambio en una ruta que no se replique en la otra falla en la CI de ARM64 o de x86.
-- Las GEMM del prefill y del `SpeechDecoder` siguen en BLAS (`Accelerate`/`OpenBLAS`), que redondea distinto en cada plataforma: el audio de ARM no es el de x86.
+- Las GEMM del prefill y del `SpeechDecoder` están en BLAS (`Accelerate`/`OpenBLAS`), que redondea distinto en cada plataforma: el audio de ARM no es el de x86.

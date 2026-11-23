@@ -72,10 +72,11 @@ AbortHandle  [Efímero por síntesis]      // Arc<AtomicBool> + poll opcional ac
 1. **`ComputeRuntime`**: instancia inyectable (sin estado global) con cinco componentes:
    - `caps: CpuCaps` — capacidades SIMD detectadas en runtime.
    - `dispatch: &'static KernelDispatch` — tabla de punteros resuelta según `CpuCaps` *(ver [ADR-004](adr/004-simd-baseline.md))*. `qwen-engine` nunca contiene `#[cfg(target_arch)]`.
-   - `pool: Arc<ComputePool>` — pool persistente para `Talker` y `CodePredictor` *(ver [ADR-003](adr/003-concurrency-pool.md))*.
-   - `sd_pool: Arc<ComputePool>` — pool dedicado para `SpeechDecoder`, con tantos hilos como `-j`.
+   - `pool: ComputePool` — pool persistente para `Talker` y `CodePredictor` *(ver [ADR-003](adr/003-concurrency-pool.md))*.
+   - `sd_pool: ComputePool` — pool dedicado para `SpeechDecoder`, con tantos hilos como `-j`.
    - `blas: FfiBlas` — `sgemm` y `set_threads` *(ver [ADR-002](adr/002-blas-strategy.md))*.
 2. **`ComputePool`**: sincronización con contador atómico de chunks (`AtomicUsize`), presupuesto de *spin-wait* (`4096` iteraciones, o `0` si los hilos del productor ocupan todos los núcleos físicos: `spin_budget_for`) usando `std::hint::spin_loop()`, `Condvar` de respaldo y llamada única a `ftz_on()` al iniciar cada hilo trabajador.
+   Al cargar el modelo, reparte la cuantización de las 28 capas del Talker, las 5 del Code Predictor y sus 15 `lm_head` (`load_parallel`, en `model.rs`).
    Si una tarea entra en pánico en un hilo trabajador, `parallel` lo relanza en quien llama y el trabajador sigue vivo.
 3. **`FfiBlas`**: `OpenBLAS` en Linux y Windows, `Accelerate` en macOS. En Linux y Windows enlaza siempre el OpenBLAS propio (`scripts/build-openblas.sh`), estático y con `DYNAMIC_ARCH`, con `OPENBLAS_LIB_DIR` obligatoria.
 
@@ -102,7 +103,7 @@ AbortHandle  [Efímero por síntesis]      // Arc<AtomicBool> + poll opcional ac
 ## 5. Aplicación (`qwen-app`)
 
 1. **Modos**: `cli.rs` resuelve una sola vez el `CliMode` (`Caps`, `SelfTest`, `ListVoices`, `CreateVoice`, `Serve`, `Synthesize` o `NoJob`) según la precedencia de los flags, y `main.rs` solo despacha. `modes/diag.rs` y `modes/voice_cmd.rs` no cargan el modelo; `modes/mod.rs` prepara runtime, modelo y voz para `modes/single.rs` (una síntesis) y `modes/serve.rs`.
-2. **Servidor simple**: `ServerContext { runtime, model, voice }` y `serve(ctx, host, port)`. Usa el `ComputeRuntime` global, calienta una sesión (`warm_up`, con un `SynthesisRequest` directo, sin JSON) y atiende cada conexión en línea (`accept` + `handle_connection`), con un único trabajador, sin hilos ni cola. El presupuesto de *spin-wait* lo fija `ComputeRuntime::for_cores` según los núcleos físicos.
+2. **Servidor simple**: `ServerContext { runtime, model, voice }` y `serve(ctx, host, port)`. Usa el `ComputeRuntime` creado al arrancar, calienta una sesión (`warm_up`, con un `SynthesisRequest` directo, sin JSON) y atiende cada conexión en línea (`accept` + `handle_connection`), con un único trabajador, sin hilos ni cola. El presupuesto de *spin-wait* lo fija `ComputeRuntime::for_cores` según los núcleos físicos.
 3. **Un solo enrutado**: `handle_connection` atiende `/v1/health`, `/v1/voices`, `/v1/tts`, y `/v1/tts/stream`. `ValidatedTtsRequest::parse` valida todas las peticiones (HTTP `400` ante cualquier parámetro fuera de contrato, incluidos los campos desconocidos), `from_http` las convierte en `SynthesisRequest` y `Script`, y `AbortGuard` acopla el ciclo de vida del socket a `AbortHandle::cancel()` vía `Drop`.
 
 ---
@@ -115,4 +116,4 @@ El tiempo de una síntesis es `prefill + max(productor, consumidor) + drenaje fi
 - **Consumidor** (`SpeechDecoder`, en `sd_pool` y BLAS): casi todo su tiempo está en las convoluciones de los bloques de *upsample* (`sgemm`).
 - **Primer audio**: lo gobierna el prefill, y después el primer chunk del decoder (2 frames).
 
-Con 4 núcleos físicos, productor y consumidor se reparten las mismas CPU y ninguna plataforma llega a tiempo real. Las optimizaciones adoptadas y descartadas, con su efecto medido, y el rendimiento por plataforma están en [ADR-005](adr/005-cpu-inference-optimizations.md).
+Con 4 núcleos físicos, productor y consumidor se reparten las mismas CPU: no hay tiempo real con carga y, sin carga, x86_64 queda al límite (RTF 0,89–1,01). Las optimizaciones adoptadas y descartadas, con su efecto medido, y el rendimiento por plataforma están en [ADR-005](adr/005-cpu-inference-optimizations.md).

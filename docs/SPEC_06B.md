@@ -36,22 +36,22 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 
 ### 2.1 Modelo principal (`model.safetensors`)
 
-- **Talker global** (`BF16`, salvo biases/norm en `F32`):
+- **Talker global** (`BF16`, también los biases y las norms, que el motor lee como `F32`):
   - `talker.model.text_embedding.weight` `[151936, 2048]` (`BF16`)
-  - `talker.text_projection.linear_fc1.weight` `[2048, 2048]` (`BF16`), `.bias` `[2048]` (`F32`)
-  - `talker.text_projection.linear_fc2.weight` `[1024, 2048]` (`BF16`), `.bias` `[1024]` (`F32`)
+  - `talker.text_projection.linear_fc1.weight` `[2048, 2048]` (`BF16`), `.bias` `[2048]` (`BF16` en el checkpoint; el motor lo lee como `F32`)
+  - `talker.text_projection.linear_fc2.weight` `[1024, 2048]` (`BF16`), `.bias` `[1024]` (`BF16` en el checkpoint; el motor lo lee como `F32`)
   - `talker.model.codec_embedding.weight` `[3072, 1024]` (`BF16`)
   - `talker.codec_head.weight` `[3072, 1024]` (`BF16`)
-  - `talker.model.norm.weight` `[1024]` (`F32`)
+  - `talker.model.norm.weight` `[1024]` (`BF16` en el checkpoint; el motor lo lee como `F32`)
 - **Talker por capa** `i = 0..27` (`talker.model.layers.{i}.*`):
   - `BF16`: `self_attn.{q,k,v,o}_proj.weight`, `mlp.{gate,up,down}_proj.weight`.
-  - `F32`: `self_attn.{q,k}_norm.weight` `[128]`, `input_layernorm.weight` `[1024]`, `post_attention_layernorm.weight` `[1024]`.
+  - en el checkpoint son `BF16`; el motor los lee como `F32`: `self_attn.{q,k}_norm.weight` `[128]`, `input_layernorm.weight` `[1024]`, `post_attention_layernorm.weight` `[1024]`.
 - **Code Predictor** (`talker.code_predictor.*`):
-  - `talker.code_predictor.model.norm.weight` `[1024]` (`F32`)
+  - `talker.code_predictor.model.norm.weight` `[1024]` (`BF16` en el checkpoint; el motor lo lee como `F32`)
   - `talker.code_predictor.lm_head.{g}.weight` (`g=0..14`, `[2048, 1024]`, `BF16`)
   - `talker.code_predictor.model.codec_embedding.{g}.weight` (`g=0..14`, `[2048, 1024]`, `BF16`)
   - Por capa `i = 0..4` (`talker.code_predictor.model.layers.{i}.*`): mismos 11 tensores que Talker.
-- **Speaker Encoder** (solo `0.6B-Base`, `F32`):
+- **Speaker Encoder** (solo `0.6B-Base`; en el checkpoint son `BF16`; el motor los lee como `F32`):
   - `speaker_encoder.blocks.0.conv.{weight,bias}` (`128→512, k=5`)
   - `speaker_encoder.blocks.{1..3}.*` (`tdnn1`, `res2net_block.blocks.{0..6}`, `tdnn2`, `se_block.conv{1,2}`; dilataciones `{2, 3, 4}`)
   - `speaker_encoder.mfa.conv.{weight,bias}`, `speaker_encoder.asp.{tdnn,conv}.{weight,bias}`, `speaker_encoder.fc.{weight,bias}` (`3072→1024`).
@@ -119,11 +119,11 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 2. **Sección 2 (`codec_len - 1` pos)**: `tts_pad * (codec_len - 2) + tts_bos` + `codec_embed(codec[0..codec_len-1])` *(en la posición del locutor, `dst = tts_pad` y `dst[j] += spk[j]`)*.
 3. **Sección 3 (1 pos)**: `text_proj(BPE(text)[0]) + codec_bos`. El *prefill* tiene así 10 posiciones.
 
-**Texto por pasos.** El texto entra un token por paso, como en el modo por defecto de la implementación oficial (`non_streaming_mode=False`). Los `N` tokens restantes del texto y `tts_eos` (`N` entradas en total, con `N` el número de tokens del texto) se suman a la entrada de los pasos 0, 1, 2… del bucle, uno por paso, y a partir de ahí la entrada solo lleva `tts_pad`. Cada paso parte de su entrada habitual (los 16 códigos del frame anterior más `tts_pad`) y le suma `text_proj(token) - tts_pad` (o `tts_eos - tts_pad`), restando en `f32` elemento a elemento. Eso fija el orden de redondeo con el que se validó el audio. El límite de longitud cuenta las posiciones que necesita el texto: `10 + N <= ROPE_MAX_POS`.
+**Texto por pasos.** El texto entra un token por paso, como en el modo por defecto de la implementación oficial (`non_streaming_mode=False`). Los `N−1` tokens restantes del texto y `tts_eos` (`N` entradas en total, con `N` el número de tokens del texto) se suman a la entrada de los pasos 0, 1, 2… del bucle, uno por paso, y a partir de ahí la entrada solo lleva `tts_pad`. Cada paso parte de su entrada habitual (los 16 códigos del frame anterior más `tts_pad`) y le suma `text_proj(token) - tts_pad` (o `tts_eos - tts_pad`), restando en `f32` elemento a elemento. Eso fija el orden de redondeo con el que se validó el audio. El límite de longitud cuenta las posiciones que necesita el texto: `10 + N <= ROPE_MAX_POS`.
 
 ### 4.3 Recorte, refuerzo de EOS, muestreo y marcado
 
 - **Recorte de silencio final (`trim_trailing_silence`)**: activo si `n_samples >= 3 * 24000`. Escanea ventanas de `20 ms` desde el final con umbral `max(0.18 * global_rms, 0.004)`, deja `+50 ms` de margen y limita el recorte al `40 %` de la duración conservando al menos `2 s`.
 - **Refuerzo de EOS (`pipeline.rs`)**: `expected = text_content_len * 3`. Si `0 < text_content_len <= 11`: `start = expected * 3 / 2`, aplica `+1.0/frame` (tope `+15.0`) cuando `frame > start`. Si `> 11`: `start = expected * 2`, aplica `+0.5/frame` (tope `+10.0`) cuando `frame > start`. Suprime tokens `>= 2048` excepto `CODEC_EOS`, y suprime `CODEC_EOS` para `frame < 2`.
 - **Muestreo (`qwen-core/src/sampling.rs`)**: temperatura por defecto `DEFAULT_TEMPERATURE = 0.325` y semilla por defecto `DEFAULT_SEED = 4` (`qwen-core/src/config.rs`); penalización de repetición sobre `prev_tokens` → si `T < 1e-6`, argmax (decodificación voraz); si no, `softmax(logits / T)` → *top-k* → *top-p* → renormalización → LCG `seed = seed.wrapping_mul(1103515245).wrapping_add(12345)`, `r = ((seed >> 16) & 0x7FFF) / 32768.0`.
-- **Marcado en línea (`markup.rs`, `compose.rs`)**: `plan_script` divide el texto en tramos, también con `--stdout`. Si hay `[pause:...]`, `[break:...]`, `[0.5]` o `|`, `MarkupPlanner::parse_spans` divide en tramos con *prefill* frío por tramo. Un tag desconocido (por ejemplo `[xyz]`) no es marcado y queda como texto.
+- **Marcado en línea (`markup.rs`, `compose.rs`)**: `plan_script` divide el texto en tramos, también con `--stdout`. Si hay `[pause:...]`, `[break:...]`, `[0.5]`, `|` o una muletilla (`[ahh]`, `[relief]`, `[phew]`, `[hmm]`, `[hmpf]`, `[mah]`, `[uhm]`, `[haha]`, `[heh]`, `[ouch]`, `[ahi]`, `[huff]`, `[ugh]`), `MarkupPlanner::parse_spans` divide en tramos con *prefill* frío por tramo. Un tag desconocido (por ejemplo `[xyz]`) no es marcado y queda como texto.
