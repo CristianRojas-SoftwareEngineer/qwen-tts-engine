@@ -23,6 +23,11 @@
 # release-dry-run: compila los cuatro binarios portables (manylinux_2_28 en Linux), los audita
 # (scripts/ci-audit-binary.sh), los prueba en imágenes limpias, los empaqueta y genera las fuentes
 # y SHA256SUMS, sin publicar nada.
+#
+# Release (solo con un tag v*): el workflow release repite los jobs del modo prueba, filtrados por
+# tag, y añade release-publish, que crea la release de GitHub como borrador, sube los seis archivos,
+# los comprueba y la publica (scripts/ci-publish-release.sh, con GH_TOKEN del contexto github-release).
+# El tag lo crea el usuario; cada job falla si el tag no coincide con la versión de Cargo.toml.
 version: 2.1
 
 orbs:
@@ -607,6 +612,24 @@ jobs:
           path: release
       - store_artifacts:
           path: maps
+      # Los seis archivos pasan a release-publish, que los sube a la release.
+      - persist_to_workspace:
+          root: .
+          paths:
+            - release
+
+  release-publish:
+    docker:
+      - image: cimg/base:current
+    resource_class: small
+    steps:
+      - checkout
+      - check_release_tag
+      - attach_workspace:
+          at: dist
+      - run:
+          name: Publicar la release (borrador, subida, comprobación y publicación)
+          command: bash scripts/ci-publish-release.sh dist/release
 
 workflows:
   test:
@@ -661,3 +684,49 @@ workflows:
             - cleanroom-debian-x64
             - cleanroom-almalinux8-arm64
             - cleanroom-debian-arm64
+  release:
+    jobs:
+      - release-linux-x64:
+          filters: &release_tag_filters
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - release-linux-arm64:
+          filters: *release_tag_filters
+      - release-macos-arm64:
+          filters: *release_tag_filters
+      - release-windows-x64:
+          filters: *release_tag_filters
+      - cleanroom-almalinux8-x64:
+          filters: *release_tag_filters
+          requires:
+            - release-linux-x64
+      - cleanroom-debian-x64:
+          filters: *release_tag_filters
+          requires:
+            - release-linux-x64
+      - cleanroom-almalinux8-arm64:
+          filters: *release_tag_filters
+          requires:
+            - release-linux-arm64
+      - cleanroom-debian-arm64:
+          filters: *release_tag_filters
+          requires:
+            - release-linux-arm64
+      - release-assemble:
+          filters: *release_tag_filters
+          requires:
+            - release-linux-x64
+            - release-linux-arm64
+            - release-macos-arm64
+            - release-windows-x64
+            - cleanroom-almalinux8-x64
+            - cleanroom-debian-x64
+            - cleanroom-almalinux8-arm64
+            - cleanroom-debian-arm64
+      - release-publish:
+          context: github-release
+          filters: *release_tag_filters
+          requires:
+            - release-assemble

@@ -14,6 +14,7 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 ## Tabla de contenidos
 
 - [Alcance y capacidades](#alcance-y-capacidades)
+- [Descargas](#descargas)
 - [Requisitos de entorno](#requisitos-de-entorno)
 - [Descarga de modelos](#descarga-de-modelos)
 - [Uso rápido](#uso-rápido)
@@ -34,6 +35,26 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
   - **Biblioteca Rust (`qwen-engine`)**: API segura (`#![forbid(unsafe_code)]`) para incrustar el motor compartiendo `&Model06B` (`Send + Sync`) entre hilos.
 
 > **Modelo soportado (`Qwen3-TTS 0.6B Base`)**: este motor ejecuta exclusivamente el checkpoint **Qwen3-TTS `0.6B` Base**; cualquier otro se rechaza al cargar. Al cargar un modelo, `config.json` valida automáticamente esta geometría (`HIDDEN_SIZE=1024`, `28` capas Talker, `5` capas Code Predictor).
+
+---
+
+## Descargas
+
+Las releases están en [GitHub Releases](https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine/releases). Cada una trae un paquete por sistema, las fuentes y `SHA256SUMS`:
+
+| Sistema | Paquete |
+|---|---|
+| Windows x86_64 | `qwen-tts-engine-<versión>-x86_64-pc-windows-gnu.zip` |
+| Linux x86_64 | `qwen-tts-engine-<versión>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 | `qwen-tts-engine-<versión>-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS ARM64 | `qwen-tts-engine-<versión>-aarch64-apple-darwin.tar.gz` |
+
+Cada paquete contiene el binario `qwen_tts` (`qwen_tts.exe` en Windows), `LICENSE`, `NOTICE` y `THIRD-PARTY-LICENSES.md`.
+
+- **Requisitos de los binarios**: Linux con glibc 2.28 o posterior, macOS 26.0 o posterior y Windows x86_64. En x86_64 la ruta rápida necesita AVX2 y FMA; sin ellos el motor usa la ruta escalar, mucho más lenta.
+- **Verificación**: descarga todos los archivos en una misma carpeta y ejecuta `sha256sum -c SHA256SUMS`.
+- **Modelo**: los pesos no van en el paquete; se descargan aparte como indica [Descarga de modelos](#descarga-de-modelos).
+- **Versionado**: las versiones siguen el [versionado semántico](https://semver.org/lang/es/) sobre el contrato de uso; ver la sección «Versionado» de [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md).
 
 ---
 

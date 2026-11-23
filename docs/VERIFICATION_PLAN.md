@@ -54,7 +54,7 @@ Tras compilar `qwen_tts`, verifica el runtime según [`INTERFACE_CONTRACT.md`](I
 
 ## 3. Integración continua en CircleCI (`.circleci/config.yml`)
 
-La CI del repositorio es CircleCI, con cuatro workflows sobre las mismas máquinas:
+La CI del repositorio es CircleCI, con cinco workflows sobre las mismas máquinas:
 
 | Sistema | Máquina | Target | BLAS |
 |---|---|---|---|
@@ -81,6 +81,7 @@ La CI del repositorio es CircleCI, con cuatro workflows sobre las mismas máquin
   - `cleanroom-almalinux8-*` y `cleanroom-debian-*` (`almalinux:8` y `debian:stable-slim`, x86_64 y ARM64): ejecutan `--caps` y `--self-test` con el binario Linux ya compilado, sin compilar nada;
   - `release-assemble`: genera las fuentes (`git archive`) y `SHA256SUMS` de los cuatro paquetes y las fuentes, y los guarda como artefactos junto con los mapas del enlace (`link-map-*.txt`).
   - Cada paquete contiene `qwen_tts[.exe]`, `LICENSE`, `NOTICE` y `THIRD-PARTY-LICENSES.md` bajo la carpeta `qwen-tts-engine-<versión>-<triple>/`. Si el pipeline viene de un tag, cada job falla si el tag no coincide con la versión de `Cargo.toml`.
+- **`release`**: solo con un tag `v*` (lo crea el usuario; ningún otro workflow corre en tags). Ejecuta los mismos jobs que `release-dry-run`, todos con el filtro de tags, y añade `release-publish` (contexto `github-release`, variable `GH_TOKEN`), que con `scripts/ci-publish-release.sh` falla si ya existe una release con ese tag (publicada o en borrador), la crea como borrador, sube los seis archivos (cuatro paquetes, las fuentes y `SHA256SUMS`), comprueba que los lista y solo entonces la publica. Una release publicada no cambia: una corrección es otra versión.
 
 Las pruebas que necesitan pesos reales se omiten (con un aviso en la salida) cuando el modelo no está en `models/`.
 
