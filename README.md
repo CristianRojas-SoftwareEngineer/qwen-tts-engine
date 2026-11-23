@@ -57,7 +57,7 @@ Notas sobre estos requisitos:
   - **4 núcleos:** 1,01 sin carga y 1,49 con carga.
 - **Sin AVX2**, el motor usa la ruta escalar y va unas 5 veces más lento (RTF ~3,6 en el mismo equipo).
 - **Memoria.** El proceso llega a ~1 353 MiB de memoria comprometida privada en el pico (CLI, frase larga); el *working set* llega a ~2 362 MiB porque incluye los pesos del modelo mapeados desde el disco. El motor está limitado por el ancho de banda de memoria, por eso se recomienda doble canal.
-- **Ajuste de hilos.** `-j` fija los hilos del productor (4 por defecto). Con 4 núcleos, `-j 2` rinde algo mejor que `-j 4` (RTF 0,92 sin carga y 1,31 con carga, una corrida), pero con carga tampoco llega a tiempo real.
+- **Ajuste de hilos.** `-j` fija los hilos de cómputo; por defecto, los hilos lógicos de la CPU hasta un máximo de 4. Con 4 núcleos, `-j 2` rinde algo mejor que `-j 4` (RTF 0,92 sin carga y 1,31 con carga, una corrida), pero con carga tampoco llega a tiempo real.
 
 ### Dependencias por plataforma (BLAS nativo)
 
@@ -184,7 +184,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let synth = Synthesizer { runtime: &runtime, model: &model, voice: &voice };
     let mut scratch = SessionScratch::new();
     let abort = AbortHandle::new();
-    let req = SynthesisRequest::default(); // sin idioma pedido: el de la voz o español
+    let req = SynthesisRequest::default(); // idioma por defecto: español
 
     let out = synth.synthesize(
         &mut scratch,
@@ -198,7 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-El idioma de la síntesis es el del pedido (`SynthesisRequest::language_id`, que el llamador resuelve con `qwen_core::config::effective_language`); si no hay, el de la voz; y si tampoco, español. Para *streaming* (`Delivery::Stream` sobre un `AudioSink`, por ejemplo `EdgeRampSink`), cancelación cooperativa (`AbortHandle`), guiones con marcado (`Script::Spans`) y carga de voces clonadas, consulta [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md).
+El idioma de la síntesis es `SynthesisRequest::language_id`, ya resuelto por el llamador. La regla del motor (el pedido; si no hay, el de la voz; y si tampoco, español) la aplica `qwen_core::config::effective_language(pedido, voice.language_id)`. Para *streaming* (`Delivery::Stream` sobre un `AudioSink`, por ejemplo `EdgeRampSink`), cancelación cooperativa (`AbortHandle`), guiones con marcado (`Script::Spans`) y carga de voces clonadas, consulta [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md).
 
 ---
 
