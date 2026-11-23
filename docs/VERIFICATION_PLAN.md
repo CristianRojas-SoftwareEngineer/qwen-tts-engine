@@ -54,7 +54,7 @@ Tras compilar `qwen_tts`, verifica el runtime según [`INTERFACE_CONTRACT.md`](I
 
 ## 3. Integración continua en CircleCI (`.circleci/config.yml`)
 
-La CI del repositorio es CircleCI, con tres workflows sobre las mismas máquinas:
+La CI del repositorio es CircleCI, con cuatro workflows sobre las mismas máquinas:
 
 | Sistema | Máquina | Target | BLAS |
 |---|---|---|---|
@@ -72,6 +72,14 @@ La CI del repositorio es CircleCI, con tres workflows sobre las mismas máquinas
   - `--caps` y `--self-test`;
   - 3 síntesis de la frase corta y la larga (voz `default`, inglés, `-j 4 --seed 4`), con RTF, tiempos por etapa, TTFA y hash del PCM.
 - **`kernels`**: a mano, con `kernels = true`, en Linux ARM64, macOS ARM64 y Windows x86_64. Compara `QWEN_KERNELS=auto` con `QWEN_KERNELS=scalar`, intercalados por corrida (`scripts/ci-compare-kernels.sh`): tiempos, RTF y hash del PCM de cada ruta, y el número de rutas SIMD que pasan el `--self-test`.
+
+- **`release-dry-run`**: a mano, con `release_dry_run = true` (la API v2 con `{"branch": "main", "parameters": {"release_dry_run": true}}`, o «Trigger Pipeline»); con ese parámetro el workflow `test` no corre. Es la release completa salvo la publicación:
+  - `release-linux-x64` y `release-linux-arm64`: compilan en la imagen `manylinux_2_28` (glibc 2.28) con el OpenBLAS propio, reenlazan `qwen-app` con `-Wl,-Map` para obtener el mapa del enlace y auditan el binario con `scripts/ci-audit-binary.sh` (solo bibliotecas del sistema, símbolos `GLIBC_*` ≤ 2.28 y sin `GLIBCXX_*`); después ejecutan `--caps` y `--self-test` y generan el `tar.gz`;
+  - `release-macos-arm64`: compila con `MACOSX_DEPLOYMENT_TARGET=26.0`, audita que `minos` sea ≤ 26.0 y que solo enlace bibliotecas de `/usr/lib/` y `/System/Library/`, ejecuta `--self-test` y genera el `tar.gz`;
+  - `release-windows-x64`: compila como el workflow `test`, genera el mapa del enlace, audita las DLL importadas (solo `KERNEL32`, `ntdll`, `WS2_32`, `bcryptprimitives` y `api-ms-win-*`), ejecuta `--self-test` y genera el `zip`;
+  - `cleanroom-almalinux8-*` y `cleanroom-debian-*` (`almalinux:8` y `debian:stable-slim`, x86_64 y ARM64): ejecutan `--caps` y `--self-test` con el binario Linux ya compilado, sin compilar nada;
+  - `release-assemble`: genera las fuentes (`git archive`) y `SHA256SUMS` de los cuatro paquetes y las fuentes, y los guarda como artefactos junto con los mapas del enlace (`link-map-*.txt`).
+  - Cada paquete contiene `qwen_tts[.exe]`, `LICENSE`, `NOTICE` y `THIRD-PARTY-LICENSES.md` bajo la carpeta `qwen-tts-engine-<versión>-<triple>/`. Si el pipeline viene de un tag, cada job falla si el tag no coincide con la versión de `Cargo.toml`.
 
 Las pruebas que necesitan pesos reales se omiten (con un aviso en la salida) cuando el modelo no está en `models/`.
 

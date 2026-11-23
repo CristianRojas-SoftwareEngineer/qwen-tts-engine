@@ -32,3 +32,9 @@ measure_one() {
     ttfa=$(grep -o 'TTFA: [0-9]* ms' "$log" | grep -o '[0-9]*' | head -1)
     printf '%-10s %-6s %-4s %-6s %-9s %-11s %-11s %-12s %-8s %s\n' "$variant" "$key" "$rep" "$rtf" "$frames" "$tk" "$cp" "$dec" "${ttfa:--}" "$(pcm_hash "$wav")"
 }
+
+# release_version: imprime la versión de la release (`v` + la versión de [workspace.package] de
+# Cargo.toml, por ejemplo v1.0.0). Se ejecuta desde la raíz del repositorio.
+release_version() {
+    sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\([^"]*\)".*/v\1/p' Cargo.toml | head -n1
+}

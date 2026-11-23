@@ -18,6 +18,11 @@
 # Lanzamiento: POST https://circleci.com/api/v2/project/gh/CristianRojas-SoftwareEngineer/qwen-tts-engine/pipeline
 #   {"branch": "main", "parameters": {"measure": true}}
 # (o, en la web de CircleCI, «Trigger Pipeline» con el parámetro correspondiente = true).
+#
+# Release en modo prueba (solo a mano): con el parámetro release_dry_run = true corre el workflow
+# release-dry-run: compila los cuatro binarios portables (manylinux_2_28 en Linux), los audita
+# (scripts/ci-audit-binary.sh), los prueba en imágenes limpias, los empaqueta y genera las fuentes
+# y SHA256SUMS, sin publicar nada.
 version: 2.1
 
 orbs:
@@ -32,6 +37,10 @@ parameters:
     type: boolean
     default: false
     description: Compara QWEN_KERNELS=auto con QWEN_KERNELS=scalar en los tres sistemas.
+  release_dry_run:
+    type: boolean
+    default: false
+    description: Ejecuta el workflow de release completo salvo la publicación.
 
 commands:
   download_model:
@@ -143,8 +152,18 @@ commands:
 
   prepare_windows:
     description: MSYS2 UCRT64 (gcc, make, binutils), OpenBLAS propio en caché, Rust para x86_64-pc-windows-gnu, modelo y compilación
+    parameters:
+      check_release_tag:
+        type: boolean
+        default: false
+        description: Comprueba, justo tras el checkout, que la etiqueta coincide con la versión (jobs de release).
     steps:
       - checkout
+      - when:
+          condition: << parameters.check_release_tag >>
+          steps:
+            - check_release_tag:
+                shell: bash.exe
       - run:
           name: Instalar MSYS2 UCRT64 (gcc, make, binutils)
           command: |
@@ -189,6 +208,84 @@ commands:
             export OPENBLAS_LIB_DIR=C:/openblas/lib
             rustc --version
             cargo build --release -p qwen-app --target x86_64-pc-windows-gnu
+
+  check_release_tag:
+    description: Falla si la etiqueta del pipeline (CIRCLE_TAG, si existe) no coincide con la versión del workspace
+    parameters:
+      shell:
+        type: string
+        default: /bin/bash
+    steps:
+      - run:
+          name: Comprobar que la etiqueta coincide con la versión
+          shell: << parameters.shell >>
+          command: |
+            set -euo pipefail
+            source scripts/ci-common.sh
+            V=$(release_version)
+            echo "Versión del workspace: $V"
+            if [ -n "${CIRCLE_TAG:-}" ] && [ "$CIRCLE_TAG" != "$V" ]; then
+              echo "ERROR: la etiqueta $CIRCLE_TAG no coincide con la versión $V de Cargo.toml" >&2
+              exit 1
+            fi
+
+  build_release_linux:
+    description: >-
+      Mapa del enlace, auditoría, --caps, --self-test y paquete tar.gz del binario Linux ya
+      compilado con cargo build --release -p qwen-app.
+    parameters:
+      triple:
+        type: string
+    steps:
+      - run:
+          name: Mapa del enlace (reenlaza solo qwen-app)
+          command: |
+            set -euo pipefail
+            mkdir -p dist
+            cargo rustc --release -p qwen-app --bin qwen_tts -- -C link-arg=-Wl,-Map="$PWD/dist/link-map-<< parameters.triple >>.txt"
+            ls -l dist
+      - run:
+          name: Auditar el binario (bibliotecas y GLIBC)
+          command: bash scripts/ci-audit-binary.sh target/release/qwen_tts << parameters.triple >>
+      - run:
+          name: --caps y --self-test
+          command: |
+            target/release/qwen_tts --caps
+            target/release/qwen_tts --self-test
+      - run:
+          name: Empaquetar (tar.gz) y guardar el binario suelto para la sala limpia
+          command: |
+            set -euo pipefail
+            source scripts/ci-common.sh
+            NAME="qwen-tts-engine-$(release_version)-<< parameters.triple >>"
+            rm -rf staging
+            mkdir -p "staging/$NAME" "dist/bin-<< parameters.triple >>"
+            cp target/release/qwen_tts LICENSE NOTICE THIRD-PARTY-LICENSES.md "staging/$NAME/"
+            tar -czf "dist/$NAME.tar.gz" -C staging "$NAME"
+            cp target/release/qwen_tts "dist/bin-<< parameters.triple >>/qwen_tts"
+            ls -l dist
+      - persist_to_workspace:
+          root: dist
+          paths:
+            - qwen-tts-engine-*.tar.gz
+            - link-map-*.txt
+            - bin-*
+
+  cleanroom_check:
+    description: Ejecuta --caps y --self-test del binario Linux del workspace, sin compilar nada
+    parameters:
+      triple:
+        type: string
+    steps:
+      - attach_workspace:
+          at: dist
+      - run:
+          name: --caps y --self-test en la imagen limpia
+          command: |
+            set -euo pipefail
+            cat /etc/os-release | head -n2
+            dist/bin-<< parameters.triple >>/qwen_tts --caps
+            dist/bin-<< parameters.triple >>/qwen_tts --self-test
 
 jobs:
   test-linux-x64:
@@ -330,12 +427,191 @@ jobs:
       - store_artifacts:
           path: kernels
 
+  release-linux-x64:
+    docker:
+      - image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae
+    resource_class: large
+    steps:
+      # openssh-clients lo necesita el checkout y la imagen no lo trae.
+      - run:
+          name: Instalar openssh-clients (para el checkout)
+          command: dnf install -y -q openssh-clients
+      - checkout
+      - check_release_tag
+      - build_own_openblas:
+          cache_key: openblas-0.3.34-dynarch-core2-manylinux-x64-v1
+      - install_rust_unix
+      - run:
+          name: Compilar qwen_tts (release)
+          command: cargo build --release -p qwen-app
+      - build_release_linux:
+          triple: x86_64-unknown-linux-gnu
+
+  release-linux-arm64:
+    docker:
+      - image: quay.io/pypa/manylinux_2_28_aarch64@sha256:abd1230aa9e4058a74b89d27cd14ba18c0db036d7bfe6e6f219a29ea63c24eb6
+    resource_class: arm.large
+    steps:
+      - run:
+          name: Instalar openssh-clients (para el checkout)
+          command: dnf install -y -q openssh-clients
+      - checkout
+      - check_release_tag
+      - build_own_openblas:
+          cache_key: openblas-0.3.34-dynarch-armv8-manylinux-arm64-v1
+      - install_rust_unix
+      - run:
+          name: Compilar qwen_tts (release)
+          command: cargo build --release -p qwen-app
+      - build_release_linux:
+          triple: aarch64-unknown-linux-gnu
+
+  release-macos-arm64:
+    macos:
+      xcode: "26.4.0"
+    resource_class: m4pro.medium
+    environment:
+      MACOSX_DEPLOYMENT_TARGET: "26.0"
+    steps:
+      - checkout
+      - check_release_tag
+      - install_rust_unix
+      - run:
+          name: Compilar qwen_tts (release)
+          command: cargo build --release -p qwen-app
+      - run:
+          name: Auditar el binario (minos y bibliotecas)
+          command: bash scripts/ci-audit-binary.sh target/release/qwen_tts aarch64-apple-darwin
+      - run:
+          name: --self-test
+          command: target/release/qwen_tts --self-test
+      - run:
+          name: Empaquetar (tar.gz)
+          command: |
+            set -euo pipefail
+            source scripts/ci-common.sh
+            NAME="qwen-tts-engine-$(release_version)-aarch64-apple-darwin"
+            rm -rf staging
+            mkdir -p "staging/$NAME" dist
+            cp target/release/qwen_tts LICENSE NOTICE THIRD-PARTY-LICENSES.md "staging/$NAME/"
+            tar -czf "dist/$NAME.tar.gz" -C staging "$NAME"
+            ls -l dist
+      - persist_to_workspace:
+          root: dist
+          paths:
+            - qwen-tts-engine-*.tar.gz
+
+  release-windows-x64:
+    executor:
+      name: win/server-2022
+      size: large
+    steps:
+      - prepare_windows:
+          check_release_tag: true
+      - run:
+          name: Mapa del enlace (reenlaza solo qwen-app)
+          shell: bash.exe
+          command: |
+            set -euo pipefail
+            export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
+            export OPENBLAS_LIB_DIR=C:/openblas/lib
+            mkdir -p dist
+            cargo rustc --release -p qwen-app --bin qwen_tts --target x86_64-pc-windows-gnu -- -C link-arg=-Wl,-Map="$PWD/dist/link-map-x86_64-pc-windows-gnu.txt"
+            ls -l dist
+      - run:
+          name: Auditar el binario (DLL importadas) y --self-test
+          shell: bash.exe
+          command: |
+            set -euo pipefail
+            export PATH="/c/msys64/ucrt64/bin:$HOME/.cargo/bin:$PATH"
+            BIN=target/x86_64-pc-windows-gnu/release/qwen_tts.exe
+            bash scripts/ci-audit-binary.sh "$BIN" x86_64-pc-windows-gnu
+            "$BIN" --self-test
+      - run:
+          name: Empaquetar (zip)
+          shell: bash.exe
+          command: |
+            set -euo pipefail
+            source scripts/ci-common.sh
+            NAME="qwen-tts-engine-$(release_version)-x86_64-pc-windows-gnu"
+            rm -rf staging
+            mkdir -p "staging/$NAME" dist
+            cp target/x86_64-pc-windows-gnu/release/qwen_tts.exe LICENSE NOTICE THIRD-PARTY-LICENSES.md "staging/$NAME/"
+            /c/Windows/System32/tar.exe -a -c -f "dist/$NAME.zip" -C staging "$NAME"
+            ls -l dist
+      - persist_to_workspace:
+          root: dist
+          paths:
+            - qwen-tts-engine-*.zip
+            - link-map-*.txt
+
+  cleanroom-almalinux8-x64:
+    docker:
+      - image: almalinux:8
+    resource_class: medium
+    steps:
+      - cleanroom_check:
+          triple: x86_64-unknown-linux-gnu
+
+  cleanroom-debian-x64:
+    docker:
+      - image: debian:stable-slim
+    resource_class: medium
+    steps:
+      - cleanroom_check:
+          triple: x86_64-unknown-linux-gnu
+
+  cleanroom-almalinux8-arm64:
+    docker:
+      - image: almalinux:8
+    resource_class: arm.medium
+    steps:
+      - cleanroom_check:
+          triple: aarch64-unknown-linux-gnu
+
+  cleanroom-debian-arm64:
+    docker:
+      - image: debian:stable-slim
+    resource_class: arm.medium
+    steps:
+      - cleanroom_check:
+          triple: aarch64-unknown-linux-gnu
+
+  release-assemble:
+    docker:
+      - image: cimg/base:current
+    resource_class: small
+    steps:
+      - checkout
+      - check_release_tag
+      - attach_workspace:
+          at: dist
+      - run:
+          name: Fuentes y SHA256SUMS
+          command: |
+            set -euo pipefail
+            source scripts/ci-common.sh
+            V=$(release_version)
+            mkdir -p release maps
+            git archive --format=tar.gz --prefix="qwen-tts-engine-$V/" -o "release/qwen-tts-engine-$V-src.tar.gz" HEAD
+            cp dist/qwen-tts-engine-*.tar.gz dist/qwen-tts-engine-*.zip release/
+            cp dist/link-map-*.txt maps/
+            # Los nombres van sin ruta para que `sha256sum -c SHA256SUMS` funcione en la carpeta de descarga.
+            (cd release && sha256sum qwen-tts-engine-* > SHA256SUMS && cat SHA256SUMS && ls -l)
+            test "$(ls release | wc -l)" -eq 6
+            ls -l maps
+      - store_artifacts:
+          path: release
+      - store_artifacts:
+          path: maps
+
 workflows:
   test:
     when:
       and:
         - not: << pipeline.parameters.measure >>
         - not: << pipeline.parameters.kernels >>
+        - not: << pipeline.parameters.release_dry_run >>
     jobs:
       - test-linux-x64
       - test-linux-arm64
@@ -353,3 +629,32 @@ workflows:
       - kernels-linux-arm64
       - kernels-macos-arm64
       - kernels-windows-x64
+  release-dry-run:
+    when: << pipeline.parameters.release_dry_run >>
+    jobs:
+      - release-linux-x64
+      - release-linux-arm64
+      - release-macos-arm64
+      - release-windows-x64
+      - cleanroom-almalinux8-x64:
+          requires:
+            - release-linux-x64
+      - cleanroom-debian-x64:
+          requires:
+            - release-linux-x64
+      - cleanroom-almalinux8-arm64:
+          requires:
+            - release-linux-arm64
+      - cleanroom-debian-arm64:
+          requires:
+            - release-linux-arm64
+      - release-assemble:
+          requires:
+            - release-linux-x64
+            - release-linux-arm64
+            - release-macos-arm64
+            - release-windows-x64
+            - cleanroom-almalinux8-x64
+            - cleanroom-debian-x64
+            - cleanroom-almalinux8-arm64
+            - cleanroom-debian-arm64
