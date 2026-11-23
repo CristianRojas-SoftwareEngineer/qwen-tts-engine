@@ -71,7 +71,7 @@ impl CpuCaps {
         }
         match kernels {
             "avx2" => {
-                let _ = writeln!(s, "  matvec + attn:    AVX2 (2 filas fusionadas, FMA)");
+                let _ = writeln!(s, "  matvec + attn:    AVX2 (2 filas fusionadas; INT8 y Q4_0 con 1 fila si `cols ≥ 2048`; FMA)");
                 let _ = writeln!(
                     s,
                     "  int8 dot:         AVX2 _mm256_maddubs_epi16 (enteros, despacho en tiempo de ejecución)"

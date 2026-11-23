@@ -178,7 +178,7 @@ impl ValidatedTtsRequest {
         let req_defaults = SynthesisRequest::default();
 
         // Sin valor, cada parámetro toma el de `SamplingParams::default()` o el de
-        // `SynthesisRequest::default()`; la temperatura queda en `None` (la resuelve el marcado).
+        // `SynthesisRequest::default()`; la temperatura queda en `None` (la resuelve `resolve_sampling` al preparar la petición).
         let temperature = extract_opt_in_range(obj, "temperature", &TEMPERATURE_RANGE)?;
 
         // top_k en [0, CODEC_VOCAB_SIZE]
@@ -268,11 +268,11 @@ mod tests {
         assert_eq!(neg_seed.seed, SeedChoice::Clock);
 
         // Sin `language` queda `None`; la voz o el defecto de la interfaz lo resuelven después.
-        let clone_ok = parse(r#"{"text":"Cloned.","chunk_frames":999}"#, true).unwrap();
-        assert_eq!(clone_ok.language_id, None);
-        assert_eq!(clone_ok.chunk_frames, 250);
-        let clone_min = parse(r#"{"text":"Cloned.","chunk_frames":0}"#, true).unwrap();
-        assert_eq!(clone_min.chunk_frames, 2);
+        let clamped_max = parse(r#"{"text":"Hola.","chunk_frames":999}"#, true).unwrap();
+        assert_eq!(clamped_max.language_id, None);
+        assert_eq!(clamped_max.chunk_frames, 250);
+        let clamped_min = parse(r#"{"text":"Hola.","chunk_frames":0}"#, true).unwrap();
+        assert_eq!(clamped_min.chunk_frames, 2);
     }
 
     #[test]

@@ -495,7 +495,7 @@ pub struct CpBuffers {
     pub dec_gate: AlignedBuf<f32>,
     pub dec_ffn_out: AlignedBuf<f32>,
     pub x1in: AlignedBuf<f32>,
-    // Scratch preasignado para prefill B=2
+    // Scratch de las pasadas de 2 posiciones del Code Predictor (`cp_step2`)
     pub p2_x2: AlignedBuf<f32>,
     pub p2_q2: AlignedBuf<f32>,
     pub p2_k2: AlignedBuf<f32>,

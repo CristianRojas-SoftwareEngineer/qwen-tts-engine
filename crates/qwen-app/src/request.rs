@@ -85,7 +85,7 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, Script) {
     (req, script)
 }
 
-/// Prepara la petición HTTP. `stream` es `true` en `/v1/tts/stream`.
+/// Prepara la petición HTTP.
 ///
 /// `chunk_frames` y `rate` ya llevan el valor efectivo de la ruta (la validación rechaza el
 /// campo que la ruta no admite). Idioma: `effective_language`.

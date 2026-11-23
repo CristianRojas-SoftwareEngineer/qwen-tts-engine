@@ -176,7 +176,7 @@ fn test_voice_file_extension_and_version_errors() {
 }
 
 #[test]
-fn test_markup_with_default_voice_texts() {
+fn test_markup_unknown_tag_and_pause() {
     // Un tag desconocido no es marcado: queda como texto y no activa el modo compose
     let plan = plan_script("Devo andare [xyz] Ciao.", MarkupMode::Auto);
     let Script::Plain(text) = &plan else {
@@ -184,7 +184,7 @@ fn test_markup_with_default_voice_texts() {
     };
     assert!(text.contains("[xyz]"));
 
-    // Pausas y muletillas siguen funcionando
+    // Una pausa con duración produce tramos (`Spans`) que incluyen la pausa de 0,5 s
     let plan = plan_script("Oh! [hmm] [pause:0.5] Great!", MarkupMode::Auto);
     let Script::Spans(spans) = &plan else {
         panic!("se esperaba Spans");
@@ -335,7 +335,7 @@ fn test_clone_from_default_voice_e2e() {
     assert!(n_spoken >= 2 && composed.len() > SAMPLE_RATE);
     let _ = encode_wav_bytes(&composed);
 
-    // La entrega en streaming de los tramos no aplica doble ganancia base
+    // En la entrega en streaming de los tramos no se devuelven muestras y el destino recibe audio
     let mut stream_sink = MemorySink::new(composed.len());
     let streamed = default_synth
         .synthesize(

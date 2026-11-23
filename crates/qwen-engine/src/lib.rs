@@ -6,7 +6,7 @@
 #![forbid(unsafe_code)]
 
 //! Motor de inferencia en CPU para **Qwen3-TTS 0.6B** (`Base`)
-//! con soporte de streaming progresivo, clonación de voz.
+//! con streaming progresivo y clonación de voz.
 
 pub mod audio;
 pub mod code_predictor;

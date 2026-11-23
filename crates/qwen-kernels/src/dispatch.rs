@@ -5,7 +5,6 @@
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 use crate::blas::FfiBlas;
 use crate::caps::CpuCaps;
@@ -586,7 +585,7 @@ impl KernelDispatch {
     /// Reparte las `rows` filas de `y` entre los hilos del pool en `PARALLEL_ROWS_CHUNKS_PER_THREAD`
     /// chunks por hilo que cada hilo toma de un contador compartido según queda libre.
     ///
-    /// Con la CPU ocupada, un hilo frenado por la carga ya no retrasa la barrera: los demás se
+    /// Con la CPU ocupada, un hilo frenado por la carga no retrasa la barrera: los demás se
     /// quedan con sus chunks pendientes. Los bordes de chunk son múltiplos de 64 filas y cada fila
     /// se calcula con el mismo kernel y el mismo orden de suma, así que el resultado no depende del
     /// reparto.
@@ -1292,8 +1291,8 @@ impl KernelDispatch {
 pub struct ComputeRuntime {
     pub caps: CpuCaps,
     pub dispatch: &'static KernelDispatch,
-    pub pool: Arc<ComputePool>,
-    pub sd_pool: Arc<ComputePool>,
+    pub pool: ComputePool,
+    pub sd_pool: ComputePool,
     pub blas: FfiBlas,
 }
 
@@ -1321,11 +1320,11 @@ impl ComputeRuntime {
             Some(cores) => {
                 let spin = spin_budget_for(nt, cores);
                 (
-                    Arc::new(ComputePool::with_spin_budget(nt, spin)),
-                    Arc::new(ComputePool::with_spin_budget(nt, spin)),
+                    ComputePool::with_spin_budget(nt, spin),
+                    ComputePool::with_spin_budget(nt, spin),
                 )
             }
-            None => (Arc::new(ComputePool::new(nt)), Arc::new(ComputePool::new(nt))),
+            None => (ComputePool::new(nt), ComputePool::new(nt)),
         };
         let blas = FfiBlas;
         blas.set_threads(nt);

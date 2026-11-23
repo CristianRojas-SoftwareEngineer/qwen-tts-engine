@@ -171,7 +171,7 @@ pub fn print_usage(prog: &str) {
     eprintln!("  --ref-audio <path>         WAV PCM mono de 16 bits a 24 kHz para clonar la voz");
     eprintln!("  --save-voice <path>        Guarda la voz (.qvoice)");
     eprintln!("  --load-voice <path>        Carga una voz (.qvoice; por defecto: la voz default integrada)");
-    eprintln!("  --list-voices <dir>        Lista los archivos .qvoice de un directorio");
+    eprintln!("  --list-voices <dir>        Lista las voces .qvoice de un directorio (o la de un archivo .qvoice)");
     eprintln!("  --compose-pause <s>        Pausa por defecto entre tramos hablados (por defecto: {DEFAULT_COMPOSE_PAUSE_S})");
     eprintln!("  --no-compose               Pasa el texto tal cual: los [tags] se leen como texto");
     eprintln!("  --serve <port>             Inicia el servidor HTTP en el puerto indicado");
@@ -513,14 +513,14 @@ mod tests {
     #[test]
     fn test_voice_flag_rules() {
         let r1 = "Error: --ref-audio y --load-voice no se pueden combinar: clona con --ref-audio o carga con --load-voice";
-        let r4 = "Error: --save-voice requiere --ref-audio";
+        let r2 = "Error: --save-voice requiere --ref-audio";
         assert_eq!(
             voice_flags_result(&["--ref-audio", "a.wav", "--load-voice", "v.qvoice"]),
             Err(r1.to_string())
         );
         assert_eq!(
             voice_flags_result(&["--save-voice", "v.qvoice"]),
-            Err(r4.to_string())
+            Err(r2.to_string())
         );
         // Orden: gana la primera regla que falle.
         assert_eq!(
@@ -537,7 +537,7 @@ mod tests {
         // Valen también con los modos de diagnóstico.
         assert_eq!(
             voice_flags_result(&["--caps", "--save-voice", "v.qvoice"]),
-            Err(r4.to_string())
+            Err(r2.to_string())
         );
         // Combinaciones válidas.
         assert_eq!(voice_flags_result(&["--ref-audio", "a.wav"]), Ok(()));
