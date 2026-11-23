@@ -14,8 +14,8 @@ use qwen_core::{
 use qwen_engine::{
     clone_voice, encode_wav_bytes, mel_spectrogram, AbortHandle,
     read_wav_24khz, trim_trailing_silence, write_wav, CloneOptions,
-    Delivery, LogLevel, MemorySink, Model06B, SessionScratch,
-    SynthesisRequest, Synthesizer, Voice, VoiceLoadOptions,
+    Delivery, MemorySink, Model06B, SessionScratch,
+    SynthesisRequest, Synthesizer, Voice,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -140,13 +140,10 @@ fn test_default_voice_is_embedded() {
 #[test]
 fn test_voice_file_extension_and_version_errors() {
     let dir = temp_dir("voice_errors");
-    let opts = VoiceLoadOptions {
-        log: LogLevel::Silent,
-    };
 
     // Una extensión distinta de .qvoice se rechaza antes de leer (ni siquiera existe el archivo)
     let bin = dir.join("voice.bin");
-    let err = Voice::load(&bin, &opts)
+    let err = Voice::load(&bin, true)
         .err()
         .unwrap()
         .to_string();
@@ -166,7 +163,7 @@ fn test_voice_file_extension_and_version_errors() {
     bytes.extend_from_slice(&old_version.to_le_bytes());
     bytes.extend_from_slice(&1024u32.to_le_bytes());
     fs::write(&other, bytes).unwrap();
-    let err = Voice::load(&other, &opts)
+    let err = Voice::load(&other, true)
         .err()
         .unwrap()
         .to_string();
@@ -226,7 +223,7 @@ fn test_clone_from_default_voice_e2e() {
             seed: DEFAULT_SEED,
             ..SamplingParams::default()
         },
-        log: LogLevel::Silent,
+        silent: true,
         ..Default::default()
     };
     let abort = AbortHandle::new();
@@ -254,7 +251,7 @@ fn test_clone_from_default_voice_e2e() {
         &model,
         &ref_wav,
         &CloneOptions {
-            log: LogLevel::Silent,
+            silent: true,
             ..Default::default()
         },
     )
@@ -269,10 +266,7 @@ fn test_clone_from_default_voice_e2e() {
     assert_eq!(xvec_file.lang_id, 0, "clonar sin -l no guarda idioma");
 
     // 4. Carga de la voz y síntesis de un texto corto
-    let load_opts = VoiceLoadOptions {
-        log: LogLevel::Silent,
-    };
-    let xvec_voice = Voice::load(&xvec_path, &load_opts).unwrap();
+    let xvec_voice = Voice::load(&xvec_path, true).unwrap();
     assert_eq!(xvec_voice.name, "xvec", "la voz se llama como su archivo");
     assert_eq!(xvec_voice.language_id, None);
 
@@ -321,7 +315,7 @@ fn test_clone_from_default_voice_e2e() {
     let compose_req = SynthesisRequest {
         language_id: 2070,
         sampling,
-        log: LogLevel::Silent,
+        silent: true,
         ..Default::default()
     };
     let n_spoken = spans

@@ -6,7 +6,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-qwen-kernels = { path = "../qwen-kernels" }
 memmap2 = "0.9"
 safetensors = "0.4"
 serde = { version = "1", features = ["derive"] }

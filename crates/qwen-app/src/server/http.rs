@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use qwen_core::config::{effective_language, language_name, SAMPLE_RATE};
 use qwen_core::{SamplingParams, Script};
 use qwen_engine::{
-    encode_wav_bytes, AbortHandle, Delivery, EdgeRampSink, EngineError, LogLevel, MemorySink,
+    encode_wav_bytes, AbortHandle, Delivery, EdgeRampSink, EngineError, MemorySink,
     PcmWrite, SessionScratch, SynthesisOutput, SynthesisRequest, SynthesisTiming, Synthesizer,
     Voice,
 };
@@ -339,7 +339,7 @@ pub fn warm_up(synth: &Synthesizer<'_>, scratch: &mut SessionScratch) {
             ..SamplingParams::default()
         },
         max_frames: WARM_UP_FRAMES,
-        log: LogLevel::Silent,
+        silent: true,
         ..SynthesisRequest::default()
     };
     let abort = AbortHandle::new();
@@ -411,6 +411,14 @@ fn plain_timing(script: &Script, out: &SynthesisOutput) -> Option<SynthesisTimin
     matches!(script, Script::Plain(_)).then(|| out.timing.clone())
 }
 
+/// Log de una síntesis cancelada porque el cliente se desconectó.
+fn log_cancelled(label: &str, t0: Instant) {
+    eprintln!(
+        "[HTTP] {label} cancelado: el cliente se desconectó tras {:.1} s",
+        t0.elapsed().as_secs_f64()
+    );
+}
+
 fn handle_tts_full(
     ctx: &ServerContext,
     scratch: &mut SessionScratch,
@@ -439,19 +447,9 @@ fn handle_tts_full(
 
     let samples = match res.map(|o| o.samples.unwrap_or_default()) {
         Ok(s) if !s.is_empty() => s,
-        Err(EngineError::Aborted) => {
-            eprintln!(
-                "[HTTP] TTS cancelado: el cliente se desconectó tras {:.1} s",
-                t0.elapsed().as_secs_f64()
-            );
-            return;
-        }
-        Err(_) | Ok(_) => {
-            if socket_disconnected(stream) {
-                eprintln!(
-                    "[HTTP] TTS cancelado: el cliente se desconectó tras {:.1} s",
-                    t0.elapsed().as_secs_f64()
-                );
+        res => {
+            if matches!(res, Err(EngineError::Aborted)) || socket_disconnected(stream) {
+                log_cancelled("TTS", t0);
             } else {
                 send_error(stream, 500, "la generación falló");
             }
@@ -506,10 +504,7 @@ fn handle_tts_stream(
             || matches!(gen_res, Err(EngineError::Aborted))
             || matches!(&gen_res, Err(EngineError::Io(e)) if e.kind() == std::io::ErrorKind::ConnectionAborted)
         {
-            eprintln!(
-                "[HTTP] TTS stream cancelado: el cliente se desconectó tras {:.1} s",
-                t0.elapsed().as_secs_f64()
-            );
+            log_cancelled("TTS stream", t0);
         } else {
             eprintln!("[HTTP] TTS stream: la generación falló; la respuesta queda sin cierre");
         }

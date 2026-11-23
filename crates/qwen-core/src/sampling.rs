@@ -60,7 +60,7 @@ impl LcgRng {
 
     /// Muestra uniforme determinista mediante LCG en `[0.0, 1.0)`.
     #[inline]
-    pub fn next_uniform(&mut self) -> f32 {
+    fn next_uniform(&mut self) -> f32 {
         self.seed = self.seed.wrapping_mul(1103515245).wrapping_add(12345);
         ((self.seed >> 16) & 0x7FFF) as f32 / 32768.0f32
     }

@@ -14,7 +14,6 @@ pub mod voice_cmd;
 use std::io::Read;
 use std::path::Path;
 use std::process;
-use std::sync::Arc;
 use std::thread;
 
 use qwen_core::config::lookup_language;
@@ -83,7 +82,7 @@ pub fn run_with_model(cfg: CliArgs, physical_cores: usize) -> Result<i32, String
         eprintln!("Salida: {}", cfg.output);
     }
 
-    let runtime = Arc::new(ComputeRuntime::for_cores(cfg.threads, physical_cores));
+    let runtime = ComputeRuntime::for_cores(cfg.threads, physical_cores);
     let model = Model06B::load(Path::new(&model_dir_str), &runtime, cfg.silent)
         .map_err(|e| e.to_string())?;
 

@@ -96,7 +96,7 @@ fn synth_span(
     volume: f32,
     idx: usize,
 ) -> Result<Vec<f32>, EngineError> {
-    if !job.req.log.is_silent() {
+    if !job.req.silent {
         eprintln!("Tramo {idx}: \"{text}\"");
     }
     let mut span_req = job.req.clone();
@@ -120,14 +120,14 @@ fn synth_span(
 }
 
 /// Compone los tramos (`spans`) y los entrega a `dest` (que se cierra con `finish`). Devuelve el número de
-/// tramos hablados y el de muestras entregadas.
+/// muestras entregadas.
 pub(crate) fn compose_spans(
     job: &Run<'_>,
     scratch: &mut SessionScratch,
     spans: &[SpanSpec],
     dest: &mut (dyn AudioSink + Send),
-) -> Result<(usize, usize), EngineError> {
-    let silent = job.req.log.is_silent();
+) -> Result<usize, EngineError> {
+    let silent = job.req.silent;
     let mut out = SeamWriter::new(dest);
     let mut spoken = 0usize;
     let mut last_spoken = false;
@@ -189,5 +189,5 @@ pub(crate) fn compose_spans(
             total as f64 / SAMPLE_RATE as f64
         );
     }
-    Ok((spoken, total))
+    Ok(total)
 }

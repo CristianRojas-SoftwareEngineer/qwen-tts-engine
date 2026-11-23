@@ -29,10 +29,10 @@ pub use audio::{
 pub use error::EngineError;
 pub use model::{AbortHandle, Model06B, SessionScratch, SynthesisTiming};
 pub use request::{
-    LogLevel, SynthesisRequest, DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES,
+    SynthesisRequest, DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES,
     MAX_CHUNK_FRAMES, MIN_CHUNK_FRAMES,
 };
 pub use speech_decoder::speech_decoder_decode_streaming;
 pub use synth::{Delivery, SynthesisOutput, Synthesizer};
-pub use voice::{clone_voice, ensure_qvoice_path, CloneOptions, Voice, VoiceLoadOptions};
+pub use voice::{clone_voice, ensure_qvoice_path, CloneOptions, Voice};
 pub use voice_clone::mel_spectrogram;

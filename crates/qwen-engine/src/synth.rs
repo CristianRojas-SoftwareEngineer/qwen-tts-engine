@@ -93,7 +93,7 @@ impl Synthesizer<'_> {
             }
             (Script::Spans(spans), Delivery::Buffer) => {
                 let mut sink = MemorySink::new(0);
-                let (_, total) = compose_spans(&job, scratch, spans, &mut sink)?;
+                let total = compose_spans(&job, scratch, spans, &mut sink)?;
                 Ok(SynthesisOutput {
                     samples: Some(sink.samples),
                     timing: SynthesisTiming {
@@ -103,7 +103,7 @@ impl Synthesizer<'_> {
                 })
             }
             (Script::Spans(spans), Delivery::Stream(sink)) => {
-                let (_, total) = compose_spans(&job, scratch, spans, sink)?;
+                let total = compose_spans(&job, scratch, spans, sink)?;
                 Ok(SynthesisOutput {
                     samples: None,
                     timing: SynthesisTiming {

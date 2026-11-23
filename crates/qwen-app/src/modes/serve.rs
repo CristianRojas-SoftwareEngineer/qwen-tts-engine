@@ -5,8 +5,6 @@
 
 //! Modo `--serve`: servidor HTTP de un solo trabajador.
 
-use std::sync::Arc;
-
 use qwen_engine::{Model06B, Voice};
 use qwen_kernels::ComputeRuntime;
 
@@ -15,7 +13,7 @@ use crate::server::{serve, ServerContext};
 
 pub fn run(
     cfg: &CliArgs,
-    runtime: Arc<ComputeRuntime>,
+    runtime: ComputeRuntime,
     model: Model06B,
     voice: Voice,
     port: u16,
@@ -23,8 +21,8 @@ pub fn run(
     serve(
         ServerContext {
             runtime,
-            model: Arc::new(model),
-            voice: Arc::new(voice),
+            model,
+            voice,
         },
         cfg.serve_host,
         port,

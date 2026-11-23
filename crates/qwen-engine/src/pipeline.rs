@@ -212,7 +212,7 @@ pub(crate) fn generate_to_sink(
     let prefill_len = prompt.len;
     let text_content_len = prompt.text_len;
     let n_trailing = prompt.trailing_text_delta.len() / HIDDEN_SIZE;
-    let silent = req.log.is_silent();
+    let silent = req.silent;
     let sp = &req.sampling;
 
     if !silent {
@@ -222,7 +222,7 @@ pub(crate) fn generate_to_sink(
     let nt = runtime.pool.n_threads();
     runtime.blas.set_threads(nt);
 
-    let prefill_ms = prefill(runtime, model, scratch, &prompt, req.log)?;
+    let prefill_ms = prefill(runtime, model, scratch, &prompt, silent)?;
     let d = runtime.dispatch;
 
     let mut max_frames = req.max_frames;

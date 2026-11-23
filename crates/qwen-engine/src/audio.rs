@@ -12,7 +12,7 @@ use qwen_core::config::SAMPLE_RATE;
 use crate::error::EngineError;
 
 #[inline]
-pub fn f32_to_s16le_clamped(s: f32) -> i16 {
+fn f32_to_s16le_clamped(s: f32) -> i16 {
     let clamped = if s.is_nan() { 0.0 } else { s.clamp(-1.0, 1.0) };
     (clamped * 32767.0f32) as i16
 }

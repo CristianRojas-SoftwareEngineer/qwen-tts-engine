@@ -11,7 +11,6 @@ use qwen_kernels::{AlignedBuf, ComputeRuntime, Transpose};
 
 use crate::error::EngineError;
 use crate::model::{int8_qkv, Model06B, SessionScratch};
-use crate::request::LogLevel;
 
 /// Elementos F32 del bloque de pesos convertidos del *prefill* (4 MiB).
 ///
@@ -97,12 +96,12 @@ pub fn talker_prefill(
     scratch: &mut SessionScratch,
     input_embeds: &[f32],
     seq_len: usize,
-    log: LogLevel,
+    silent: bool,
 ) -> Result<(), EngineError> {
     let eps = RMS_NORM_EPS;
     let d = runtime.dispatch;
 
-    if !log.is_silent() {
+    if !silent {
         eprintln!("  Prefill: {} tokens, hidden={}", seq_len, HIDDEN_SIZE);
     }
     if seq_len > model.talker.rope_cos.len() / (HEAD_DIM / 2) {
@@ -251,7 +250,7 @@ pub fn talker_prefill(
     tb.dec_x[..HIDDEN_SIZE]
         .copy_from_slice(&residual[(seq_len - 1) * HIDDEN_SIZE..seq_len * HIDDEN_SIZE]);
 
-    if !log.is_silent() {
+    if !silent {
         eprintln!("  Prefill completo ({seq_len} tokens en la caché KV)");
     }
     Ok(())

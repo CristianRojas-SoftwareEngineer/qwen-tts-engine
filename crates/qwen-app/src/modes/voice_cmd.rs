@@ -12,12 +12,11 @@ use std::path::Path;
 use qwen_core::config::language_name;
 use qwen_core::QVoiceFile;
 use qwen_engine::{
-    clone_voice, ensure_qvoice_path, CloneOptions, Model06B, Voice, VoiceLoadOptions,
+    clone_voice, ensure_qvoice_path, CloneOptions, Model06B, Voice,
 };
 use qwen_kernels::ComputeRuntime;
 
 use crate::cli::CliArgs;
-use crate::request;
 
 /// Imprime una línea por voz: archivo, idioma y tamaño. Un archivo que el lector
 /// rechaza se muestra con `no compatible: <mensaje del lector>`.
@@ -106,7 +105,7 @@ pub fn resolve_voice(
         let name = cloned_voice_name(ref_audio_path, cfg.save_voice.as_deref())?;
         let clone_opts = CloneOptions {
             language_id: cli_language_id,
-            log: request::log_level(cfg),
+            silent: cfg.silent,
         };
         let qv = clone_voice(runtime, model, Path::new(ref_audio_path), &clone_opts)
             .map_err(|e| e.to_string())?;
@@ -119,10 +118,7 @@ pub fn resolve_voice(
         }
         Voice::from_qvoice(qv, name)
     } else if let Some(ref lv_path) = cfg.load_voice {
-        let lv_opts = VoiceLoadOptions {
-            log: request::log_level(cfg),
-        };
-        let v = Voice::load(Path::new(lv_path), &lv_opts).map_err(|e| e.to_string())?;
+        let v = Voice::load(Path::new(lv_path), cfg.silent).map_err(|e| e.to_string())?;
         if let Some(vl_id) = v.language_id {
             let vl_name = language_name(vl_id).unwrap_or("");
             match cli_language_id {

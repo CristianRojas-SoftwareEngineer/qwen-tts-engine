@@ -13,7 +13,6 @@ use qwen_kernels::ComputeRuntime;
 
 use crate::error::EngineError;
 use crate::model::Model06B;
-use crate::request::LogLevel;
 use crate::voice_clone::{load_ref_audio, mel_spectrogram, speaker_encoder_forward};
 
 /// x-vector de la voz `default` incorporada (1024 `f32` little-endian).
@@ -33,17 +32,11 @@ pub struct Voice {
     pub xvector: Vec<f32>,
 }
 
-/// Opciones de carga de un perfil `.qvoice`.
-#[derive(Debug, Clone, Default)]
-pub struct VoiceLoadOptions {
-    pub log: LogLevel,
-}
-
 /// Opciones para clonar una voz desde un audio de referencia.
 #[derive(Debug, Clone, Default)]
 pub struct CloneOptions {
     pub language_id: Option<i32>,
-    pub log: LogLevel,
+    pub silent: bool,
 }
 
 /// Error si `path` no tiene extensión `.qvoice`.
@@ -77,7 +70,7 @@ impl Voice {
     }
 
     /// Carga un perfil `.qvoice` v6. La voz se llama como el archivo (sin extensión).
-    pub fn load(path: &Path, opts: &VoiceLoadOptions) -> Result<Self, EngineError> {
+    pub fn load(path: &Path, silent: bool) -> Result<Self, EngineError> {
         ensure_qvoice_path(path)?;
         let qv = QVoiceFile::read_from_file(path)?;
         let name = path
@@ -91,7 +84,7 @@ impl Voice {
             })?
             .to_string();
         let voice = Self::from_qvoice(qv, name);
-        if !opts.log.is_silent() {
+        if !silent {
             eprintln!(
                 "Clonación de voz: .qvoice v6 cargado desde {}",
                 path.display()
@@ -127,9 +120,9 @@ pub fn clone_voice(
     ref_wav: &Path,
     opts: &CloneOptions,
 ) -> Result<QVoiceFile, EngineError> {
-    let audio = load_ref_audio(ref_wav, opts.log.is_silent())?;
+    let audio = load_ref_audio(ref_wav, opts.silent)?;
     let (mel, n_frames) = mel_spectrogram(&audio)?;
-    if !opts.log.is_silent() {
+    if !opts.silent {
         eprintln!("Espectrograma mel: {n_frames} frames x {MEL_DIM} mels");
     }
     let speaker_embedding =

@@ -327,7 +327,7 @@ pub struct Model06B {
     pub talker: TalkerWeights,
     pub cp: CodePredictorWeights,
     pub decoder: SpeechDecoderWeights,
-    pub speaker_encoder: Arc<SpeakerEncoderWeights>,
+    pub speaker_encoder: SpeakerEncoderWeights,
     pub cached_tts_pad_embed: AlignedBuf<f32>,
     pub cached_tts_bos_embed: AlignedBuf<f32>,
     pub cached_tts_eos_embed: AlignedBuf<f32>,
@@ -1007,7 +1007,7 @@ impl Model06B {
         let talker = Self::load_talker(&main_store, silent)?;
         let cp = Self::load_cp(&main_store, silent)?;
         let decoder = Self::load_decoder(&speech_store, silent)?;
-        let speaker_encoder = Arc::new(SpeakerEncoderWeights::load(&main_store, silent)?);
+        let speaker_encoder = SpeakerEncoderWeights::load(&main_store, silent)?;
 
         let (cached_tts_pad_embed, cached_tts_bos_embed, cached_tts_eos_embed) =
             compute_special_text_embeds(runtime, &talker);

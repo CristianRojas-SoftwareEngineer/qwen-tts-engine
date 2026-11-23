@@ -9,16 +9,15 @@ pub mod http;
 pub mod validation;
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-use std::sync::Arc;
 
 use qwen_engine::{Model06B, SessionScratch, Synthesizer, Voice};
 use qwen_kernels::ComputeRuntime;
 
 /// Contexto fijo del servidor: runtime, modelo y la voz cargada.
 pub struct ServerContext {
-    pub runtime: Arc<ComputeRuntime>,
-    pub model: Arc<Model06B>,
-    pub voice: Arc<Voice>,
+    pub runtime: ComputeRuntime,
+    pub model: Model06B,
+    pub voice: Voice,
 }
 
 impl ServerContext {

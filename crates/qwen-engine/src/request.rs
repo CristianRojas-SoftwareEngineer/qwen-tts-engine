@@ -19,24 +19,6 @@ pub const MAX_CHUNK_FRAMES: usize = 250;
 /// Pausa por defecto entre tramos hablados de una composición, en segundos.
 pub const DEFAULT_COMPOSE_PAUSE_S: f32 = 0.12;
 
-/// Nivel de log por `stderr`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LogLevel {
-    /// Sin log.
-    Silent,
-    /// Log normal.
-    #[default]
-    Normal,
-}
-
-impl LogLevel {
-    /// `true` si no debe escribirse nada por `stderr`.
-    #[inline]
-    pub fn is_silent(self) -> bool {
-        self == LogLevel::Silent
-    }
-}
-
 /// Parámetros de muestreo, audio y log de una síntesis.
 #[derive(Debug, Clone)]
 pub struct SynthesisRequest {
@@ -51,7 +33,8 @@ pub struct SynthesisRequest {
     pub rate: f32,
     /// Pausa entre tramos hablados de una composición, en segundos.
     pub compose_pause_s: f32,
-    pub log: LogLevel,
+    /// `true`: sin log por `stderr`.
+    pub silent: bool,
 }
 
 impl Default for SynthesisRequest {
@@ -64,7 +47,7 @@ impl Default for SynthesisRequest {
             volume: 1.0,
             rate: 1.0,
             compose_pause_s: DEFAULT_COMPOSE_PAUSE_S,
-            log: LogLevel::Normal,
+            silent: false,
         }
     }
 }

@@ -15,7 +15,7 @@ use qwen_core::{
     plan_script, resolve_sampling, MarkupMode, SamplingParams, Script, SeedChoice,
 };
 use qwen_engine::{
-    LogLevel, SynthesisRequest, Voice, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES,
+    SynthesisRequest, Voice, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES,
     MAX_CHUNK_FRAMES, MIN_CHUNK_FRAMES,
 };
 
@@ -28,15 +28,6 @@ pub const TOP_P_RANGE: RangeInclusive<f32> = 0.0..=1.0;
 pub const REP_PENALTY_RANGE: RangeInclusive<f32> = 0.5..=2.0;
 pub const VOLUME_RANGE: RangeInclusive<f32> = 0.0..=10.0;
 pub const RATE_RANGE: RangeInclusive<f32> = 0.25..=4.0;
-
-/// Nivel de log de la CLI: `Silent` con `--silent`; si no, `Normal`.
-pub fn log_level(cli: &CliArgs) -> LogLevel {
-    if cli.silent {
-        LogLevel::Silent
-    } else {
-        LogLevel::Normal
-    }
-}
 
 /// Prepara la petición de la CLI. El idioma de `-l` ya fue validado antes de cargar el modelo.
 ///
@@ -89,7 +80,7 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, Script) {
         volume: cli.volume,
         rate: cli.rate,
         compose_pause_s: cli.compose_pause,
-        log: log_level(cli),
+        silent: cli.silent,
     };
     (req, script)
 }
@@ -117,7 +108,7 @@ pub fn from_http(vreq: &ValidatedTtsRequest, voice: &Voice) -> (SynthesisRequest
         volume: vreq.volume,
         rate: vreq.rate,
         compose_pause_s: DEFAULT_COMPOSE_PAUSE_S,
-        log: LogLevel::Silent,
+        silent: true,
     };
     (req, script)
 }
@@ -160,7 +151,7 @@ mod tests {
         assert_eq!(stream.chunk_frames, 4);
         assert_eq!(stream.rate, 1.0);
         assert_eq!(stream.max_frames, DEFAULT_MAX_FRAMES);
-        assert!(stream.log == LogLevel::Silent);
+        assert!(stream.silent);
     }
 
     #[test]

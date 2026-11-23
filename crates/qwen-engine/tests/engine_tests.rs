@@ -11,7 +11,7 @@ use qwen_core::config::{
 use qwen_engine::model::{DecoderWorkspace, SdStreamState};
 use qwen_engine::{
     encode_wav_bytes, speech_decoder_decode_streaming,
-    AbortHandle, Delivery, EngineError, LogLevel, MemorySink, Model06B,
+    AbortHandle, Delivery, EngineError, MemorySink, Model06B,
     SessionScratch, SynthesisRequest, Synthesizer, Voice,
 };
 use qwen_core::Script;
@@ -48,7 +48,7 @@ fn test_e2e_determinism_and_abort() {
 
     let req = SynthesisRequest {
         language_id: lang,
-        log: LogLevel::Silent,
+        silent: true,
         ..Default::default()
     };
     assert_eq!(req.sampling.temperature, DEFAULT_TEMPERATURE);

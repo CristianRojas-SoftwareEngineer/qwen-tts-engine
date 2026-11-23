@@ -18,7 +18,6 @@ use crate::error::EngineError;
 use crate::model::{
     embed_one_text_token_compute, lookup_codec_embed, Model06B, SessionScratch, ROPE_MAX_POS,
 };
-use crate::request::LogLevel;
 use crate::talker::talker_prefill;
 use crate::voice::Voice;
 
@@ -208,13 +207,13 @@ pub(crate) fn prefill(
     model: &Model06B,
     scratch: &mut SessionScratch,
     prompt: &Prompt,
-    log: LogLevel,
+    silent: bool,
 ) -> Result<f64, EngineError> {
     scratch.talker_kv.len = 0;
     let t_pref = Instant::now();
-    talker_prefill(runtime, model, scratch, &prompt.embeds, prompt.len, log)?;
+    talker_prefill(runtime, model, scratch, &prompt.embeds, prompt.len, silent)?;
     let prefill_ms = t_pref.elapsed().as_secs_f64() * 1000.0;
-    if !log.is_silent() {
+    if !silent {
         eprintln!("  Prefill: {:.0} ms ({} tokens)", prefill_ms, prompt.len);
     }
 

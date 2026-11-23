@@ -14,8 +14,7 @@ use qwen_core::config::{DEFAULT_SEED, ENC_DIM};
 use qwen_core::{plan_script, MarkupMode, QVoiceFile, SamplingParams, Script};
 use qwen_engine::{
     clone_voice, encode_wav_bytes, write_wav, AbortHandle, CloneOptions, Delivery, EdgeRampSink,
-    LogLevel, Model06B, PcmWrite, SessionScratch, SynthesisRequest, Synthesizer, Voice,
-    VoiceLoadOptions,
+    Model06B, PcmWrite, SessionScratch, SynthesisRequest, Synthesizer, Voice,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -103,10 +102,7 @@ fn test_voice_load_on_construction() {
     let no_lang_path = dir.join("sin_idioma.qvoice");
     no_lang_qv.write_to_file(&no_lang_path).unwrap();
 
-    let opts = VoiceLoadOptions {
-        log: LogLevel::Silent,
-    };
-    let with_lang = Voice::load(&lang_path, &opts).unwrap();
+    let with_lang = Voice::load(&lang_path, true).unwrap();
     assert_eq!(
         with_lang.name, "con_idioma",
         "la voz se llama como su archivo"
@@ -114,7 +110,7 @@ fn test_voice_load_on_construction() {
     assert_eq!(with_lang.language_id, Some(2050));
     assert_eq!(with_lang.xvector, lang_qv.speaker_embedding);
 
-    let no_lang = Voice::load(&no_lang_path, &opts).unwrap();
+    let no_lang = Voice::load(&no_lang_path, true).unwrap();
     assert_eq!(
         no_lang.name, "sin_idioma",
         "la voz se llama como su archivo"
@@ -123,7 +119,7 @@ fn test_voice_load_on_construction() {
     assert_eq!(no_lang.xvector, no_lang_qv.speaker_embedding);
 
     // Sin `.qvoice` en la ruta: error
-    assert!(Voice::load(&dir.join("voz.bin"), &opts).is_err());
+    assert!(Voice::load(&dir.join("voz.bin"), true).is_err());
 }
 
 #[test]
@@ -147,7 +143,7 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         },
         max_frames: 120,
         volume: 0.7,
-        log: LogLevel::Silent,
+        silent: true,
         ..Default::default()
     };
 
@@ -183,7 +179,7 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         &ref_wav,
         &CloneOptions {
             language_id: None,
-            log: LogLevel::Silent,
+            silent: true,
         },
     )
     .unwrap();
@@ -202,7 +198,7 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         &ref_wav,
         &CloneOptions {
             language_id: Some(2050),
-            log: LogLevel::Silent,
+            silent: true,
         },
     )
     .unwrap();
@@ -218,9 +214,7 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
     // Buffer frente a Stream: mismos bytes PCM en texto plano, con voz clonada y marcado
     let cloned_voice = Voice::load(
         &qv_path,
-        &VoiceLoadOptions {
-            log: LogLevel::Silent,
-        },
+        true,
     )
     .unwrap();
     let marked = plan_script("Hola. [pause:0.3] Adiós.", MarkupMode::Auto);

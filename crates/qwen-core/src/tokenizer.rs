@@ -253,15 +253,13 @@ pub struct BpeTokenizer {
 
 impl BpeTokenizer {
     pub fn load_from_dir(dir: &Path) -> Result<Self, CoreError> {
-        Self::load_files(&dir.join("vocab.json"), &dir.join("merges.txt"))
-    }
-
-    pub fn load_files(vocab_path: &Path, merges_path: &Path) -> Result<Self, CoreError> {
-        let vocab_str = std::fs::read_to_string(vocab_path).map_err(|e| {
+        let vocab_path = dir.join("vocab.json");
+        let merges_path = dir.join("merges.txt");
+        let vocab_str = std::fs::read_to_string(&vocab_path).map_err(|e| {
             CoreError::Tokenizer(format!("No se puede leer {}: {e}", vocab_path.display()))
         })?;
         let vocab: HashMap<String, i32> = serde_json::from_str(&vocab_str)?;
-        let merges_str = std::fs::read_to_string(merges_path).map_err(|e| {
+        let merges_str = std::fs::read_to_string(&merges_path).map_err(|e| {
             CoreError::Tokenizer(format!("No se puede leer {}: {e}", merges_path.display()))
         })?;
         let mut merges = HashMap::new();
@@ -287,12 +285,8 @@ impl BpeTokenizer {
     }
 
     pub fn encode(&self, text: &str) -> Vec<i32> {
-        self.encode_bytes(text.as_bytes())
-    }
-
-    pub fn encode_bytes(&self, bytes: &[u8]) -> Vec<i32> {
         let tables = byte_tables();
-        let chunks = pre_tokenize(bytes);
+        let chunks = pre_tokenize(text.as_bytes());
         let mut ids = Vec::with_capacity(chunks.len() * 2 + 8);
         let mut merge_key = String::with_capacity(64);
 
