@@ -57,7 +57,7 @@ Decisiones de implementación derivadas: `SpeechDecoderWeights.codebooks` deja d
 
 ## Consecuencias
 
-- Unos 185 MiB más de RAM (calculado; la medida se añade en la sección «Medición»).
+- Unos 185 MiB más de RAM según el cálculo; medido, unos 174 MiB (sección «Medición»).
 - `.qvoice` v6: las voces anteriores se clonan de nuevo.
 - No hay clonación con transcripción: desaparecen `--ref-text` y `--xvector-only`, y el codificador de voz.
 - El tope de una síntesis que no termina es `min(DEFAULT_MAX_FRAMES, ROPE_MAX_POS − prefill_len)`, y el prompt solo se rechaza si `prefill_len + n_tokens_de_texto > ROPE_MAX_POS`.
@@ -86,4 +86,18 @@ Cifras de las decisiones:
 
 ### Medición
 
-_Pendiente: la completa la medición de la Fase 4 (TTFA, RTF, tiempo de carga y pico de memoria, frente al motor anterior)._
+Ryzen 7 5825U, Windows, `-j 4 --seed 4 -l Spanish`, sin otras cargas, una síntesis a la vez y en orden intercalado. Se dan la mediana y el rango [mín, máx] de 3 síntesis por celda.
+
+| Frase | Motor | RTF | TTFA (ms) | Carga del modelo (ms) | Pico de memoria (MiB) |
+|---|---|---|---|---|---|
+| Corta | anterior | 0,65 [0,62, 0,66] | 495 [475, 531] | 4581 [4428, 4619] | 2147 |
+| Corta | este ADR | 0,71 [0,68, 0,74] | 385 [381, 395] | 2297 [2293, 2343] | 2323 |
+| Larga | anterior | 0,65 [0,64, 0,65] | 657 [652, 663] | 4388 [4365, 4395] | 2199 |
+| Larga | este ADR | 0,67 [0,67, 0,72] | 430 [420, 442] | 2302 [2273, 2350] | 2371 |
+
+- **TTFA:** baja entre un 22 % y un 35 %, porque el prefill pasa a 10 posiciones.
+- **Carga:** baja a la mitad. Ya no se carga el codificador de voz ni se cuantiza a `Q4_0` el Talker.
+- **Memoria:** sube unos 174 MiB. Coincide con los ~185 MiB calculados para el Talker en `INT8`.
+- **RTF:** el paso del Talker pasa de unos 13 a unos 16 ms por frame (`INT8` frente a `Q4_0`), y el RTF sube un poco en la frase larga.
+  - En la frase corta el audio es otro (3,28 s frente a 4,64 s), así que su RTF no se compara directamente.
+  - Con 6 repeticiones intercaladas por binario, el motor de este ADR y la configuración experimental equivalente dan el mismo tiempo en la frase larga: 10,1 s frente a 10,05 s de mediana, con rangos solapados.
