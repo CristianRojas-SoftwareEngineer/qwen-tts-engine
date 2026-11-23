@@ -9,7 +9,8 @@ use std::sync::Arc;
 use qwen_kernels::aligned::AlignedBuf;
 use qwen_kernels::blas::Transpose;
 use qwen_kernels::quant::{
-    f16_to_f32, f32_to_bf16_round, f32_to_f16, quant_shape_check,
+    f16_to_f32, f32_to_bf16_round, f32_to_f16, quant_shape_check, quantize_bf16_to_int8,
+    quantize_gate_up_int8,
 };
 use qwen_kernels::selftest::run_kernel_selftest;
 use qwen_kernels::{ComputePool, ComputeRuntime};
@@ -395,4 +396,31 @@ fn test_spin_budget_for_cores() {
     assert_eq!(spin_budget_for(4, 6), DEFAULT_SPIN_BUDGET);
     assert_eq!(spin_budget_for(4, 8), DEFAULT_SPIN_BUDGET);
     assert_eq!(spin_budget_for(1, 0), 0, "cero núcleos cuenta como uno");
+}
+
+#[test]
+fn test_quantize_gate_up_int8_matches_interleaved() {
+    let (rows, cols) = (64usize, 128usize);
+    let mut gate: Vec<u16> = (0..rows * cols)
+        .map(|i| f32_to_bf16_round(((i * 7919 % 211) as f32 - 105.0) * 0.002))
+        .collect();
+    let up: Vec<u16> = (0..rows * cols)
+        .map(|i| f32_to_bf16_round(((i * 7907 % 197) as f32 - 98.0) * 0.002))
+        .collect();
+    // Fila 5 de `gate` a cero para cubrir la escala 0.
+    gate[5 * cols..6 * cols].fill(0);
+
+    let mut interleaved = vec![0u16; 2 * rows * cols];
+    for r in 0..rows {
+        interleaved[2 * r * cols..(2 * r + 1) * cols].copy_from_slice(&gate[r * cols..(r + 1) * cols]);
+        interleaved[(2 * r + 1) * cols..(2 * r + 2) * cols]
+            .copy_from_slice(&up[r * cols..(r + 1) * cols]);
+    }
+    let (want_data, want_scale) = quantize_bf16_to_int8(&interleaved, 2 * rows, cols);
+    let (got_data, got_scale) = quantize_gate_up_int8(&gate, &up, rows, cols);
+
+    assert_eq!(&got_data[..], &want_data[..], "datos INT8 distintos");
+    let got_bits: Vec<u32> = got_scale.iter().map(|s| s.to_bits()).collect();
+    let want_bits: Vec<u32> = want_scale.iter().map(|s| s.to_bits()).collect();
+    assert_eq!(got_bits, want_bits, "escalas distintas");
 }

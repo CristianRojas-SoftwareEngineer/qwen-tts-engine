@@ -5,7 +5,7 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::speech_decoder::SD_TILE_FROM_BLOCK;
@@ -21,9 +21,10 @@ use qwen_core::{
     validate_model_config, Bf16Ref, BpeTokenizer, F32Ref, LcgRng, MmapStore, Sampler,
 };
 use qwen_kernels::quant::{
-    quant_shape_check, quantize_bf16_to_int8, quantize_bf16_to_q4_0, quantize_gate_up_q4_0,
+    quant_shape_check, quantize_bf16_to_int8, quantize_bf16_to_q4_0, quantize_gate_up_int8,
+    quantize_gate_up_q4_0,
 };
-use qwen_kernels::{AlignedBuf, ComputeRuntime, KernelDispatch, Q4_0Block};
+use qwen_kernels::{AlignedBuf, ComputePool, ComputeRuntime, KernelDispatch, Q4_0Block};
 
 use crate::error::EngineError;
 use crate::voice_clone::SpeakerEncoderWeights;
@@ -117,14 +118,8 @@ impl TalkerLayerWeights {
 
         // Filas de `gate` y `up` entrelazadas (gate en las pares, up en las impares). Con una escala
         // por fila, equivale a cuantizar cada matriz por separado.
-        let mut gate_up_bf16 = vec![0u16; 2 * inter * hidden];
-        for r in 0..inter {
-            gate_up_bf16[2 * r * hidden..(2 * r + 1) * hidden]
-                .copy_from_slice(&gate_bf16[r * hidden..(r + 1) * hidden]);
-            gate_up_bf16[(2 * r + 1) * hidden..(2 * r + 2) * hidden]
-                .copy_from_slice(&up_bf16[r * hidden..(r + 1) * hidden]);
-        }
-        let gate_up = quantize_matrix_int8(&gate_up_bf16, 2 * inter, hidden);
+        let (data, scale) = quantize_gate_up_int8(&gate_bf16, &up_bf16, inter, hidden);
+        let gate_up = Int8Weight { data, scale };
         let wq = quantize_matrix_int8(&wq_bf16, q_dim, hidden);
         let wk = quantize_matrix_int8(&wk_bf16, kv_dim, hidden);
         let wv = quantize_matrix_int8(&wv_bf16, kv_dim, hidden);
@@ -815,6 +810,30 @@ fn req_f32(store: &MmapStore, name: &str) -> Result<F32Ref, EngineError> {
     Ok(store.tensor_f32_ref(name)?)
 }
 
+/// Ejecuta `load(i)` para `i` en `0..n` repartido en el pool y devuelve los resultados en orden.
+/// Cada tarea es independiente; el primer error (en orden de índice) se devuelve. `load` no debe
+/// usar el pool: `ComputePool::parallel` no es reentrante.
+fn load_parallel<T: Send>(
+    pool: &ComputePool,
+    n: usize,
+    load: impl Fn(usize) -> Result<T, EngineError> + Sync,
+) -> Result<Vec<T>, EngineError> {
+    let slots: Vec<Mutex<Option<Result<T, EngineError>>>> =
+        (0..n).map(|_| Mutex::new(None)).collect();
+    pool.parallel(n, |i, _| {
+        let result = load(i);
+        *slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
+    });
+    slots
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .unwrap_or_else(|e| e.into_inner())
+                .expect("cada tarea de carga debe haber guardado su resultado")
+        })
+        .collect()
+}
+
 fn quantize_matrix_int8(src: &[u16], rows: usize, cols: usize) -> Int8Weight {
     let (data, scale) = quantize_bf16_to_int8(src, rows, cols);
     Int8Weight { data, scale }
@@ -1004,8 +1023,8 @@ impl Model06B {
             eprintln!("Hilos: {}", runtime.pool.n_threads());
         }
 
-        let talker = Self::load_talker(&main_store, silent)?;
-        let cp = Self::load_cp(&main_store, silent)?;
+        let talker = Self::load_talker(&main_store, &runtime.pool, silent)?;
+        let cp = Self::load_cp(&main_store, &runtime.pool, silent)?;
         let decoder = Self::load_decoder(&speech_store, silent)?;
         let speaker_encoder = SpeakerEncoderWeights::load(&main_store, silent)?;
 
@@ -1033,6 +1052,7 @@ impl Model06B {
 
     fn load_talker(
         store: &MmapStore,
+        pool: &ComputePool,
         silent: bool,
     ) -> Result<TalkerWeights, EngineError> {
         if !silent {
@@ -1051,17 +1071,16 @@ impl Model06B {
         let codec_head_bf16 = req_bf16(store, "talker.codec_head.weight")?;
         let norm = req_f32(store, "talker.model.norm.weight")?;
 
-        let mut layers = Vec::with_capacity(NUM_LAYERS);
-        for i in 0..NUM_LAYERS {
-            layers.push(TalkerLayerWeights::load(
+        let layers = load_parallel(pool, NUM_LAYERS, |i| {
+            TalkerLayerWeights::load(
                 store,
                 &format!("talker.model.layers.{i}"),
                 HIDDEN_SIZE,
                 Q_DIM,
                 KV_DIM,
                 INTERMEDIATE_SIZE,
-            )?);
-        }
+            )
+        })?;
 
         let (cos_v, sin_v) = KernelDispatch::compute_rope_neox_table(
             ROPE_MAX_POS,
@@ -1095,6 +1114,7 @@ impl Model06B {
 
     fn load_cp(
         store: &MmapStore,
+        pool: &ComputePool,
         silent: bool,
     ) -> Result<CodePredictorWeights, EngineError> {
         if !silent {
@@ -1104,33 +1124,33 @@ impl Model06B {
             );
         }
         let norm = req_f32(store, "talker.code_predictor.model.norm.weight")?;
-        let mut layers = Vec::with_capacity(CP_NUM_LAYERS);
-
-        for i in 0..CP_NUM_LAYERS {
-            layers.push(CpLayerWeights::load(
+        let layers = load_parallel(pool, CP_NUM_LAYERS, |i| {
+            CpLayerWeights::load(
                 store,
                 &format!("talker.code_predictor.model.layers.{i}"),
                 CP_HIDDEN_SIZE,
                 CP_Q_DIM,
                 CP_KV_DIM,
                 CP_INTERMEDIATE_SIZE,
-            )?);
-        }
+            )
+        })?;
 
         let mut codec_emb_bf16 = Vec::with_capacity(15);
-        let mut lm_heads = Vec::with_capacity(15);
         for g in 0..15 {
-            let emb = req_bf16(
+            codec_emb_bf16.push(req_bf16(
                 store,
                 &format!("talker.code_predictor.model.codec_embedding.{g}.weight"),
-            )?;
-            let head_bf16 =
-                req_bf16(store, &format!("talker.code_predictor.lm_head.{g}.weight"))?;
-            codec_emb_bf16.push(emb);
-            lm_heads.push(CpLmHead {
-                weight: quantize_matrix_int8(&head_bf16, CODEBOOK_SIZE, CP_HIDDEN_SIZE),
-            });
+            )?);
         }
+        let lm_heads = load_parallel(pool, 15, |g| {
+            Ok(CpLmHead {
+                weight: quantize_matrix_int8(
+                    &req_bf16(store, &format!("talker.code_predictor.lm_head.{g}.weight"))?,
+                    CODEBOOK_SIZE,
+                    CP_HIDDEN_SIZE,
+                ),
+            })
+        })?;
 
         let (cos_v, sin_v) = KernelDispatch::compute_rope_neox_table(
             CP_KV_MAX_POS,

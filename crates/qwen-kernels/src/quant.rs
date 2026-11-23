@@ -119,6 +119,25 @@ pub fn quantize_act_int8_scalar(qx: &mut [i8], x: &[f32]) -> f32 {
     amax / 127.0f32
 }
 
+/// Redondeo al par más cercano (como `f32::round_ties_even`) sin llamar a `rintf`: sumar y restar
+/// 1,5 · 2^23 deja el valor redondeado al entero par más cercano en el modo de redondeo por defecto.
+/// Exacto para |x| < 2^22; los cuantizadores lo usan con |x| ≤ 127.
+#[inline]
+fn round_ties_even_small(x: f32) -> i32 {
+    const MAGIC: f32 = 12_582_912.0; // 1,5 · 2^23
+    ((x + MAGIC) - MAGIC) as i32
+}
+
+/// Redondeo alejado de cero en los empates (como `f32::round`) sin llamar a `roundf`: la parte
+/// fraccionaria `x - trunc(x)` es exacta en f32, y se compara con ±0,5.
+/// Exacto para |x| < 2^23; el cuantizador Q4_0 lo usa con |x| ≤ 8.
+#[inline]
+fn round_half_away_small(x: f32) -> i32 {
+    let t = x as i32;
+    let f = x - t as f32;
+    t + (f >= 0.5) as i32 - (f <= -0.5) as i32
+}
+
 /// Cuantiza `src_bf16[rows, cols]` a INT8 simétrico por fila (absmax).
 pub fn quantize_bf16_to_int8(
     src_bf16: &[u16],
@@ -157,7 +176,7 @@ pub fn quantize_bf16_to_int8_into(
         let dst_row = &mut dst_int8[r * cols..(r + 1) * cols];
         for (k, &b) in row.iter().enumerate() {
             let val = bf16_to_f32(b);
-            let v = (val * inv_s).round_ties_even() as i32;
+            let v = round_ties_even_small(val * inv_s);
             dst_row[k] = v.clamp(-128, 127) as i8;
         }
     }
@@ -209,7 +228,7 @@ pub fn quantize_bf16_to_q4_0_into(
             let mut num = 0.0f64;
             let mut den = 0.0f64;
             for i in 0..Q4_0_BLOCK_SIZE {
-                let v = (vals[i] * isc).round() as i32;
+                let v = round_half_away_small(vals[i] * isc);
                 let vc = v.clamp(-8, 7);
                 q[i] = vc;
                 let w = (vals[i] as f64) * (vals[i] as f64);
@@ -256,6 +275,39 @@ pub fn quantize_gate_up_q4_0(
     dst
 }
 
+/// Cuantiza `gate` y `up` a INT8 con las filas entrelazadas: `gate` en las filas pares y `up` en las
+/// impares. Con una escala por fila equivale a cuantizar cada matriz por separado.
+pub fn quantize_gate_up_int8(
+    gate: &[u16],
+    up: &[u16],
+    rows: usize,
+    cols: usize,
+) -> (AlignedBuf<i8>, AlignedBuf<f32>) {
+    assert!(
+        gate.len() >= rows * cols && up.len() >= rows * cols,
+        "quantize_gate_up_int8: los límites de los slices no coinciden"
+    );
+    let mut dst_int8 = AlignedBuf::<i8>::new_zeroed(2 * rows * cols);
+    let mut dst_scale = AlignedBuf::<f32>::new_zeroed(2 * rows);
+    for r in 0..rows {
+        quantize_bf16_to_int8_into(
+            &gate[r * cols..(r + 1) * cols],
+            1,
+            cols,
+            &mut dst_int8[2 * r * cols..(2 * r + 1) * cols],
+            &mut dst_scale[2 * r..2 * r + 1],
+        );
+        quantize_bf16_to_int8_into(
+            &up[r * cols..(r + 1) * cols],
+            1,
+            cols,
+            &mut dst_int8[(2 * r + 1) * cols..(2 * r + 2) * cols],
+            &mut dst_scale[2 * r + 1..2 * r + 2],
+        );
+    }
+    (dst_int8, dst_scale)
+}
+
 #[inline]
 pub fn erff(x: f32) -> f32 {
     extern "C" {
@@ -279,6 +331,67 @@ pub fn gate_up_to_f32(dst: &mut [f32], gate: &[u16], up: &[u16], rows: usize, co
         let su = &up[r * cols..(r + 1) * cols];
         for k in 0..cols {
             u[k] = bf16_to_f32(su[k]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{round_half_away_small, round_ties_even_small};
+
+    /// Compara los dos redondeos propios con los de la biblioteca estándar para un valor.
+    fn check(x: f32) {
+        assert_eq!(
+            round_ties_even_small(x),
+            x.round_ties_even() as i32,
+            "round_ties_even_small difiere en {x} (patrón {:#010x})",
+            x.to_bits()
+        );
+        assert_eq!(
+            round_half_away_small(x),
+            x.round() as i32,
+            "round_half_away_small difiere en {x} (patrón {:#010x})",
+            x.to_bits()
+        );
+    }
+
+    #[test]
+    fn test_small_rounding_matches_std() {
+        // Alrededor de cada entero y semientero de ±130: ±4 096 patrones de bits.
+        for k in -130i32..=130 {
+            for v in [k as f32 + 0.5, k as f32] {
+                if v == 0.0 {
+                    // Desplazar el patrón de cero desbordaría: ±0 y subnormales a mano.
+                    for bits in (0u32..=4096).chain(0x8000_0000u32..=0x8000_1000) {
+                        check(f32::from_bits(bits));
+                    }
+                    continue;
+                }
+                for d in -4096i32..=4096 {
+                    check(f32::from_bits(v.to_bits().wrapping_add_signed(d)));
+                }
+            }
+        }
+        // Barrido del rango saltando de 997 en 997 patrones de bits.
+        let top = 130.0f32.to_bits();
+        let mut bits = 0u32;
+        while bits <= top {
+            check(f32::from_bits(bits));
+            check(f32::from_bits(bits | 0x8000_0000));
+            bits += 997;
+        }
+        // Casos sueltos.
+        for x in [
+            0.0f32,
+            -0.0,
+            f32::from_bits(1),
+            f32::from_bits(0x8000_0001),
+            127.0,
+            -127.0,
+            8.0,
+            -8.0,
+        ] {
+            check(x);
         }
     }
 }
