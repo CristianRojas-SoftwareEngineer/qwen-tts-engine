@@ -2,10 +2,10 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-# CircleCI de qwen-tts-engine en Linux ARM64, macOS ARM64 y Windows x86_64.
+# CircleCI de qwen-tts-engine en Linux x86_64, Linux ARM64, macOS ARM64 y Windows x86_64.
 #
-# Linux ARM64 y Windows enlazan el OpenBLAS propio 0.3.34 (scripts/build-openblas.sh, en caché):
-# el de Ubuntu 22.04 solo trae el kernel genérico ARMV8.
+# Linux (x86_64 y ARM64) y Windows enlazan el OpenBLAS propio 0.3.34 (scripts/build-openblas.sh,
+# en caché): el de Ubuntu 22.04 solo trae el kernel genérico ARMV8.
 #
 # Pruebas (en cada push, salvo en las ejecuciones manuales de medición): clippy -D warnings,
 # cargo test --workspace --release (con el modelo Base restaurado de la caché) y --self-test.
@@ -66,11 +66,15 @@ commands:
   build_own_openblas:
     description: >-
       OpenBLAS estático compilado con scripts/build-openblas.sh (DYNAMIC_ARCH, con caché), enlazado
-      con OPENBLAS_LIB_DIR: el kernel de cada CPU ARM no depende del OpenBLAS de la distribución.
+      con OPENBLAS_LIB_DIR: el kernel de cada CPU no depende del OpenBLAS de la distribución.
+    parameters:
+      cache_key:
+        type: string
+        description: Clave de la caché de OpenBLAS (una por arquitectura y sistema).
     steps:
       - restore_cache:
           keys:
-            - openblas-0.3.34-dynarch-arm64-v1
+            - << parameters.cache_key >>
       - run:
           name: OpenBLAS 0.3.34 propio (compilar si no está en caché)
           no_output_timeout: 40m
@@ -80,7 +84,7 @@ commands:
             fi
             echo "export OPENBLAS_LIB_DIR=$HOME/openblas/lib" >> "$BASH_ENV"
       - save_cache:
-          key: openblas-0.3.34-dynarch-arm64-v1
+          key: << parameters.cache_key >>
           paths:
             - ~/openblas
 
@@ -187,6 +191,20 @@ commands:
             cargo build --release -p qwen-app --target x86_64-pc-windows-gnu
 
 jobs:
+  test-linux-x64:
+    docker:
+      - image: cimg/base:current
+    resource_class: large
+    environment:
+      QWEN_TTS_REQUIRE_MODEL: "1"
+    steps:
+      - checkout
+      - build_own_openblas:
+          cache_key: openblas-0.3.34-dynarch-core2-linux-x64-v1
+      - install_rust_unix
+      - download_model
+      - test_unix
+
   test-linux-arm64:
     docker:
       - image: cimg/base:current
@@ -195,7 +213,8 @@ jobs:
       QWEN_TTS_REQUIRE_MODEL: "1"
     steps:
       - checkout
-      - build_own_openblas
+      - build_own_openblas:
+          cache_key: openblas-0.3.34-dynarch-arm64-v1
       - install_rust_unix
       - download_model
       - test_unix
@@ -239,7 +258,8 @@ jobs:
     resource_class: arm.large
     steps:
       - checkout
-      - build_own_openblas
+      - build_own_openblas:
+          cache_key: openblas-0.3.34-dynarch-arm64-v1
       - install_rust_unix
       - download_model
       - build_and_measure_unix
@@ -278,7 +298,8 @@ jobs:
     resource_class: arm.large
     steps:
       - checkout
-      - build_own_openblas
+      - build_own_openblas:
+          cache_key: openblas-0.3.34-dynarch-arm64-v1
       - install_rust_unix
       - download_model
       - compare_kernels_unix
@@ -316,6 +337,7 @@ workflows:
         - not: << pipeline.parameters.measure >>
         - not: << pipeline.parameters.kernels >>
     jobs:
+      - test-linux-x64
       - test-linux-arm64
       - test-macos-arm64
       - test-windows-x64
