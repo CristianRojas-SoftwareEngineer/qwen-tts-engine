@@ -36,10 +36,6 @@ fn main() {
     println!("cargo:rustc-link-search=native={lib_dir}");
     println!("cargo:rustc-link-lib=static=openblas");
     if windows {
-        // OpenBLAS usa símbolos `pthread_*` en MinGW. `libwinpthread.a` es del toolchain de MSYS2
-        // UCRT64 y la resuelve gcc al enlazar, por eso va con `-bundle` y sin ruta de búsqueda
-        // propia. Debe ir después de `openblas`, que usa sus símbolos.
-        println!("cargo:rustc-link-lib=static:-bundle=winpthread");
         println!("cargo:rustc-link-lib=ws2_32");
     }
 }
