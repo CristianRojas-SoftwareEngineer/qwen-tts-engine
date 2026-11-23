@@ -325,9 +325,6 @@ fn test_markup_sampling_and_lookups() {
         };
         assert!(got.contains(tag), "{tag} debe quedarse en el texto: {got}");
     }
-    // `[laugh]` (onomatopeya) y `|` siguen funcionando
-    assert!(MarkupPlanner::has_markup("Oh [laugh] great"));
-    assert!(qwen_core::is_paralinguistic_event_tag("sigh"));
 
     let mut sampler = Sampler::new();
     let mut rng1 = LcgRng::new(42);

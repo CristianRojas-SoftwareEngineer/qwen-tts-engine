@@ -31,6 +31,7 @@ pub use error::EngineError;
 pub use model::{AbortHandle, Model06B, SessionScratch, SynthesisTiming};
 pub use request::{
     LogLevel, SynthesisRequest, DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES,
+    MAX_CHUNK_FRAMES, MIN_CHUNK_FRAMES,
 };
 pub use speech_decoder::speech_decoder_decode_streaming;
 pub use synth::{Delivery, SynthesisOutput, Synthesizer};

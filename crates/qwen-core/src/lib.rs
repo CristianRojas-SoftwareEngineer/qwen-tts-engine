@@ -17,8 +17,7 @@ pub mod tokenizer;
 pub use config::ModelConfig06B;
 pub use error::CoreError;
 pub use markup::{
-    is_paralinguistic_event_tag, plan_script, resolve_sampling, MarkupMode, MarkupPlanner,
-    PlannedScript, Script, SpanSpec,
+    plan_script, resolve_sampling, MarkupMode, MarkupPlanner, PlannedScript, Script, SpanSpec,
 };
 pub use mmap_store::{Bf16Ref, F32Ref, MmapStore};
 pub use qvoice::QVoiceFile;

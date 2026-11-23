@@ -21,7 +21,7 @@ use crate::model::{
     lookup_codec_embed, AbortHandle, Model06B, SessionScratch, SynthesisTiming, ROPE_MAX_POS,
 };
 use crate::prompt::{build_prompt, prefill};
-use crate::request::SynthesisRequest;
+use crate::request::{SynthesisRequest, MAX_CHUNK_FRAMES, MIN_CHUNK_FRAMES};
 use crate::speech_decoder::speech_decoder_decode_streaming;
 use crate::talker::talker_step;
 use crate::voice::Voice;
@@ -219,14 +219,7 @@ pub(crate) fn generate_to_sink(
     let sp = &req.sampling;
 
     if !silent {
-        eprintln!(
-            "Texto: \"{}\" (prompt: {} posiciones, text_content: {})",
-            text, prefill_len, text_content_len
-        );
-        eprintln!(
-            "Prefill: {} posiciones (text_content={})",
-            prefill_len, text_content_len
-        );
+        eprintln!("Prompt: {prefill_len} posiciones ({text_content_len} tokens de texto)");
     }
 
     let nt = runtime.pool.n_threads();
@@ -246,13 +239,12 @@ pub(crate) fn generate_to_sink(
     scratch.prev_tokens.clear();
     scratch.prev_tokens.reserve(max_frames);
 
-    let chunk_frames = req.chunk_frames.clamp(2, 250);
+    let chunk_frames = req.chunk_frames.clamp(MIN_CHUNK_FRAMES, MAX_CHUNK_FRAMES);
 
     let gen_blas = if nt > 1 { nt - 1 } else { 1 };
     runtime.blas.set_threads(gen_blas);
 
     scratch.sd_stream.reset();
-    scratch.sd_stream.cs_tile = true;
 
     let queue = DecoderQueue::new(max_frames);
     let mut decoder_ms = 0.0f64;

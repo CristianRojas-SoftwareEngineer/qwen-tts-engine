@@ -410,11 +410,6 @@ fn run_synthesis(
     markup_label: &str,
 ) -> Result<SynthesisOutput, EngineError> {
     if let Script::Spans(spans) = script {
-        if spans.is_empty() {
-            return Err(EngineError::InvalidArg(
-                "falló el análisis del marcado".to_string(),
-            ));
-        }
         eprintln!(
             "[HTTP] marcado en línea -> {markup_label} por frase ({} tramos)",
             spans.len()

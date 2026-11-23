@@ -20,12 +20,9 @@ const SD_TILE_BYTES: usize = 256 * 1024;
 /// Primer bloque de upsample que el *streaming* procesa por tiles de `SD_TILE_BYTES`.
 pub(crate) const SD_TILE_FROM_BLOCK: usize = 2;
 
-fn conv_add_bias(out: &mut [f32], bias: Option<&[f32]>, channels: usize, length: usize) {
-    let Some(b) = bias else {
-        return;
-    };
+fn conv_add_bias(out: &mut [f32], bias: &[f32], channels: usize, length: usize) {
     for c in 0..channels {
-        let bv = b[c];
+        let bv = bias[c];
         let row = &mut out[c * length..(c + 1) * length];
         for v in row.iter_mut() {
             *v += bv;
@@ -46,7 +43,7 @@ fn causal_conv1d(
     out: &mut [f32],
     input: &[f32],
     weight: CausalConvWeight<'_>,
-    bias: Option<&[f32]>,
+    bias: &[f32],
     in_ch: usize,
     out_ch: usize,
     length: usize,
@@ -114,7 +111,6 @@ fn causal_conv_transpose1d(
     out: &mut [f32],
     input: &[f32],
     weight: &[f32],
-    bias: Option<&[f32]>,
     in_ch: usize,
     out_ch: usize,
     in_len: usize,
@@ -154,7 +150,6 @@ fn causal_conv_transpose1d(
             }
         }
     }
-    conv_add_bias(out, bias, out_ch, out_len);
 }
 
 /// Cola ConvNeXt: LayerNorm de 2 pasadas -> pw1(+GELU exacto) -> pw2 -> gamma*x + residual.
@@ -203,9 +198,7 @@ fn convnext_mlp(
         pw1_out,
         cur_len,
     );
-    if let Some(b) = cn.pwconv1_bias.as_deref() {
-        conv_add_bias(pw1_out, Some(b), pw_dim, cur_len);
-    }
+    conv_add_bias(pw1_out, &cn.pwconv1_bias, pw_dim, cur_len);
     const INV_SQRT2: f32 = std::f32::consts::FRAC_1_SQRT_2;
     for v in pw1_out.iter_mut() {
         *v = 0.5f32 * *v * (1.0f32 + erff(*v * INV_SQRT2));
@@ -226,9 +219,7 @@ fn convnext_mlp(
         signal,
         cur_len,
     );
-    if let Some(b) = cn.pwconv2_bias.as_deref() {
-        conv_add_bias(signal, Some(b), cur_ch, cur_len);
-    }
+    conv_add_bias(signal, &cn.pwconv2_bias, cur_ch, cur_len);
 
     for ci in 0..cur_ch {
         let g = cn.gamma[ci];
@@ -266,13 +257,10 @@ fn buf_pair_mut<'a>(
     }
 }
 
-fn add_bias_rm(buf: &mut [f32], bias: Option<&[f32]>, n_frames: usize, dim: usize) {
-    let Some(b) = bias else {
-        return;
-    };
+fn add_bias_rm(buf: &mut [f32], bias: &[f32], n_frames: usize, dim: usize) {
     for f in 0..n_frames {
         for o in 0..dim {
-            buf[f * dim + o] += b[o];
+            buf[f * dim + o] += bias[o];
         }
     }
 }
@@ -280,21 +268,15 @@ fn add_bias_rm(buf: &mut [f32], bias: Option<&[f32]>, n_frames: usize, dim: usiz
 fn add_residual_scaled(
     hidden: &mut [f32],
     proj: &[f32],
-    layer_scale: Option<&[f32]>,
+    layer_scale: &[f32],
     n_frames: usize,
     dim: usize,
 ) {
     for s in 0..n_frames {
         let hs = &mut hidden[s * dim..(s + 1) * dim];
         let ps = &proj[s * dim..(s + 1) * dim];
-        if let Some(ls) = layer_scale {
-            for o in 0..dim {
-                hs[o] += ps[o] * ls[o];
-            }
-        } else {
-            for o in 0..dim {
-                hs[o] += ps[o];
-            }
+        for o in 0..dim {
+            hs[o] += ps[o] * layer_scale[o];
         }
     }
 }
@@ -329,7 +311,7 @@ fn cs_conv1d(
     kernel: usize,
     dilation: usize,
     wk: &[f32],
-    b: Option<&[f32]>,
+    b: &[f32],
     tail: &mut [f32],
     warm: bool,
 ) {
@@ -405,7 +387,7 @@ fn cs_conv1d_im2col(
     len: usize,
     dilation: usize,
     wcat: &[f32],
-    b: Option<&[f32]>,
+    b: &[f32],
     tail: &mut [f32],
 ) {
     const KERNEL: usize = 7;
@@ -459,7 +441,7 @@ fn cs_convt(
     kernel: usize,
     stride: usize,
     w: &[f32],
-    b: Option<&[f32]>,
+    b: &[f32],
     mut carry: Option<&mut [f32]>,
 ) {
     let cs = kernel - stride;
@@ -468,7 +450,7 @@ fn cs_convt(
     ws_full.resize_zeroed(out_ch * full_len);
     let full = &mut ws_full[..out_ch * full_len];
     causal_conv_transpose1d(
-        runtime, ws_ct, full, input, w, None, in_ch, out_ch, len, full_len, kernel, stride,
+        runtime, ws_ct, full, input, w, in_ch, out_ch, len, full_len, kernel, stride,
     );
     out.resize_zeroed(out_ch * out_len);
     let out_s = &mut out[..out_ch * out_len];
@@ -481,7 +463,7 @@ fn cs_convt(
                 f[i] += cr[i];
             }
         }
-        let bb = b.map_or(0.0, |bs| bs[oc]);
+        let bb = b[oc];
         for t in 0..out_len {
             o[t] = f[t] + bb;
         }
@@ -498,7 +480,7 @@ fn cs_dwconv(
     ch: usize,
     len: usize,
     w: &[f32],
-    b: Option<&[f32]>,
+    b: &[f32],
     tail: &mut [f32],
 ) {
     out.resize_zeroed(ch * len);
@@ -507,7 +489,7 @@ fn cs_dwconv(
         let src = &input[c * len..(c + 1) * len];
         let tl = &mut tail[c * 6..(c + 1) * 6];
         let dst = &mut out_s[c * len..(c + 1) * len];
-        let bb = b.map_or(0.0, |bs| bs[c]);
+        let bb = b[c];
         let wc = &w[c * 7..(c + 1) * 7];
         for (t, dst_slot) in dst.iter_mut().enumerate().take(len) {
             let mut sum = bb;
@@ -567,22 +549,15 @@ fn cs_res_tiled(
         }
 
         for (r, res_blk) in ub.res_blocks.iter().enumerate() {
-            let Some(wcat) = res_blk.conv1_wcat.as_deref() else {
-                unreachable!("conv1_wcat se carga para todo bloque b >= SD_TILE_FROM_BLOCK");
-            };
             ws.ct[..cur_ch * n].copy_from_slice(&ws.pw1[..cur_ch * n]);
-            if let (Some(a1), Some(b1)) =
-                (res_blk.snake1_alpha.as_deref(), res_blk.snake1_beta.as_deref())
-            {
-                runtime.dispatch.snake_activation(
-                    &runtime.sd_pool,
-                    &mut ws.pw1[..cur_ch * n],
-                    cur_ch,
-                    n,
-                    a1,
-                    b1,
-                );
-            }
+            runtime.dispatch.snake_activation(
+                &runtime.sd_pool,
+                &mut ws.pw1[..cur_ch * n],
+                cur_ch,
+                n,
+                &res_blk.snake1_alpha,
+                &res_blk.snake1_beta,
+            );
             let free_buf = if cur_slot == 0 {
                 &mut ws.b
             } else {
@@ -596,29 +571,25 @@ fn cs_res_tiled(
                 cur_ch,
                 n,
                 DILS[r],
-                wcat,
-                res_blk.conv1_bias.as_deref(),
+                &res_blk.conv1_w,
+                &res_blk.conv1_bias,
                 &mut st.cs_res_tail[b][r],
             );
-            if let (Some(a2), Some(b2)) =
-                (res_blk.snake2_alpha.as_deref(), res_blk.snake2_beta.as_deref())
-            {
-                runtime.dispatch.snake_activation(
-                    &runtime.sd_pool,
-                    &mut free_buf[..cur_ch * n],
-                    cur_ch,
-                    n,
-                    a2,
-                    b2,
-                );
-            }
+            runtime.dispatch.snake_activation(
+                &runtime.sd_pool,
+                &mut free_buf[..cur_ch * n],
+                cur_ch,
+                n,
+                &res_blk.snake2_alpha,
+                &res_blk.snake2_beta,
+            );
             causal_conv1d(
                 runtime,
                 &mut ws.xp,
                 &mut ws.pw1[..cur_ch * n],
                 &free_buf[..cur_ch * n],
                 CausalConvWeight::Pointwise(&res_blk.conv2_weight),
-                res_blk.conv2_bias.as_deref(),
+                &res_blk.conv2_bias,
                 cur_ch,
                 cur_ch,
                 n,
@@ -665,7 +636,7 @@ fn conv_decoder_forward_streaming(
             2,
             2,
             &cn.conv_weight,
-            cn.conv_bias.as_deref(),
+            &cn.conv_bias,
             None,
         );
         cur_len *= 2;
@@ -675,7 +646,7 @@ fn conv_decoder_forward_streaming(
             cur_ch,
             cur_len,
             &cn.dwconv_weight,
-            cn.dwconv_bias.as_deref(),
+            &cn.dwconv_bias,
             &mut st.cs_cn_dw_tail[b],
         );
         convnext_mlp(
@@ -701,7 +672,7 @@ fn conv_decoder_forward_streaming(
         7,
         1,
         &sd.initial_conv_wk,
-        sd.initial_conv_bias.as_deref(),
+        &sd.initial_conv_bias,
         &mut st.cs_init_tail,
         st.cs_warm,
     );
@@ -714,15 +685,15 @@ fn conv_decoder_forward_streaming(
         let kernel = rate * 2;
         let out_ch = DEC_UPSAMPLE_CHANNELS[b];
 
-        if let (Some(alpha), Some(beta)) = (ub.snake_alpha.as_deref(), ub.snake_beta.as_deref()) {
+        {
             let cur = cur_slot_mut(&mut ws.a, &mut ws.b, ci);
             runtime.dispatch.snake_activation(
                 &runtime.sd_pool,
                 &mut cur[..cur_ch * cur_len],
                 cur_ch,
                 cur_len,
-                alpha,
-                beta,
+                &ub.snake_alpha,
+                &ub.snake_beta,
             );
         }
 
@@ -740,7 +711,7 @@ fn conv_decoder_forward_streaming(
                 kernel,
                 rate,
                 &ub.conv_weight,
-                ub.conv_bias.as_deref(),
+                &ub.conv_bias,
                 Some(&mut st.cs_up_carry[b]),
             );
         }
@@ -748,7 +719,7 @@ fn conv_decoder_forward_streaming(
         cur_ch = out_ch;
         cur_len *= rate;
 
-        if st.cs_tile && b >= SD_TILE_FROM_BLOCK {
+        if b >= SD_TILE_FROM_BLOCK {
             cs_res_tiled(runtime, ws, st, sd, b, ci, cur_ch, cur_len);
         } else {
             let n_el = cur_ch * cur_len;
@@ -757,19 +728,14 @@ fn conv_decoder_forward_streaming(
                 {
                     let cur = cur_slot_mut(&mut ws.a, &mut ws.b, ci);
                     ws.res[..n_el].copy_from_slice(&cur[..n_el]);
-                    if let (Some(a1), Some(b1)) = (
-                        res_blk.snake1_alpha.as_deref(),
-                        res_blk.snake1_beta.as_deref(),
-                    ) {
-                        runtime.dispatch.snake_activation(
-                            &runtime.sd_pool,
-                            &mut cur[..n_el],
-                            cur_ch,
-                            cur_len,
-                            a1,
-                            b1,
-                        );
-                    }
+                    runtime.dispatch.snake_activation(
+                        &runtime.sd_pool,
+                        &mut cur[..n_el],
+                        cur_ch,
+                        cur_len,
+                        &res_blk.snake1_alpha,
+                        &res_blk.snake1_beta,
+                    );
                 }
                 let (cur_buf, next_buf) = buf_pair_mut(&mut ws.a, &mut ws.b, ci);
                 cs_conv1d(
@@ -783,31 +749,26 @@ fn conv_decoder_forward_streaming(
                     cur_len,
                     7,
                     DILS[r],
-                    &res_blk.conv1_wk,
-                    res_blk.conv1_bias.as_deref(),
+                    &res_blk.conv1_w,
+                    &res_blk.conv1_bias,
                     &mut st.cs_res_tail[b][r],
                     st.cs_warm,
                 );
-                if let (Some(a2), Some(b2)) = (
-                    res_blk.snake2_alpha.as_deref(),
-                    res_blk.snake2_beta.as_deref(),
-                ) {
-                    runtime.dispatch.snake_activation(
-                        &runtime.sd_pool,
-                        &mut next_buf[..n_el],
-                        cur_ch,
-                        cur_len,
-                        a2,
-                        b2,
-                    );
-                }
+                runtime.dispatch.snake_activation(
+                    &runtime.sd_pool,
+                    &mut next_buf[..n_el],
+                    cur_ch,
+                    cur_len,
+                    &res_blk.snake2_alpha,
+                    &res_blk.snake2_beta,
+                );
                 causal_conv1d(
                     runtime,
                     &mut ws.xp,
                     &mut cur_buf[..n_el],
                     &next_buf[..n_el],
                     CausalConvWeight::Pointwise(&res_blk.conv2_weight),
-                    res_blk.conv2_bias.as_deref(),
+                    &res_blk.conv2_bias,
                     cur_ch,
                     cur_ch,
                     cur_len,
@@ -839,7 +800,7 @@ fn conv_decoder_forward_streaming(
         &ws.b[..cur_ch * cur_len]
     };
 
-    let mut audio = vec![sd.final_conv_bias.as_deref().map_or(0.0, |b| b[0]); cur_len];
+    let mut audio = vec![sd.final_conv_bias[0]; cur_len];
     let tl = &mut st.cs_final_tail;
     for ic in 0..cur_ch {
         let src = &cur[ic * cur_len..(ic + 1) * cur_len];
@@ -981,7 +942,7 @@ pub fn speech_decoder_decode_streaming(
         pre_conv_out,
         vq_cf,
         CausalConvWeight::Reordered(&sd.pre_conv_wk),
-        sd.pre_conv_bias.as_deref(),
+        &sd.pre_conv_bias,
         DEC_CODEBOOK_DIM,
         DEC_LATENT_DIM,
         conv_in_len,
@@ -1018,7 +979,7 @@ pub fn speech_decoder_decode_streaming(
         hidden,
         DEC_HIDDEN_SIZE,
     );
-    add_bias_rm(hidden, sd.input_proj_bias.as_deref(), new_frames, DEC_HIDDEN_SIZE);
+    add_bias_rm(hidden, &sd.input_proj_bias, new_frames, DEC_HIDDEN_SIZE);
 
     // Paso 4: pre-transformer con caché KV compactable
     let qkv_dim = DEC_NUM_HEADS * DEC_HEAD_DIM;
@@ -1190,7 +1151,7 @@ pub fn speech_decoder_decode_streaming(
         add_residual_scaled(
             hidden,
             x_norm,
-            l.attn_layer_scale.as_deref(),
+            &l.attn_layer_scale,
             new_frames,
             DEC_HIDDEN_SIZE,
         );
@@ -1254,24 +1215,22 @@ pub fn speech_decoder_decode_streaming(
         add_residual_scaled(
             hidden,
             ffn_down_out,
-            l.ffn_layer_scale.as_deref(),
+            &l.ffn_layer_scale,
             new_frames,
             DEC_HIDDEN_SIZE,
         );
     }
     st.kv_len += new_frames;
 
-    if let Some(w) = sd.final_norm_weight.as_deref() {
-        d.rms_norm(
-            x_norm,
-            hidden,
-            w,
-            new_frames,
-            DEC_HIDDEN_SIZE,
-            DEC_RMS_NORM_EPS,
-        );
-        hidden.copy_from_slice(x_norm);
-    }
+    d.rms_norm(
+        x_norm,
+        hidden,
+        &sd.final_norm_weight,
+        new_frames,
+        DEC_HIDDEN_SIZE,
+        DEC_RMS_NORM_EPS,
+    );
+    hidden.copy_from_slice(x_norm);
 
     let mut lat_need = (st.latent_frames + new_frames) - st.latent_base;
     if lat_need > st.latent_alloc {
@@ -1302,7 +1261,7 @@ pub fn speech_decoder_decode_streaming(
         lat_dst,
         DEC_LATENT_DIM,
     );
-    add_bias_rm(lat_dst, sd.output_proj_bias.as_deref(), new_frames, DEC_LATENT_DIM);
+    add_bias_rm(lat_dst, &sd.output_proj_bias, new_frames, DEC_LATENT_DIM);
     st.latent_frames += new_frames;
 
     ws.a.resize_zeroed(DEC_LATENT_DIM * new_frames);

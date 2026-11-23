@@ -127,10 +127,6 @@ fn pick_paralinguistic(tag: &str) -> Option<(&'static str, u32, f32)> {
     }
 }
 
-pub fn is_paralinguistic_event_tag(tag: &str) -> bool {
-    pick_paralinguistic(tag).is_some()
-}
-
 pub struct ParalinguisticSubstitution {
     pub text: String,
     pub did_substitute: bool,
@@ -223,9 +219,6 @@ impl MarkupPlanner {
                         return true;
                     }
                     if t.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
-                        return true;
-                    }
-                    if is_paralinguistic_event_tag(t) {
                         return true;
                     }
                     if COMPOSE_MACROS.iter().any(|m| m.tag == tl) {

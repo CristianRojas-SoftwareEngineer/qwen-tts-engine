@@ -280,11 +280,4 @@ impl MmapStore {
             F32DataView::Owned(out) => Ok(F32Ref::Owned(Arc::new(out))),
         }
     }
-
-    pub fn tensor_f32_ref_opt(&self, name: &str) -> Result<Option<F32Ref>, CoreError> {
-        if !self.contains(name) {
-            return Ok(None);
-        }
-        self.tensor_f32_ref(name).map(Some)
-    }
 }

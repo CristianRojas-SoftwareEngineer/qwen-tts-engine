@@ -3,10 +3,16 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::ops::RangeInclusive;
+
 use qwen_core::config::{lookup_language, CODEC_VOCAB_SIZE};
-use qwen_core::SeedChoice;
-use qwen_engine::DEFAULT_CHUNK_FRAMES;
+use qwen_core::{SamplingParams, SeedChoice};
+use qwen_engine::{SynthesisRequest, DEFAULT_CHUNK_FRAMES, MAX_CHUNK_FRAMES, MIN_CHUNK_FRAMES};
 use serde_json::Value;
+
+use crate::request::{
+    RATE_RANGE, REP_PENALTY_RANGE, TEMPERATURE_RANGE, TOP_P_RANGE, VOLUME_RANGE,
+};
 
 pub const MAX_TTS_TEXT: usize = 8192;
 
@@ -75,6 +81,26 @@ fn extract_opt_f64(obj: &serde_json::Map<String, Value>, key: &str) -> Result<Op
             .map(Some)
             .ok_or_else(|| format!("'{key}' inválido")),
         Some(_) => Err(format!("'{key}' inválido (se esperaba un número)")),
+    }
+}
+
+/// Lee `key` como número dentro de `range` (`None` si falta). Compara en `f64` para no aceptar
+/// un valor que solo entraría en el rango al redondearlo a `f32`.
+fn extract_opt_in_range(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    range: &RangeInclusive<f32>,
+) -> Result<Option<f32>, String> {
+    match extract_opt_f64(obj, key)? {
+        Some(v) if (f64::from(*range.start())..=f64::from(*range.end())).contains(&v) => {
+            Ok(Some(v as f32))
+        }
+        Some(_) => Err(format!(
+            "'{key}' fuera de rango [{}, {}]",
+            range.start(),
+            range.end()
+        )),
+        None => Ok(None),
     }
 }
 
@@ -148,18 +174,14 @@ impl ValidatedTtsRequest {
             }
         }
 
-        // temperature en [0.0, 2.0]; sin valor manda el defecto de `SamplingParams`
-        let temperature = match extract_opt_f64(obj, "temperature")? {
-            Some(v) => {
-                if !(0.0..=2.0).contains(&v) {
-                    return Err("'temperature' fuera de rango [0, 2]".to_string());
-                }
-                Some(v as f32)
-            }
-            None => None,
-        };
+        let defaults = SamplingParams::default();
+        let req_defaults = SynthesisRequest::default();
 
-        // top_k en [0, codec_vocab_size (3072)], por defecto 50
+        // Sin valor, cada parámetro toma el de `SamplingParams::default()` o el de
+        // `SynthesisRequest::default()`; la temperatura queda en `None` (la resuelve el marcado).
+        let temperature = extract_opt_in_range(obj, "temperature", &TEMPERATURE_RANGE)?;
+
+        // top_k en [0, CODEC_VOCAB_SIZE]
         let top_k = match extract_opt_i64(obj, "top_k")? {
             Some(v) => {
                 if v < 0 || v > CODEC_VOCAB_SIZE as i64 {
@@ -167,30 +189,12 @@ impl ValidatedTtsRequest {
                 }
                 v as i32
             }
-            None => 50,
+            None => defaults.top_k as i32,
         };
 
-        // top_p en [0.0, 1.0], por defecto 1.0
-        let top_p = match extract_opt_f64(obj, "top_p")? {
-            Some(v) => {
-                if !(0.0..=1.0).contains(&v) {
-                    return Err("'top_p' fuera de rango [0, 1]".to_string());
-                }
-                v as f32
-            }
-            None => 1.0,
-        };
-
-        // rep_penalty en [0.5, 2.0], por defecto 1.05
-        let rep_penalty = match extract_opt_f64(obj, "rep_penalty")? {
-            Some(v) => {
-                if !(0.5..=2.0).contains(&v) {
-                    return Err("'rep_penalty' fuera de rango [0.5, 2]".to_string());
-                }
-                v as f32
-            }
-            None => 1.05,
-        };
+        let top_p = extract_opt_in_range(obj, "top_p", &TOP_P_RANGE)?.unwrap_or(defaults.top_p);
+        let rep_penalty = extract_opt_in_range(obj, "rep_penalty", &REP_PENALTY_RANGE)?
+            .unwrap_or(defaults.rep_penalty);
 
         // semilla: sin valor manda el defecto de `SamplingParams`; valores negativos activan reloj
         let seed = match extract_opt_i64(obj, "seed")? {
@@ -200,34 +204,19 @@ impl ValidatedTtsRequest {
             None => SeedChoice::Default,
         };
 
-        // volumen / velocidad
-        let volume = match extract_opt_f64(obj, "volume")? {
-            Some(v) => {
-                if !(0.0..=10.0).contains(&v) {
-                    return Err("'volume' fuera de rango [0, 10]".to_string());
-                }
-                v as f32
-            }
-            None => 1.0,
-        };
+        let volume =
+            extract_opt_in_range(obj, "volume", &VOLUME_RANGE)?.unwrap_or(req_defaults.volume);
+        // En streaming `rate` es siempre 1: la ruta no admite el campo.
         let rate = if is_stream {
             1.0
         } else {
-            match extract_opt_f64(obj, "rate")? {
-                Some(v) => {
-                    if !(0.25..=4.0).contains(&v) {
-                        return Err("'rate' fuera de rango [0.25, 4.0]".to_string());
-                    }
-                    v as f32
-                }
-                None => 1.0,
-            }
+            extract_opt_in_range(obj, "rate", &RATE_RANGE)?.unwrap_or(req_defaults.rate)
         };
 
-        // chunk_frames (acotado a 2..=250, por defecto 10)
+        // chunk_frames (acotado a MIN_CHUNK_FRAMES..=MAX_CHUNK_FRAMES; sin valor, DEFAULT_CHUNK_FRAMES)
         let chunk_frames = if is_stream {
             let cf = extract_opt_i64(obj, "chunk_frames")?.unwrap_or(DEFAULT_CHUNK_FRAMES as i64);
-            cf.clamp(2, 250) as usize
+            cf.clamp(MIN_CHUNK_FRAMES as i64, MAX_CHUNK_FRAMES as i64) as usize
         } else {
             DEFAULT_CHUNK_FRAMES
         };

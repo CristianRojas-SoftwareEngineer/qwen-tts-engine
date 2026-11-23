@@ -244,9 +244,9 @@ impl CpLayerWeights {
 pub struct TalkerWeights {
     pub text_embedding_bf16: Bf16Weight,
     pub text_proj_fc1_bf16: Bf16Weight,
-    pub text_proj_fc1_bias: Option<F32Weight>,
+    pub text_proj_fc1_bias: F32Weight,
     pub text_proj_fc2_bf16: Bf16Weight,
-    pub text_proj_fc2_bias: Option<F32Weight>,
+    pub text_proj_fc2_bias: F32Weight,
     pub codec_embedding_bf16: Bf16Weight,
     pub codec_head_bf16: Bf16Weight,
     pub norm: F32Weight,
@@ -289,47 +289,47 @@ pub struct SdPreLayerWeights {
     pub attn_k: F32Ref,
     pub attn_v: F32Ref,
     pub attn_o: F32Ref,
-    pub attn_layer_scale: Option<F32Ref>,
+    pub attn_layer_scale: F32Ref,
     pub ffn_norm: F32Ref,
     pub ffn_gate: F32Ref,
     pub ffn_up: F32Ref,
     pub ffn_down: F32Ref,
-    pub ffn_layer_scale: Option<F32Ref>,
+    pub ffn_layer_scale: F32Ref,
 }
 
 pub struct SdConvNeXtWeights {
     pub conv_weight: F32Ref,
-    pub conv_bias: Option<F32Ref>,
+    pub conv_bias: F32Ref,
     pub dwconv_weight: F32Ref,
-    pub dwconv_bias: Option<F32Ref>,
+    pub dwconv_bias: F32Ref,
     pub pwconv1_weight: F32Ref,
-    pub pwconv1_bias: Option<F32Ref>,
+    pub pwconv1_bias: F32Ref,
     pub pwconv2_weight: F32Ref,
-    pub pwconv2_bias: Option<F32Ref>,
+    pub pwconv2_bias: F32Ref,
     pub norm_weight: F32Ref,
     pub norm_bias: F32Ref,
     pub gamma: F32Ref,
 }
 
 pub struct SdResBlockWeights {
-    pub snake1_alpha: Option<F32Ref>,
-    pub snake1_beta: Option<F32Ref>,
-    pub conv1_bias: Option<F32Ref>,
-    pub conv1_wk: AlignedBuf<f32>,
-    /// `conv1` en layout im2col `[out][k · in]` (una sola `sgemm` con `K = 7 · in`).
-    /// Solo en los bloques que el *streaming* procesa por tiles (`b >= SD_TILE_FROM_BLOCK`).
-    pub conv1_wcat: Option<AlignedBuf<f32>>,
-    pub snake2_alpha: Option<F32Ref>,
-    pub snake2_beta: Option<F32Ref>,
+    pub snake1_alpha: F32Ref,
+    pub snake1_beta: F32Ref,
+    pub conv1_bias: F32Ref,
+    /// Pesos de `conv1` preparados para el camino de su bloque: reordenados (`conv_reorder_weight`)
+    /// si `b < SD_TILE_FROM_BLOCK`, y en layout im2col `[out][k · in]` (`conv_im2col_weight`, una sola
+    /// `sgemm` con `K = 7 · in`) en los bloques que el *streaming* procesa por tiles.
+    pub conv1_w: AlignedBuf<f32>,
+    pub snake2_alpha: F32Ref,
+    pub snake2_beta: F32Ref,
     pub conv2_weight: F32Ref,
-    pub conv2_bias: Option<F32Ref>,
+    pub conv2_bias: F32Ref,
 }
 
 pub struct SdUpsampleBlockWeights {
-    pub snake_alpha: Option<F32Ref>,
-    pub snake_beta: Option<F32Ref>,
+    pub snake_alpha: F32Ref,
+    pub snake_beta: F32Ref,
     pub conv_weight: F32Ref,
-    pub conv_bias: Option<F32Ref>,
+    pub conv_bias: F32Ref,
     pub res_blocks: [SdResBlockWeights; 3],
 }
 
@@ -337,24 +337,24 @@ pub struct SpeechDecoderWeights {
     pub codebooks: [AlignedBuf<f32>; NUM_CODEBOOKS],
     pub rvq_first_output_proj: F32Ref,
     pub rvq_rest_output_proj: F32Ref,
-    pub pre_conv_bias: Option<F32Ref>,
+    pub pre_conv_bias: F32Ref,
     pub pre_conv_wk: AlignedBuf<f32>,
     pub input_proj_weight: F32Ref,
-    pub input_proj_bias: Option<F32Ref>,
+    pub input_proj_bias: F32Ref,
     pub pre_layers: Vec<SdPreLayerWeights>,
-    pub final_norm_weight: Option<F32Ref>,
+    pub final_norm_weight: F32Ref,
     pub output_proj_weight: F32Ref,
-    pub output_proj_bias: Option<F32Ref>,
+    pub output_proj_bias: F32Ref,
     pub rope_cos: AlignedBuf<f32>,
     pub rope_sin: AlignedBuf<f32>,
     pub convnext: [SdConvNeXtWeights; 2],
-    pub initial_conv_bias: Option<F32Ref>,
+    pub initial_conv_bias: F32Ref,
     pub initial_conv_wk: AlignedBuf<f32>,
     pub upsample_blocks: [SdUpsampleBlockWeights; 4],
     pub final_snake_alpha: F32Ref,
     pub final_snake_beta: F32Ref,
     pub final_conv_weight: F32Ref,
-    pub final_conv_bias: Option<F32Ref>,
+    pub final_conv_bias: F32Ref,
 }
 
 /// Modelo Qwen3-TTS `0.6B` (`Base`) inmutable y compartible entre hilos (`Send + Sync`).
@@ -639,7 +639,6 @@ pub struct SdStreamState {
     pub cs_final_tail: AlignedBuf<f32>,
     pub cs_alloc: bool,
     pub cs_warm: bool,
-    pub cs_tile: bool,
     // Buffers scratch reutilizables por chunk (cero asignaciones de heap durante streaming)
     pub tmp_vq_out: Vec<f32>,
     pub tmp_vq_cf: Vec<f32>,
@@ -679,7 +678,6 @@ impl SdStreamState {
             cs_final_tail: AlignedBuf::new_zeroed(0),
             cs_alloc: false,
             cs_warm: false,
-            cs_tile: false,
             tmp_vq_out: Vec::new(),
             tmp_vq_cf: Vec::new(),
             tmp_pre_conv_out: Vec::new(),
@@ -703,7 +701,6 @@ impl SdStreamState {
         self.latent_base = 0;
         self.vq_pad_valid = false;
         self.cs_warm = false;
-        self.cs_tile = false;
         if self.cs_alloc {
             for t in &mut self.cs_cn_dw_tail {
                 t.fill_zero();
@@ -767,12 +764,6 @@ impl EmbLruCache {
             capacity: EMB_CACHE_CAPACITY,
             clock: 0,
         }
-    }
-
-    pub fn clear(&mut self) {
-        self.keys.fill(-1);
-        self.access.fill(0);
-        self.clock = 0;
     }
 
     pub fn get_or_insert<F>(&mut self, tid: i32, out: &mut [f32], mut compute: F)
@@ -931,16 +922,8 @@ fn req_f32_w(store: &MmapStore, name: &str) -> Result<F32Weight, EngineError> {
     Ok(F32Weight(store.tensor_f32_ref(name)?))
 }
 
-fn opt_f32_w(store: &MmapStore, name: &str) -> Result<Option<F32Weight>, EngineError> {
-    Ok(store.tensor_f32_ref_opt(name)?.map(F32Weight))
-}
-
 fn req_f32(store: &MmapStore, name: &str) -> Result<F32Ref, EngineError> {
     Ok(store.tensor_f32_ref(name)?)
-}
-
-fn opt_f32(store: &MmapStore, name: &str) -> Result<Option<F32Ref>, EngineError> {
-    Ok(store.tensor_f32_ref_opt(name)?)
 }
 
 fn quantize_matrix_int8(src: &[u16], rows: usize, cols: usize) -> Int8Weight {
@@ -994,9 +977,9 @@ pub(crate) fn compute_text_proj_token(
     pool: &qwen_kernels::ComputePool,
     text_embedding_bf16: &[u16],
     fc1_w: &[u16],
-    fc1_b: Option<&[f32]>,
+    fc1_b: &[f32],
     fc2_w: &[u16],
-    fc2_b: Option<&[f32]>,
+    fc2_b: &[f32],
     tid: i32,
     tmp1: &mut [f32],
     tmp2: &mut [f32],
@@ -1009,17 +992,13 @@ pub(crate) fn compute_text_proj_token(
     dispatch.bf16_to_f32_vec(&mut tmp1[..th], emb_row);
 
     dispatch.matvec_bf16(pool, &mut tmp2[..th], fc1_w, &tmp1[..th], th, th);
-    if let Some(b) = fc1_b {
-        for (slot, &bv) in tmp2[..th].iter_mut().zip(b[..th].iter()) {
-            *slot += bv;
-        }
+    for (slot, &bv) in tmp2[..th].iter_mut().zip(fc1_b[..th].iter()) {
+        *slot += bv;
     }
     dispatch.silu(&mut tmp2[..th]);
     dispatch.matvec_bf16(pool, &mut out[..h], fc2_w, &tmp2[..th], h, th);
-    if let Some(b) = fc2_b {
-        for (slot, &bv) in out[..h].iter_mut().zip(b[..h].iter()) {
-            *slot += bv;
-        }
+    for (slot, &bv) in out[..h].iter_mut().zip(fc2_b[..h].iter()) {
+        *slot += bv;
     }
 }
 
@@ -1034,9 +1013,9 @@ pub fn embed_one_text_token_compute(
 ) {
     let (fc1_w, fc1_b, fc2_w, fc2_b) = (
         model.talker.text_proj_fc1_bf16.as_slice(),
-        model.talker.text_proj_fc1_bias.as_deref(),
+        &model.talker.text_proj_fc1_bias,
         model.talker.text_proj_fc2_bf16.as_slice(),
-        model.talker.text_proj_fc2_bias.as_deref(),
+        &model.talker.text_proj_fc2_bias,
     );
     compute_text_proj_token(
         dispatch,
@@ -1088,9 +1067,9 @@ fn compute_special_text_embeds(
             &runtime.pool,
             &talker.text_embedding_bf16,
             &talker.text_proj_fc1_bf16,
-            talker.text_proj_fc1_bias.as_deref(),
+            &talker.text_proj_fc1_bias,
             &talker.text_proj_fc2_bf16,
-            talker.text_proj_fc2_bias.as_deref(),
+            &talker.text_proj_fc2_bias,
             tid,
             &mut tmp1,
             &mut tmp2,
@@ -1181,9 +1160,9 @@ impl Model06B {
 
         let text_embedding_bf16 = req_bf16(store, "talker.model.text_embedding.weight")?;
         let text_proj_fc1_bf16 = req_bf16(store, "talker.text_projection.linear_fc1.weight")?;
-        let text_proj_fc1_bias = opt_f32_w(store, "talker.text_projection.linear_fc1.bias")?;
+        let text_proj_fc1_bias = req_f32_w(store, "talker.text_projection.linear_fc1.bias")?;
         let text_proj_fc2_bf16 = req_bf16(store, "talker.text_projection.linear_fc2.weight")?;
-        let text_proj_fc2_bias = opt_f32_w(store, "talker.text_projection.linear_fc2.bias")?;
+        let text_proj_fc2_bias = req_f32_w(store, "talker.text_projection.linear_fc2.bias")?;
         let codec_embedding_bf16 = req_bf16(store, "talker.model.codec_embedding.weight")?;
         let codec_head_bf16 = req_bf16(store, "talker.codec_head.weight")?;
         let norm = req_f32_w(store, "talker.model.norm.weight")?;
@@ -1340,14 +1319,14 @@ impl Model06B {
             req_f32(store, "decoder.quantizer.rvq_rest.output_proj.weight")?;
 
         let pre_conv_weight = req_f32(store, "decoder.pre_conv.conv.weight")?;
-        let pre_conv_bias = opt_f32(store, "decoder.pre_conv.conv.bias")?;
+        let pre_conv_bias = req_f32(store, "decoder.pre_conv.conv.bias")?;
         let pre_conv_wk = conv_reorder_weight(&pre_conv_weight, 1024, 512, 3);
 
         let input_proj_weight = req_f32(store, "decoder.pre_transformer.input_proj.weight")?;
-        let input_proj_bias = opt_f32(store, "decoder.pre_transformer.input_proj.bias")?;
-        let final_norm_weight = opt_f32(store, "decoder.pre_transformer.norm.weight")?;
+        let input_proj_bias = req_f32(store, "decoder.pre_transformer.input_proj.bias")?;
+        let final_norm_weight = req_f32(store, "decoder.pre_transformer.norm.weight")?;
         let output_proj_weight = req_f32(store, "decoder.pre_transformer.output_proj.weight")?;
-        let output_proj_bias = opt_f32(store, "decoder.pre_transformer.output_proj.bias")?;
+        let output_proj_bias = req_f32(store, "decoder.pre_transformer.output_proj.bias")?;
 
         let mut pre_layers = Vec::with_capacity(DEC_NUM_LAYERS);
         for i in 0..DEC_NUM_LAYERS {
@@ -1372,7 +1351,7 @@ impl Model06B {
                     store,
                     &format!("decoder.pre_transformer.layers.{i}.self_attn.o_proj.weight"),
                 )?,
-                attn_layer_scale: opt_f32(
+                attn_layer_scale: req_f32(
                     store,
                     &format!("decoder.pre_transformer.layers.{i}.self_attn_layer_scale.scale"),
                 )?,
@@ -1392,7 +1371,7 @@ impl Model06B {
                     store,
                     &format!("decoder.pre_transformer.layers.{i}.mlp.down_proj.weight"),
                 )?,
-                ffn_layer_scale: opt_f32(
+                ffn_layer_scale: req_f32(
                     store,
                     &format!("decoder.pre_transformer.layers.{i}.mlp_layer_scale.scale"),
                 )?,
@@ -1408,19 +1387,19 @@ impl Model06B {
         let load_cn = |b: usize| -> Result<SdConvNeXtWeights, EngineError> {
             Ok(SdConvNeXtWeights {
                 conv_weight: req_f32(store, &format!("decoder.upsample.{b}.0.conv.weight"))?,
-                conv_bias: opt_f32(store, &format!("decoder.upsample.{b}.0.conv.bias"))?,
+                conv_bias: req_f32(store, &format!("decoder.upsample.{b}.0.conv.bias"))?,
                 dwconv_weight: req_f32(
                     store,
                     &format!("decoder.upsample.{b}.1.dwconv.conv.weight"),
                 )?,
-                dwconv_bias: opt_f32(
+                dwconv_bias: req_f32(
                     store,
                     &format!("decoder.upsample.{b}.1.dwconv.conv.bias"),
                 )?,
                 pwconv1_weight: req_f32(store, &format!("decoder.upsample.{b}.1.pwconv1.weight"))?,
-                pwconv1_bias: opt_f32(store, &format!("decoder.upsample.{b}.1.pwconv1.bias"))?,
+                pwconv1_bias: req_f32(store, &format!("decoder.upsample.{b}.1.pwconv1.bias"))?,
                 pwconv2_weight: req_f32(store, &format!("decoder.upsample.{b}.1.pwconv2.weight"))?,
-                pwconv2_bias: opt_f32(store, &format!("decoder.upsample.{b}.1.pwconv2.bias"))?,
+                pwconv2_bias: req_f32(store, &format!("decoder.upsample.{b}.1.pwconv2.bias"))?,
                 norm_weight: req_f32(store, &format!("decoder.upsample.{b}.1.norm.weight"))?,
                 norm_bias: req_f32(store, &format!("decoder.upsample.{b}.1.norm.bias"))?,
                 gamma: req_f32(store, &format!("decoder.upsample.{b}.1.gamma"))?,
@@ -1429,7 +1408,7 @@ impl Model06B {
         let convnext = [load_cn(0)?, load_cn(1)?];
 
         let initial_conv_weight = req_f32(store, "decoder.decoder.0.conv.weight")?;
-        let initial_conv_bias = opt_f32(store, "decoder.decoder.0.conv.bias")?;
+        let initial_conv_bias = req_f32(store, "decoder.decoder.0.conv.bias")?;
         let initial_conv_wk = conv_reorder_weight(&initial_conv_weight, 1536, 1024, 7);
 
         let load_ub = |b: usize| -> Result<SdUpsampleBlockWeights, EngineError> {
@@ -1441,29 +1420,30 @@ impl Model06B {
                     store,
                     &format!("decoder.decoder.{bi}.block.{ri}.conv1.conv.weight"),
                 )?;
-                let conv1_wk = conv_reorder_weight(&conv1_weight, ch, ch, 7);
-                let conv1_wcat = (b >= SD_TILE_FROM_BLOCK)
-                    .then(|| conv_im2col_weight(&conv1_weight, ch, ch, 7));
+                let conv1_w = if b >= SD_TILE_FROM_BLOCK {
+                    conv_im2col_weight(&conv1_weight, ch, ch, 7)
+                } else {
+                    conv_reorder_weight(&conv1_weight, ch, ch, 7)
+                };
                 Ok(SdResBlockWeights {
-                    snake1_alpha: opt_f32(
+                    snake1_alpha: req_f32(
                         store,
                         &format!("decoder.decoder.{bi}.block.{ri}.act1.alpha"),
                     )?,
-                    snake1_beta: opt_f32(
+                    snake1_beta: req_f32(
                         store,
                         &format!("decoder.decoder.{bi}.block.{ri}.act1.beta"),
                     )?,
-                    conv1_bias: opt_f32(
+                    conv1_bias: req_f32(
                         store,
                         &format!("decoder.decoder.{bi}.block.{ri}.conv1.conv.bias"),
                     )?,
-                    conv1_wk,
-                    conv1_wcat,
-                    snake2_alpha: opt_f32(
+                    conv1_w,
+                    snake2_alpha: req_f32(
                         store,
                         &format!("decoder.decoder.{bi}.block.{ri}.act2.alpha"),
                     )?,
-                    snake2_beta: opt_f32(
+                    snake2_beta: req_f32(
                         store,
                         &format!("decoder.decoder.{bi}.block.{ri}.act2.beta"),
                     )?,
@@ -1471,20 +1451,20 @@ impl Model06B {
                         store,
                         &format!("decoder.decoder.{bi}.block.{ri}.conv2.conv.weight"),
                     )?,
-                    conv2_bias: opt_f32(
+                    conv2_bias: req_f32(
                         store,
                         &format!("decoder.decoder.{bi}.block.{ri}.conv2.conv.bias"),
                     )?,
                 })
             };
             Ok(SdUpsampleBlockWeights {
-                snake_alpha: opt_f32(store, &format!("decoder.decoder.{bi}.block.0.alpha"))?,
-                snake_beta: opt_f32(store, &format!("decoder.decoder.{bi}.block.0.beta"))?,
+                snake_alpha: req_f32(store, &format!("decoder.decoder.{bi}.block.0.alpha"))?,
+                snake_beta: req_f32(store, &format!("decoder.decoder.{bi}.block.0.beta"))?,
                 conv_weight: req_f32(
                     store,
                     &format!("decoder.decoder.{bi}.block.1.conv.weight"),
                 )?,
-                conv_bias: opt_f32(store, &format!("decoder.decoder.{bi}.block.1.conv.bias"))?,
+                conv_bias: req_f32(store, &format!("decoder.decoder.{bi}.block.1.conv.bias"))?,
                 res_blocks: [load_res(0)?, load_res(1)?, load_res(2)?],
             })
         };
@@ -1493,7 +1473,7 @@ impl Model06B {
         let final_snake_alpha = req_f32(store, "decoder.decoder.5.alpha")?;
         let final_snake_beta = req_f32(store, "decoder.decoder.5.beta")?;
         let final_conv_weight = req_f32(store, "decoder.decoder.6.conv.weight")?;
-        let final_conv_bias = opt_f32(store, "decoder.decoder.6.conv.bias")?;
+        let final_conv_bias = req_f32(store, "decoder.decoder.6.conv.bias")?;
 
         if !silent {
             eprintln!("  Codebooks: 16/16 (descuantizados desde EMA)");

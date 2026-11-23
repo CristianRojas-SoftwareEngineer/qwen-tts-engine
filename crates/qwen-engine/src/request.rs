@@ -12,6 +12,10 @@ use qwen_core::SamplingParams;
 pub const DEFAULT_MAX_FRAMES: usize = 8192;
 /// Tamaño por defecto del chunk de decodificación, en frames.
 pub const DEFAULT_CHUNK_FRAMES: usize = 10;
+/// Menor tamaño de chunk de decodificación admitido, en frames.
+pub const MIN_CHUNK_FRAMES: usize = 2;
+/// Mayor tamaño de chunk de decodificación admitido, en frames.
+pub const MAX_CHUNK_FRAMES: usize = 250;
 /// Pausa por defecto entre tramos hablados de una composición, en segundos.
 pub const DEFAULT_COMPOSE_PAUSE_S: f32 = 0.12;
 
@@ -49,7 +53,7 @@ pub struct SynthesisRequest {
     pub sampling: SamplingParams,
     /// Máximo de frames generados.
     pub max_frames: usize,
-    /// Tamaño del chunk de decodificación; se acota a `2..=250`.
+    /// Tamaño del chunk de decodificación; se acota a `MIN_CHUNK_FRAMES..=MAX_CHUNK_FRAMES`.
     pub chunk_frames: usize,
     pub volume: f32,
     pub rate: f32,

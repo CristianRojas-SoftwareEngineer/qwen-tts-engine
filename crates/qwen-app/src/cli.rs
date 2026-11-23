@@ -4,10 +4,17 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::net::Ipv4Addr;
+use std::ops::RangeInclusive;
 
 use qwen_core::config::CODEC_VOCAB_SIZE;
 use qwen_core::{SamplingParams, SeedChoice};
-use qwen_engine::{DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S};
+use qwen_engine::{
+    DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S, MAX_CHUNK_FRAMES, MIN_CHUNK_FRAMES,
+};
+
+use crate::request::{
+    RATE_RANGE, REP_PENALTY_RANGE, TEMPERATURE_RANGE, TOP_P_RANGE, VOLUME_RANGE,
+};
 
 /// Qué hace el proceso, resuelto una sola vez al parsear (ver [`CliMode::resolve`]).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -167,7 +174,7 @@ pub fn print_usage(prog: &str) {
     eprintln!(
         "  --stdout                   Escribe PCM s16le sin cabecera por stdout (implica --stream)"
     );
-    eprintln!("  --stream-chunk <n>         Máximo de frames por chunk de streaming (2..250, por defecto: {DEFAULT_CHUNK_FRAMES})");
+    eprintln!("  --stream-chunk <n>         Máximo de frames por chunk de streaming ({MIN_CHUNK_FRAMES}..{MAX_CHUNK_FRAMES}, por defecto: {DEFAULT_CHUNK_FRAMES})");
     eprintln!("  --volume <f>               Ganancia de salida (por defecto: 1.0)");
     eprintln!(
         "  --rate <f>                 Velocidad del habla, conservando el tono (por defecto: 1.0)"
@@ -220,14 +227,15 @@ fn take_bounded_f32(
     inline: Option<String>,
     flag: &str,
     name: &str,
-    min: f32,
-    max: f32,
+    range: RangeInclusive<f32>,
 ) -> Result<f32, String> {
     let s = take_val(args, idx, inline, flag)?;
     let v = parse_finite_f32(&s, name)?;
-    if !(min..=max).contains(&v) {
+    if !range.contains(&v) {
         return Err(format!(
-            "Error: {name} {v} fuera de rango [{min:.1}, {max:.1}]"
+            "Error: {name} {v} fuera de rango [{}, {}]",
+            range.start(),
+            range.end()
         ));
     }
     Ok(v)
@@ -298,8 +306,7 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                     inline_val,
                     flag,
                     "temperature",
-                    0.0,
-                    2.0,
+                    TEMPERATURE_RANGE,
                 )?);
             }
             "-k" | "--top-k" => {
@@ -315,11 +322,11 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                 out.top_k = v;
             }
             "-p" | "--top-p" => {
-                out.top_p = take_bounded_f32(args, &mut i, inline_val, flag, "top-p", 0.0, 1.0)?;
+                out.top_p = take_bounded_f32(args, &mut i, inline_val, flag, "top-p", TOP_P_RANGE)?;
             }
             "-r" | "--rep-penalty" => {
                 out.rep_penalty =
-                    take_bounded_f32(args, &mut i, inline_val, flag, "rep-penalty", 0.5, 2.0)?;
+                    take_bounded_f32(args, &mut i, inline_val, flag, "rep-penalty", REP_PENALTY_RANGE)?;
             }
             "-j" | "--threads" => {
                 let n = take_usize(args, &mut i, inline_val, flag, "threads")?;
@@ -357,10 +364,10 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                 out.stream_chunk = take_usize(args, &mut i, inline_val, flag, "stream-chunk")?;
             }
             "--volume" => {
-                out.volume = take_bounded_f32(args, &mut i, inline_val, flag, "volume", 0.0, 10.0)?;
+                out.volume = take_bounded_f32(args, &mut i, inline_val, flag, "volume", VOLUME_RANGE)?;
             }
             "--rate" => {
-                out.rate = take_bounded_f32(args, &mut i, inline_val, flag, "rate", 0.25, 4.0)?;
+                out.rate = take_bounded_f32(args, &mut i, inline_val, flag, "rate", RATE_RANGE)?;
             }
             "--ref-audio" => {
                 out.ref_audio = Some(take_val(args, &mut i, inline_val, flag)?);
@@ -509,15 +516,15 @@ mod tests {
     }
 
     #[test]
-    fn test_compose_flag_removed() {
-        let args: Vec<String> = ["qwen_tts", "--compose", "x"]
+    fn test_unknown_flag_is_rejected() {
+        let args: Vec<String> = ["qwen_tts", "--opcion-inexistente"]
             .into_iter()
             .map(str::to_string)
             .collect();
         let Err(e) = parse_cli(&args) else {
             panic!("se esperaba un error");
         };
-        assert_eq!(e, "Error: opción desconocida '--compose'");
+        assert_eq!(e, "Error: opción desconocida '--opcion-inexistente'");
     }
 
     fn voice_flags_result(args: &[&str]) -> Result<(), String> {
@@ -572,30 +579,6 @@ mod tests {
             voice_flags_result(&["--load-voice", "v.qvoice", "-t", "x"]),
             Ok(())
         );
-    }
-
-    #[test]
-    fn test_ref_text_flag_removed() {
-        let args: Vec<String> = ["qwen_tts", "--ref-text", "x"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        let Err(e) = parse_cli(&args) else {
-            panic!("se esperaba un error");
-        };
-        assert_eq!(e, "Error: opción desconocida '--ref-text'");
-    }
-
-    #[test]
-    fn test_xvector_only_flag_removed() {
-        let args: Vec<String> = ["qwen_tts", "--xvector-only"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        let Err(e) = parse_cli(&args) else {
-            panic!("se esperaba un error");
-        };
-        assert_eq!(e, "Error: opción desconocida '--xvector-only'");
     }
 
     #[test]

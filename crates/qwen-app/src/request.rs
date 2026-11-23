@@ -8,16 +8,26 @@
 //! Es el único sitio que aplica `plan_script`, `resolve_sampling` y la regla de idioma de cada
 //! interfaz, tanto para la CLI como para el servidor HTTP.
 
+use std::ops::RangeInclusive;
+
 use qwen_core::config::{effective_language, lookup_language, FRAME_RATE};
 use qwen_core::{
     plan_script, resolve_sampling, MarkupMode, PlannedScript, SamplingParams, Script, SeedChoice,
 };
 use qwen_engine::{
     LogLevel, SynthesisRequest, Voice, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES,
+    MAX_CHUNK_FRAMES, MIN_CHUNK_FRAMES,
 };
 
 use crate::cli::CliArgs;
 use crate::server::validation::ValidatedTtsRequest;
+
+/// Rangos admitidos de los parámetros numéricos, iguales en la CLI y en HTTP.
+pub const TEMPERATURE_RANGE: RangeInclusive<f32> = 0.0..=2.0;
+pub const TOP_P_RANGE: RangeInclusive<f32> = 0.0..=1.0;
+pub const REP_PENALTY_RANGE: RangeInclusive<f32> = 0.5..=2.0;
+pub const VOLUME_RANGE: RangeInclusive<f32> = 0.0..=10.0;
+pub const RATE_RANGE: RangeInclusive<f32> = 0.25..=4.0;
 
 /// Nivel de log de la CLI: `--silent` manda sobre `--debug`.
 pub fn log_level(cli: &CliArgs) -> LogLevel {
@@ -87,7 +97,7 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScrip
         language_id,
         sampling,
         max_frames,
-        chunk_frames: cli.stream_chunk.clamp(2, 250),
+        chunk_frames: cli.stream_chunk.clamp(MIN_CHUNK_FRAMES, MAX_CHUNK_FRAMES),
         volume: cli.volume,
         rate: cli.rate,
         compose_pause_s: cli.compose_pause,
