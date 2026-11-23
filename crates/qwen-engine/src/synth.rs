@@ -32,7 +32,7 @@ pub enum Delivery<'a> {
 pub struct SynthesisOutput {
     /// El audio mono `f32` a 24 kHz; solo con `Delivery::Buffer`.
     pub samples: Option<Vec<f32>>,
-    /// Métricas de la generación; vacías (por defecto) en un guion de tramos.
+    /// Métricas de la generación; en un guion de tramos solo lleva `samples_produced`.
     pub timing: SynthesisTiming,
 }
 
@@ -93,17 +93,23 @@ impl Synthesizer<'_> {
             }
             (Script::Spans(spans), Delivery::Buffer) => {
                 let mut sink = MemorySink::new(0);
-                compose_spans(&job, scratch, spans, &mut sink)?;
+                let (_, total) = compose_spans(&job, scratch, spans, &mut sink)?;
                 Ok(SynthesisOutput {
                     samples: Some(sink.samples),
-                    timing: SynthesisTiming::default(),
+                    timing: SynthesisTiming {
+                        samples_produced: total,
+                        ..SynthesisTiming::default()
+                    },
                 })
             }
             (Script::Spans(spans), Delivery::Stream(sink)) => {
-                compose_spans(&job, scratch, spans, sink)?;
+                let (_, total) = compose_spans(&job, scratch, spans, sink)?;
                 Ok(SynthesisOutput {
                     samples: None,
-                    timing: SynthesisTiming::default(),
+                    timing: SynthesisTiming {
+                        samples_produced: total,
+                        ..SynthesisTiming::default()
+                    },
                 })
             }
         }

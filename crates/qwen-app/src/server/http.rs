@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use qwen_core::config::{effective_language, language_name, SAMPLE_RATE};
-use qwen_core::{PlannedScript, SamplingParams, Script};
+use qwen_core::{SamplingParams, Script};
 use qwen_engine::{
     encode_wav_bytes, AbortHandle, Delivery, EdgeRampSink, EngineError, LogLevel, MemorySink,
     PcmWrite, SessionScratch, SynthesisOutput, SynthesisRequest, SynthesisTiming, Synthesizer,
@@ -378,13 +378,13 @@ fn prepare(
     ctx: &ServerContext,
     vreq: &ValidatedTtsRequest,
     label: &str,
-) -> (SynthesisRequest, PlannedScript) {
-    let (req, planned) = from_http(vreq, &ctx.voice);
+) -> (SynthesisRequest, Script) {
+    let (req, script) = from_http(vreq, &ctx.voice);
     eprintln!(
         "[HTTP] {label}: \"{}\" (voz={}, idioma={}, semilla={})",
-        planned.text, ctx.voice.name, req.language_id, req.sampling.seed
+        vreq.text, ctx.voice.name, req.language_id, req.sampling.seed
     );
-    (req, planned)
+    (req, script)
 }
 
 /// Guarda de aborto ligada al socket; responde 500 si no se puede crear.
@@ -430,7 +430,7 @@ fn handle_tts_full(
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
-    let (req, planned) = prepare(ctx, vreq, "TTS");
+    let (req, script) = prepare(ctx, vreq, "TTS");
     let Some(guard) = abort_guard(stream) else {
         return;
     };
@@ -440,7 +440,7 @@ fn handle_tts_full(
         ctx,
         scratch,
         &req,
-        &planned.script,
+        &script,
         &guard.abort,
         Delivery::Buffer,
         "compose",
@@ -448,7 +448,7 @@ fn handle_tts_full(
     let timing_opt = res
         .as_ref()
         .ok()
-        .and_then(|o| plain_timing(&planned.script, o));
+        .and_then(|o| plain_timing(&script, o));
 
     let samples = match res.map(|o| o.samples.unwrap_or_default()) {
         Ok(s) if !s.is_empty() => s,
@@ -487,7 +487,7 @@ fn handle_tts_stream(
     stream: &mut TcpStream,
     vreq: &ValidatedTtsRequest,
 ) {
-    let (req, planned) = prepare(ctx, vreq, "TTS stream");
+    let (req, script) = prepare(ctx, vreq, "TTS stream");
     let Some(guard) = abort_guard(stream) else {
         return;
     };
@@ -502,7 +502,7 @@ fn handle_tts_stream(
         ctx,
         scratch,
         &req,
-        &planned.script,
+        &script,
         &guard.abort,
         Delivery::Stream(&mut chunk_sink),
         "compose stream",
@@ -510,7 +510,7 @@ fn handle_tts_stream(
     let timing_opt = res
         .as_ref()
         .ok()
-        .and_then(|o| plain_timing(&planned.script, o));
+        .and_then(|o| plain_timing(&script, o));
     let gen_res = res.map(|_| ());
 
     let total_samples = chunk_sink.total_samples();

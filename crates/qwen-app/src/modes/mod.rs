@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::thread;
 
 use qwen_core::config::lookup_language;
-use qwen_engine::{validate_wav_path_or_header, Model06B, Synthesizer};
+use qwen_engine::{read_wav_24khz, Model06B, Synthesizer};
 use qwen_kernels::ComputeRuntime;
 
 use crate::cli::{CliArgs, CliMode};
@@ -63,13 +63,13 @@ pub fn run_with_model(cfg: CliArgs, physical_cores: usize) -> Result<i32, String
         None
     };
 
-    if cfg.stream && (cfg.rate - 1.0).abs() > 1e-4 {
-        return Err("Error: --rate != 1.0 no se puede combinar con --stream".to_string());
+    if cfg.stdout_pcm && (cfg.rate - 1.0).abs() > 1e-4 {
+        return Err("Error: --rate != 1.0 no se puede combinar con --stdout".to_string());
     }
 
-    // Validación temprana de WAV ANTES de cargar el modelo
+    // Validación temprana de la referencia antes de cargar el modelo
     if let Some(ref ref_audio) = cfg.ref_audio {
-        validate_wav_path_or_header(Path::new(ref_audio)).map_err(|e| e.to_string())?;
+        read_wav_24khz(Path::new(ref_audio)).map_err(|e| e.to_string())?;
     }
     if cfg.watch_stdin {
         spawn_stdin_watcher()?;

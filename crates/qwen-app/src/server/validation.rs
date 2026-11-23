@@ -33,7 +33,7 @@ const COMMON_FIELDS: [&str; 9] = [
 pub struct ValidatedTtsRequest {
     pub text: String,
     pub language_id: Option<i32>,
-    /// Temperatura pedida; `None` deja el valor por defecto (o el de la paralingüística).
+    /// Temperatura pedida; `None` deja el valor por defecto.
     pub temperature: Option<f32>,
     pub top_k: i32,
     pub top_p: f32,

@@ -224,7 +224,7 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
     )
     .unwrap();
     let marked = plan_script("Hola. [pause:0.3] Adiós.", MarkupMode::Auto);
-    assert!(matches!(marked.script, Script::Spans(_)));
+    assert!(matches!(marked, Script::Spans(_)));
     let cases = [
         (
             "texto plano",
@@ -236,7 +236,7 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
             &cloned_voice,
             Script::Plain("Hola mundo.".to_string()),
         ),
-        ("marcado", &default_voice, marked.script),
+        ("marcado", &default_voice, marked),
     ];
     for (label, voice, script) in &cases {
         let synth = Synthesizer {
@@ -244,11 +244,15 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
             model: &model,
             voice,
         };
-        let buffered = synth
+        let buffered_out = synth
             .synthesize(&mut scratch, &req, &abort, script, Delivery::Buffer)
-            .unwrap()
-            .samples
             .unwrap();
+        let buffered = buffered_out.samples.unwrap();
+        assert_eq!(
+            buffered_out.timing.samples_produced,
+            buffered.len(),
+            "{label}: samples_produced de la entrega completa"
+        );
         // La entrega completa aplica las rampas de borde al codificar el WAV (sin cabecera: 44 B).
         let buffer_pcm = encode_wav_bytes(&buffered, SAMPLE_RATE as u32)[44..].to_vec();
 
@@ -266,6 +270,11 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         assert!(
             streamed.samples.is_none(),
             "{label}: Stream no devuelve muestras"
+        );
+        assert_eq!(
+            streamed.timing.samples_produced,
+            buffered.len(),
+            "{label}: samples_produced de la entrega por Stream"
         );
         let stream_pcm = shared.lock().unwrap().clone();
 

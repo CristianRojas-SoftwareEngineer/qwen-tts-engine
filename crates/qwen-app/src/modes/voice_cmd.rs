@@ -3,7 +3,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Gestión de voces: `--list-voices`, `--delete-voice` y la resolución de la voz de la sesión
+//! Gestión de voces: `--list-voices` y la resolución de la voz de la sesión
 //! (`--ref-audio` clona, `--load-voice` carga, si no la voz `default`).
 
 use std::fs;
@@ -77,30 +77,6 @@ pub fn list_voices(dir_str: &str) -> i32 {
     } else {
         println!("\n  {count} perfil(es) de voz");
     }
-    0
-}
-
-/// `--delete-voice`: borra un archivo `.qvoice`, de cualquier versión mientras lleve la firma
-/// `QVCE`.
-pub fn delete_voice(path_str: &str) -> i32 {
-    let path = Path::new(path_str);
-    if !has_qvoice_ext(path) {
-        eprintln!("Error: --delete-voice solo funciona con archivos .qvoice");
-        return 1;
-    }
-    if !path.is_file() {
-        eprintln!("Error: archivo no encontrado: {path_str}");
-        return 1;
-    }
-    if !QVoiceFile::has_magic(path) {
-        eprintln!("Error: {path_str} no es un archivo .qvoice válido");
-        return 1;
-    }
-    if let Err(e) = fs::remove_file(path) {
-        eprintln!("Error: no se pudo borrar {path_str}: {e}");
-        return 1;
-    }
-    println!("Borrado {path_str}");
     0
 }
 

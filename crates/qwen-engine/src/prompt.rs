@@ -229,12 +229,5 @@ pub(crate) fn prefill(
         HIDDEN_SIZE,
         eps,
     );
-    if log.is_debug() {
-        eprint!("[PREFILL] after_norm[:8]:");
-        for v in &tb.last_hidden[..8] {
-            eprint!(" {:.6}", v);
-        }
-        eprintln!();
-    }
     Ok(prefill_ms)
 }

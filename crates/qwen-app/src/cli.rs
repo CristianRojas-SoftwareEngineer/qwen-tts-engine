@@ -25,8 +25,6 @@ pub enum CliMode {
     SelfTest,
     /// `--list-voices <carpeta|archivo>`.
     ListVoices(String),
-    /// `--delete-voice <archivo>`.
-    DeleteVoice(String),
     /// `--ref-audio` y `--save-voice` sin `--text` ni `--serve`: solo crea el perfil de voz.
     CreateVoice,
     /// `--serve <puerto>`.
@@ -39,8 +37,7 @@ pub enum CliMode {
 }
 
 impl CliMode {
-    /// Precedencia: diagnóstico (`--caps`, `--self-test`), `--list-voices`,
-    /// `--delete-voice`, crear voz, servidor y síntesis.
+    /// Precedencia: diagnóstico (`--caps`, `--self-test`), `--list-voices`, crear voz, servidor y síntesis.
     pub fn resolve(cfg: &CliArgs) -> Self {
         if cfg.show_caps {
             return Self::Caps;
@@ -50,9 +47,6 @@ impl CliMode {
         }
         if let Some(dir) = &cfg.list_voices_dir {
             return Self::ListVoices(dir.clone());
-        }
-        if let Some(path) = &cfg.delete_voice_path {
-            return Self::DeleteVoice(path.clone());
         }
         if cfg.save_voice.is_some() && cfg.text.is_none() && cfg.serve_port.is_none() {
             return Self::CreateVoice;
@@ -76,7 +70,7 @@ pub struct CliArgs {
     pub text: Option<String>,
     pub output: String,
     pub language: Option<String>,
-    /// Temperatura pedida con `-T`; `None` deja el valor por defecto (o el de la paralingüística).
+    /// Temperatura pedida con `-T`; `None` deja el valor por defecto.
     pub temperature: Option<f32>,
     pub top_k: i32,
     pub top_p: f32,
@@ -86,7 +80,6 @@ pub struct CliArgs {
     /// Semilla pedida con `--seed` (un valor negativo activa semilla temporal).
     pub seed: SeedChoice,
 
-    pub stream: bool,
     pub stdout_pcm: bool,
     pub stream_chunk: usize,
     pub volume: f32,
@@ -104,12 +97,10 @@ pub struct CliArgs {
     pub watch_stdin: bool,
 
     pub silent: bool,
-    pub debug: bool,
 
     pub show_caps: bool,
     pub self_test: bool,
     pub list_voices_dir: Option<String>,
-    pub delete_voice_path: Option<String>,
 }
 
 impl Default for CliArgs {
@@ -128,7 +119,6 @@ impl Default for CliArgs {
             max_duration: None,
             threads: None,
             seed: SeedChoice::Default,
-            stream: false,
             stdout_pcm: false,
             stream_chunk: DEFAULT_CHUNK_FRAMES,
             volume: 1.0,
@@ -142,11 +132,9 @@ impl Default for CliArgs {
             serve_host: Ipv4Addr::new(127, 0, 0, 1),
             watch_stdin: false,
             silent: false,
-            debug: false,
             show_caps: false,
             self_test: false,
             list_voices_dir: None,
-            delete_voice_path: None,
         }
     }
 }
@@ -170,29 +158,26 @@ pub fn print_usage(prog: &str) {
     eprintln!("  -p, --top-p <float>        Probabilidad acumulada máxima de esos candidatos (por defecto: 1.0)");
     eprintln!("  -r, --rep-penalty <float>  Penalización por repetición (por defecto: 1.05)");
     eprintln!("  -j, --threads <int>        Número de hilos (0=automático)");
-    eprintln!("  --stream                   Escribe el audio al WAV de forma progresiva");
     eprintln!(
-        "  --stdout                   Escribe PCM s16le sin cabecera por stdout (implica --stream)"
+        "  --stdout                   Escribe PCM s16le sin cabecera por stdout (implica --silent)"
     );
-    eprintln!("  --stream-chunk <n>         Máximo de frames por chunk de streaming ({MIN_CHUNK_FRAMES}..{MAX_CHUNK_FRAMES}, por defecto: {DEFAULT_CHUNK_FRAMES})");
+    eprintln!("  --stream-chunk <n>         Máximo de frames por chunk del decodificador ({MIN_CHUNK_FRAMES}..{MAX_CHUNK_FRAMES}, por defecto: {DEFAULT_CHUNK_FRAMES})");
     eprintln!("  --volume <f>               Ganancia de salida (por defecto: 1.0)");
     eprintln!(
         "  --rate <f>                 Velocidad del habla, conservando el tono (por defecto: 1.0)"
     );
     eprintln!("  --seed <n>                 Semilla aleatoria (por defecto: 4; < 0 para semilla temporal)");
     eprintln!("  --max-duration <secs>      Duración máxima del audio en segundos");
-    eprintln!("  --ref-audio <path>         WAV de referencia mono de 24 kHz para clonar la voz");
+    eprintln!("  --ref-audio <path>         WAV PCM mono de 16 bits a 24 kHz para clonar la voz");
     eprintln!("  --save-voice <path>        Guarda la voz (.qvoice)");
     eprintln!("  --load-voice <path>        Carga una voz (.qvoice; por defecto: la voz default integrada)");
     eprintln!("  --list-voices <dir>        Lista los archivos .qvoice de un directorio");
-    eprintln!("  --delete-voice <path>      Borra un archivo .qvoice");
     eprintln!("  --compose-pause <s>        Pausa por defecto entre tramos hablados (por defecto: {DEFAULT_COMPOSE_PAUSE_S})");
     eprintln!("  --no-compose               Pasa el texto tal cual: los [tags] se leen como texto");
     eprintln!("  --serve <port>             Inicia el servidor HTTP en el puerto indicado");
     eprintln!("  --host <ipv4>              Dirección IPv4 de enlace (por defecto: 127.0.0.1)");
     eprintln!("  --watch-stdin              Termina de inmediato cuando stdin llega a EOF");
     eprintln!("  -S, --silent               Suprime los logs de stderr");
-    eprintln!("  -D, --debug                Diagnósticos internos detallados");
     eprintln!("  --caps                     Imprime las capacidades de CPU/SIMD/BLAS y termina");
     eprintln!("  --self-test                Ejecuta la autoprueba numérica de los kernels y termina");
     eprintln!("  -h, --help                 Muestra esta ayuda y termina");
@@ -355,10 +340,8 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
                 }
                 out.max_duration = Some(v);
             }
-            "--stream" => out.stream = true,
             "--stdout" => {
                 out.stdout_pcm = true;
-                out.stream = true;
             }
             "--stream-chunk" => {
                 out.stream_chunk = take_usize(args, &mut i, inline_val, flag, "stream-chunk")?;
@@ -402,14 +385,10 @@ pub fn parse_cli(args: &[String]) -> Result<ParseOutcome, String> {
             }
             "--watch-stdin" => out.watch_stdin = true,
             "-S" | "--silent" => out.silent = true,
-            "-D" | "--debug" => out.debug = true,
             "--caps" => out.show_caps = true,
             "--self-test" => out.self_test = true,
             "--list-voices" => {
                 out.list_voices_dir = Some(take_val(args, &mut i, inline_val, flag)?);
-            }
-            "--delete-voice" => {
-                out.delete_voice_path = Some(take_val(args, &mut i, inline_val, flag)?);
             }
             other => {
                 return Err(format!("Error: opción desconocida '{other}'"));
@@ -502,11 +481,7 @@ mod tests {
             CliMode::Serve(8080)
         );
         assert_eq!(
-            mode_of(&["--delete-voice", "a.qvoice", "-t", "x"]),
-            CliMode::DeleteVoice("a.qvoice".to_string())
-        );
-        assert_eq!(
-            mode_of(&["--list-voices", "d", "--delete-voice", "a.qvoice"]),
+            mode_of(&["--list-voices", "d", "-t", "x"]),
             CliMode::ListVoices("d".to_string())
         );
         assert_eq!(
@@ -582,13 +557,12 @@ mod tests {
     }
 
     #[test]
-    fn test_stdout_implies_stream() {
+    fn test_stdout_and_clock_seed() {
         let a = vec!["qwen_tts".to_string(), "--stdout".to_string()];
         let ParseOutcome::Run(cfg) = parse_cli(&a).unwrap() else {
             panic!("se esperaba Run");
         };
         assert!(cfg.stdout_pcm);
-        assert!(cfg.stream);
         assert_eq!(cfg.temperature, None);
         assert_eq!(cfg.seed, SeedChoice::Default);
 

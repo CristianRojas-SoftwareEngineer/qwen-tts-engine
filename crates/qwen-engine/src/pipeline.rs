@@ -215,7 +215,6 @@ pub(crate) fn generate_to_sink(
     let text_content_len = prompt.text_len;
     let n_trailing = prompt.trailing_text_delta.len() / HIDDEN_SIZE;
     let silent = req.log.is_silent();
-    let debug = req.log.is_debug();
     let sp = &req.sampling;
 
     if !silent {
@@ -435,17 +434,6 @@ pub(crate) fn generate_to_sink(
                     *e += dv;
                 }
             }
-            if debug && frame < 2 {
-                eprintln!(
-                    "  [frame {}] step_embed[:5]=[{:.6},{:.6},{:.6},{:.6},{:.6}]",
-                    frame,
-                    step_embed_copy[0],
-                    step_embed_copy[1],
-                    step_embed_copy[2],
-                    step_embed_copy[3],
-                    step_embed_copy[4]
-                );
-            }
             let t_tk = Instant::now();
             talker_step(
                 runtime,
@@ -455,17 +443,6 @@ pub(crate) fn generate_to_sink(
                 &mut lh_copy,
             );
             scratch.talker_bufs.last_hidden.copy_from_slice(&lh_copy);
-            if debug && frame < 2 {
-                eprintln!(
-                    "  [frame {}] POST last_hidden[:5]=[{:.6},{:.6},{:.6},{:.6},{:.6}]",
-                    frame,
-                    lh_copy[0],
-                    lh_copy[1],
-                    lh_copy[2],
-                    lh_copy[3],
-                    lh_copy[4]
-                );
-            }
             talker_ms += t_tk.elapsed().as_secs_f64() * 1000.0;
         }
 

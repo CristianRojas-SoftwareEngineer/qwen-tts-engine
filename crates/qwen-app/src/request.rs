@@ -12,7 +12,7 @@ use std::ops::RangeInclusive;
 
 use qwen_core::config::{effective_language, lookup_language, FRAME_RATE};
 use qwen_core::{
-    plan_script, resolve_sampling, MarkupMode, PlannedScript, SamplingParams, Script, SeedChoice,
+    plan_script, resolve_sampling, MarkupMode, SamplingParams, Script, SeedChoice,
 };
 use qwen_engine::{
     LogLevel, SynthesisRequest, Voice, DEFAULT_COMPOSE_PAUSE_S, DEFAULT_MAX_FRAMES,
@@ -29,12 +29,10 @@ pub const REP_PENALTY_RANGE: RangeInclusive<f32> = 0.5..=2.0;
 pub const VOLUME_RANGE: RangeInclusive<f32> = 0.0..=10.0;
 pub const RATE_RANGE: RangeInclusive<f32> = 0.25..=4.0;
 
-/// Nivel de log de la CLI: `--silent` manda sobre `--debug`.
+/// Nivel de log de la CLI: `Silent` con `--silent`; si no, `Normal`.
 pub fn log_level(cli: &CliArgs) -> LogLevel {
     if cli.silent {
         LogLevel::Silent
-    } else if cli.debug {
-        LogLevel::Debug
     } else {
         LogLevel::Normal
     }
@@ -43,7 +41,7 @@ pub fn log_level(cli: &CliArgs) -> LogLevel {
 /// Prepara la petición de la CLI. El idioma de `-l` ya fue validado antes de cargar el modelo.
 ///
 /// Idioma: `-l`, si no el de la voz, si no español (`effective_language`).
-pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScript) {
+pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, Script) {
     let cli_language_id = cli.language.as_deref().and_then(lookup_language);
     let language_id = effective_language(cli_language_id, voice.language_id);
 
@@ -58,7 +56,7 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScrip
     } else {
         MarkupMode::Auto
     };
-    let planned = plan_script(text, mode);
+    let script = plan_script(text, mode);
 
     let base = SamplingParams {
         top_k: cli.top_k as usize,
@@ -66,20 +64,10 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScrip
         rep_penalty: cli.rep_penalty,
         ..SamplingParams::default()
     };
-    let sampling = resolve_sampling(base, cli.seed, cli.temperature, planned.paralinguistic);
+    let sampling = resolve_sampling(base, cli.seed, cli.temperature);
 
     if !cli.silent {
-        if let Some((paralinguistic_seed, _)) = planned.paralinguistic {
-            let shown_seed = match cli.seed {
-                SeedChoice::Fixed(s) => s,
-                _ => paralinguistic_seed,
-            };
-            eprintln!(
-                "Paralingüística: [tag] en línea -> onomatopeya (semilla {}, T{:.1}): \"{}\"",
-                shown_seed, sampling.temperature, planned.text
-            );
-        }
-        if mode == MarkupMode::Auto && matches!(planned.script, Script::Spans(_)) {
+        if mode == MarkupMode::Auto && matches!(script, Script::Spans(_)) {
             eprintln!("Marcado en línea detectado en --text -> modo compose");
         }
         eprintln!(
@@ -103,15 +91,15 @@ pub fn from_cli(cli: &CliArgs, voice: &Voice) -> (SynthesisRequest, PlannedScrip
         compose_pause_s: cli.compose_pause,
         log: log_level(cli),
     };
-    (req, planned)
+    (req, script)
 }
 
 /// Prepara la petición HTTP. `stream` es `true` en `/v1/tts/stream`.
 ///
 /// `chunk_frames` y `rate` ya llevan el valor efectivo de la ruta (la validación rechaza el
 /// campo que la ruta no admite). Idioma: `effective_language`.
-pub fn from_http(vreq: &ValidatedTtsRequest, voice: &Voice) -> (SynthesisRequest, PlannedScript) {
-    let planned = plan_script(&vreq.text, MarkupMode::Auto);
+pub fn from_http(vreq: &ValidatedTtsRequest, voice: &Voice) -> (SynthesisRequest, Script) {
+    let script = plan_script(&vreq.text, MarkupMode::Auto);
 
     let base = SamplingParams {
         top_k: vreq.top_k as usize,
@@ -119,7 +107,7 @@ pub fn from_http(vreq: &ValidatedTtsRequest, voice: &Voice) -> (SynthesisRequest
         rep_penalty: vreq.rep_penalty,
         ..SamplingParams::default()
     };
-    let sampling = resolve_sampling(base, vreq.seed, vreq.temperature, planned.paralinguistic);
+    let sampling = resolve_sampling(base, vreq.seed, vreq.temperature);
 
     let req = SynthesisRequest {
         language_id: effective_language(vreq.language_id, voice.language_id),
@@ -131,12 +119,13 @@ pub fn from_http(vreq: &ValidatedTtsRequest, voice: &Voice) -> (SynthesisRequest
         compose_pause_s: DEFAULT_COMPOSE_PAUSE_S,
         log: LogLevel::Silent,
     };
-    (req, planned)
+    (req, script)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qwen_core::config::{DEFAULT_SEED, DEFAULT_TEMPERATURE};
     use qwen_engine::DEFAULT_CHUNK_FRAMES;
 
     fn voice(language_id: Option<i32>) -> Voice {
@@ -176,16 +165,13 @@ mod tests {
 
     #[test]
     fn http_seed_and_temperature_precedence() {
-        let (tagged, _) = from_http(
-            &parse(r#"{"text":"Hola [laugh] mundo."}"#, false),
-            &voice(None),
-        );
+        let (default, _) = from_http(&parse(r#"{"text":"Hola."}"#, false), &voice(None));
         assert_eq!(
-            (tagged.sampling.seed, tagged.sampling.temperature),
-            (2024, 1.1)
+            (default.sampling.seed, default.sampling.temperature),
+            (DEFAULT_SEED, DEFAULT_TEMPERATURE)
         );
-        let body = r#"{"text":"Hola [laugh] mundo.","seed":4,"temperature":0.5}"#;
+        let body = r#"{"text":"Hola.","seed":9,"temperature":0.5}"#;
         let (user, _) = from_http(&parse(body, false), &voice(None));
-        assert_eq!((user.sampling.seed, user.sampling.temperature), (4, 0.5));
+        assert_eq!((user.sampling.seed, user.sampling.temperature), (9, 0.5));
     }
 }

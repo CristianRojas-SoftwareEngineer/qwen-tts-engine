@@ -13,7 +13,7 @@ use qwen_core::{
 };
 use qwen_engine::{
     clone_voice, encode_wav_bytes, mel_spectrogram, AbortHandle,
-    read_wav_24khz, trim_trailing_silence, validate_wav_path_or_header, write_wav, CloneOptions,
+    read_wav_24khz, trim_trailing_silence, write_wav, CloneOptions,
     Delivery, LogLevel, MemorySink, Model06B, SessionScratch,
     SynthesisRequest, Synthesizer, Voice, VoiceLoadOptions,
 };
@@ -40,63 +40,52 @@ fn temp_dir(name: &str) -> PathBuf {
 #[test]
 fn test_wav_validation_and_ffmpeg_hints() {
     let dir = temp_dir("wav_validation");
+    let samples24: Vec<f32> = (0..24000).map(|i| ((i as f32) * 0.05).sin() * 0.2).collect();
 
-    // 1. Rechazo por extensión (.mp3, .mp4, .flac, .ogg)
-    for ext in ["mp3", "mp4", "ogg", "flac"] {
-        let p = dir.join(format!("fake.{ext}"));
-        fs::write(&p, b"dummy").unwrap();
-        let err = validate_wav_path_or_header(&p).unwrap_err().to_string();
-        assert!(
-            err.contains("ffmpeg -i"),
-            "Se esperaba la pista de ffmpeg para .{ext}: {err}"
-        );
-        assert!(
-            err.contains("24000"),
-            "Se esperaba la pista de 24000 Hz para .{ext}: {err}"
-        );
-    }
+    // 1. Un archivo que no es WAV da la pista de ffmpeg
+    let fake = dir.join("fake.mp3");
+    fs::write(&fake, b"dummy").unwrap();
+    let err = read_wav_24khz(&fake).unwrap_err().to_string();
+    assert!(
+        err.contains("ffmpeg -i") && err.contains("24000"),
+        "se obtuvo: {err}"
+    );
 
-    // 2. Rechazo por magic bytes incluso con extensión .wav
+    // 2. Una firma que no es RIFF/WAVE se rechaza aunque la extensión sea .wav
     let bad_mp3 = dir.join("disguised_mp3.wav");
     fs::write(&bad_mp3, b"ID3\x03\x00\x00\x00\x00\x00\x00\x00\x00").unwrap();
     let err = read_wav_24khz(&bad_mp3).unwrap_err().to_string();
     assert!(
-        err.contains("MP3") && err.contains("ffmpeg -i"),
+        err.contains("no es un archivo WAV") && err.contains("ffmpeg -i"),
         "se obtuvo: {err}"
     );
 
-    let bad_ogg = dir.join("disguised_ogg.wav");
-    fs::write(&bad_ogg, b"OggS\x00\x02\x00\x00\x00\x00\x00\x00").unwrap();
-    let err = read_wav_24khz(&bad_ogg).unwrap_err().to_string();
-    assert!(
-        err.contains("OGG") && err.contains("ffmpeg -i"),
-        "se obtuvo: {err}"
-    );
-
-    // 3. Un WAV válido con frecuencia distinta (16000 Hz) debe fallar explícitamente
+    // 3. Un WAV de otra frecuencia (16000 Hz) falla de forma explícita
     let wav_16k = dir.join("ref_16k.wav");
-    let samples = vec![0.1f32; 16000];
-    write_wav(&wav_16k, &samples, 16000).unwrap();
+    write_wav(&wav_16k, &vec![0.1f32; 16000], 16000).unwrap();
     let err = read_wav_24khz(&wav_16k).unwrap_err().to_string();
     assert!(
-        err.contains("24000 Hz") && err.contains("16000 Hz") && err.contains("ffmpeg -i"),
-        "Se esperaba un error explícito de 24 kHz, se obtuvo: {err}"
+        err.contains("16000 Hz") && err.contains("ffmpeg -i"),
+        "se obtuvo: {err}"
     );
 
-    // 4. Un WAV válido a 24 kHz tiene éxito
-    let wav_24k = dir.join("ref_24k.wav");
-    let samples24: Vec<f32> = (0..24000)
-        .map(|i| ((i as f32) * 0.05).sin() * 0.2)
-        .collect();
-    write_wav(&wav_24k, &samples24, 24000).unwrap();
-    let read_back = read_wav_24khz(&wav_24k).unwrap();
-    assert_eq!(read_back.len(), 24000);
+    // 4. Un WAV estéreo se rechaza
+    let wav_stereo = dir.join("stereo.wav");
+    let mut bytes = encode_wav_bytes(&samples24[..2400], 24000);
+    bytes[22..24].copy_from_slice(&2u16.to_le_bytes());
+    fs::write(&wav_stereo, bytes).unwrap();
+    let err = read_wav_24khz(&wav_stereo).unwrap_err().to_string();
+    assert!(err.contains("2 canales"), "se obtuvo: {err}");
 
-    // 5. Un WAV con sample_rate = 0 falla en read_wav_pcm
+    // 5. Un WAV válido a 24 kHz se lee entero
+    let wav_24k = dir.join("ref_24k.wav");
+    write_wav(&wav_24k, &samples24, 24000).unwrap();
+    assert_eq!(read_wav_24khz(&wav_24k).unwrap().len(), 24000);
+
+    // 6. Un WAV con sample_rate = 0 falla
     let wav_sr0 = dir.join("bad_sr0.wav");
-    let bad_hdr = encode_wav_bytes(&samples24[..128], 0);
-    fs::write(&wav_sr0, bad_hdr).unwrap();
-    assert!(qwen_engine::read_wav_pcm(&wav_sr0).is_err());
+    fs::write(&wav_sr0, encode_wav_bytes(&samples24[..128], 0)).unwrap();
+    assert!(read_wav_24khz(&wav_sr0).is_err());
 }
 
 #[test]
@@ -189,16 +178,14 @@ fn test_voice_file_extension_and_version_errors() {
 fn test_markup_with_default_voice_texts() {
     // Un tag desconocido no es marcado: queda como texto y no activa el modo compose
     let plan = plan_script("Devo andare [xyz] Ciao.", MarkupMode::Auto);
-    assert!(plan.paralinguistic.is_none());
-    let Script::Plain(text) = &plan.script else {
+    let Script::Plain(text) = &plan else {
         panic!("se esperaba Plain");
     };
     assert!(text.contains("[xyz]"));
 
-    // Pausas y `[laugh]` siguen funcionando
-    let plan = plan_script("Oh! [laugh] [pause:0.5] Great!", MarkupMode::Auto);
-    assert!(plan.paralinguistic.is_some());
-    let Script::Spans(spans) = &plan.script else {
+    // Pausas y muletillas siguen funcionando
+    let plan = plan_script("Oh! [hmm] [pause:0.5] Great!", MarkupMode::Auto);
+    let Script::Spans(spans) = &plan else {
         panic!("se esperaba Spans");
     };
     assert!(spans.iter().any(
@@ -315,18 +302,16 @@ fn test_clone_from_default_voice_e2e() {
 
     // 6. Marcado multitramo y streaming de tramos, con la voz `default`
     let plan = plan_script(
-        "Che bella notizia! [pause:400ms] Devo andare... [sigh] Ciao.",
+        "Che bella notizia! [pause:400ms] Devo andare... Ciao.",
         MarkupMode::Auto,
     );
-    assert!(plan.paralinguistic.is_some());
-    let Script::Spans(spans) = &plan.script else {
+    let Script::Spans(spans) = &plan else {
         panic!("se esperaba Spans");
     };
     let sampling = resolve_sampling(
         SamplingParams::default(),
         SeedChoice::Fixed(DEFAULT_SEED),
         None,
-        plan.paralinguistic,
     );
     assert!(spans.len() >= 3);
     let compose_req = SynthesisRequest {
@@ -345,7 +330,7 @@ fn test_clone_from_default_voice_e2e() {
         voice: &default_voice,
     };
     let composed = default_synth
-        .synthesize(&mut scratch, &compose_req, &abort, &plan.script, Delivery::Buffer)
+        .synthesize(&mut scratch, &compose_req, &abort, &plan, Delivery::Buffer)
         .unwrap()
         .samples
         .unwrap();
@@ -362,7 +347,7 @@ fn test_clone_from_default_voice_e2e() {
                 ..compose_req
             },
             &abort,
-            &plan.script,
+            &plan,
             Delivery::Stream(&mut stream_sink),
         )
         .unwrap();

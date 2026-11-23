@@ -17,7 +17,7 @@ pub mod tokenizer;
 pub use config::ModelConfig06B;
 pub use error::CoreError;
 pub use markup::{
-    plan_script, resolve_sampling, MarkupMode, MarkupPlanner, PlannedScript, Script, SpanSpec,
+    plan_script, resolve_sampling, MarkupMode, MarkupPlanner, Script, SpanSpec,
 };
 pub use mmap_store::{Bf16Ref, F32Ref, MmapStore};
 pub use qvoice::QVoiceFile;

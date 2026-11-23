@@ -32,7 +32,7 @@ impl Default for SamplingParams {
 /// Origen de la semilla pedida por el usuario.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeedChoice {
-    /// El usuario no fijó semilla: manda la paralingüística o `DEFAULT_SEED`.
+    /// El usuario no fijó semilla: se usa `DEFAULT_SEED`.
     Default,
     /// Semilla explícita.
     Fixed(u32),

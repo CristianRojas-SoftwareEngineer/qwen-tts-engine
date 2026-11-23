@@ -27,8 +27,6 @@ pub enum LogLevel {
     /// Log normal.
     #[default]
     Normal,
-    /// Log normal y diagnósticos internos.
-    Debug,
 }
 
 impl LogLevel {
@@ -36,12 +34,6 @@ impl LogLevel {
     #[inline]
     pub fn is_silent(self) -> bool {
         self == LogLevel::Silent
-    }
-
-    /// `true` si se piden los diagnósticos internos.
-    #[inline]
-    pub fn is_debug(self) -> bool {
-        self == LogLevel::Debug
     }
 }
 

@@ -55,16 +55,6 @@ fn valid_lang_id(lang_id: u32) -> bool {
 }
 
 impl QVoiceFile {
-    /// `true` si el archivo empieza por la firma `QVCE`, sea cual sea su versión.
-    pub fn has_magic(path: &Path) -> bool {
-        use std::io::Read;
-        let mut magic = [0u8; 4];
-        std::fs::File::open(path)
-            .and_then(|mut f| f.read_exact(&mut magic))
-            .is_ok()
-            && &magic == QVCE_MAGIC
-    }
-
     pub fn read_from_file(path: &Path) -> Result<Self, CoreError> {
         let bytes = std::fs::read(path)
             .map_err(|e| CoreError::QVoice(format!("No se puede leer {}: {e}", path.display())))?;

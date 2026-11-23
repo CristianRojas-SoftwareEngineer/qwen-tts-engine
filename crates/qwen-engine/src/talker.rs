@@ -244,31 +244,11 @@ pub fn talker_prefill(
             pref_proj,
         );
         d.add_inplace(residual, pref_proj);
-
-        if log.is_debug() {
-            eprintln!(
-                "  Capa {}/{} terminada res[:4]=[{:.4},{:.4},{:.4},{:.4}]",
-                layer_idx + 1,
-                NUM_LAYERS,
-                residual[0],
-                residual[1],
-                residual[2],
-                residual[3]
-            );
-        }
     }
 
     scratch.talker_kv.len = seq_len;
     tb.dec_x[..HIDDEN_SIZE]
         .copy_from_slice(&residual[(seq_len - 1) * HIDDEN_SIZE..seq_len * HIDDEN_SIZE]);
-
-    if log.is_debug() {
-        eprint!("[PREFILL] last_hidden[:8]:");
-        for v in &tb.dec_x[..8] {
-            eprint!(" {:.6}", v);
-        }
-        eprintln!();
-    }
 
     if !log.is_silent() {
         eprintln!("  Prefill completo ({seq_len} tokens en la caché KV)");

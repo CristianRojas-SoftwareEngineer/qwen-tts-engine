@@ -23,9 +23,8 @@ pub mod voice;
 pub mod voice_clone;
 
 pub use audio::{
-    encode_wav_bytes, read_wav_24khz, read_wav_pcm, trim_trailing_silence,
-    validate_wav_path_or_header, write_wav, AudioSink, EdgeRampSink, MemorySink, PcmWrite,
-    StdoutWriter, WavFileWriter,
+    encode_wav_bytes, read_wav_24khz, trim_trailing_silence, write_wav, AudioSink, EdgeRampSink,
+    MemorySink, PcmWrite, StdoutWriter,
 };
 pub use error::EngineError;
 pub use model::{AbortHandle, Model06B, SessionScratch, SynthesisTiming};

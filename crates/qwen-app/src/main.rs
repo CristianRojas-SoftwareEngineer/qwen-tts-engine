@@ -28,7 +28,6 @@ fn run_app(mut cfg: CliArgs) -> Result<i32, String> {
         CliMode::Caps => Ok(diag::caps(&cfg)),
         CliMode::SelfTest => Ok(diag::self_test(&cfg)),
         CliMode::ListVoices(dir) => Ok(voice_cmd::list_voices(dir)),
-        CliMode::DeleteVoice(path) => Ok(voice_cmd::delete_voice(path)),
         CliMode::CreateVoice | CliMode::Serve(_) | CliMode::Synthesize | CliMode::NoJob => {
             run_with_model(cfg, physical_cores)
         }
