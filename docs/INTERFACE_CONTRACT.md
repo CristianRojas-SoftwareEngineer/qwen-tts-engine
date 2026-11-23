@@ -72,7 +72,7 @@
 ### 2.1 Seguridad de red y límites
 
 - **Enlace por defecto**: `127.0.0.1:<port>` (solo expone otra interfaz con `--host`).
-- **Límite de cuerpo**: máximo `1 MiB` (`1_048_576` bytes) por petición HTTP.
+- **Límite de cuerpo**: máximo `1 MiB` (`1_048_576` bytes) por petición HTTP. Si lo excede (o el `Content-Length` es inválido), la respuesta `400` llega aunque el cliente envíe el cuerpo entero: el servidor descarta lo que quede durante 2 s como máximo antes de cerrar, y mientras tanto la conexión siguiente espera (atiende una a la vez).
 - **Formato de error**: `{"error":"<causa>"}` con `Content-Type: application/json`.
 - **Una conexión a la vez**: el servidor atiende cada conexión en línea, con un único trabajador y sin cola.
 - **Calentamiento al arrancar**: el servidor sintetiza y descarta 12 frames de «Hello.» antes de aceptar conexiones (~1 s), para que la primera petición no pague el arranque en frío. La memoria comprometida (*commit*) en reposo queda en el nivel de después de una petición; el audio de las peticiones no cambia. Log: `[HTTP] Calentamiento: <ms> ms`.

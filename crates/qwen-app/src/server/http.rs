@@ -4,7 +4,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -211,6 +211,25 @@ pub fn send_error(stream: &mut TcpStream, status: u16, msg: &str) {
     let escaped = serde_json::to_string(msg).unwrap_or_else(|_| "\"error\"".to_string());
     let json = format!("{{\"error\":{escaped}}}");
     send_json(stream, status, &json);
+}
+
+/// Responde `400` a una petición cuyo cuerpo no se va a leer.
+///
+/// Cerrar un socket con datos sin leer hace que el sistema reinicie la conexión y descarte la
+/// respuesta que el cliente aún no leyó. Por eso, tras enviar el error, se cierra solo la
+/// escritura y se descarta lo pendiente, con un tope de 2 s.
+fn reject_unread_request(stream: &mut TcpStream, msg: &str) {
+    send_error(stream, 400, msg);
+    let _ = stream.shutdown(Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+    let start = Instant::now();
+    let mut buf = [0u8; 65536];
+    while start.elapsed() < Duration::from_secs(2) {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
 }
 
 pub fn send_chunked_header(stream: &mut TcpStream) -> std::io::Result<()> {
@@ -531,15 +550,14 @@ pub fn handle_connection(
     let req = match read_http_request(&mut stream) {
         ReadHttpResult::Ok(req) => req,
         ReadHttpResult::TooLarge => {
-            send_error(
+            reject_unread_request(
                 &mut stream,
-                400,
                 "el cuerpo de la petición excede el límite de 1 MiB",
             );
             return;
         }
         ReadHttpResult::InvalidContentLength => {
-            send_error(&mut stream, 400, "cabecera Content-Length inválida");
+            reject_unread_request(&mut stream, "cabecera Content-Length inválida");
             return;
         }
         ReadHttpResult::Empty => return,
@@ -595,5 +613,33 @@ mod tests {
         drop(srv);
         let resp = client_t.join().unwrap();
         assert!(resp.contains("400 Bad Request"));
+    }
+
+    #[test]
+    fn test_oversized_body_gets_400_even_if_client_sends_it() {
+        let mut received = 0;
+        for _ in 0..20 {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let client_t = std::thread::spawn(move || {
+                let mut c = TcpStream::connect(addr).unwrap();
+                let head = b"POST /v1/tts HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4194304\r\n\r\n";
+                let _ = c.write_all(head);
+                let _ = c.write_all(&vec![b'a'; 4 * 1024 * 1024]);
+                let mut resp = Vec::new();
+                let _ = c.read_to_end(&mut resp);
+                String::from_utf8_lossy(&resp).into_owned()
+            });
+            let (mut srv, _) = listener.accept().unwrap();
+            let res = read_http_request(&mut srv);
+            assert!(matches!(res, ReadHttpResult::TooLarge));
+            reject_unread_request(&mut srv, "el cuerpo de la petición excede el límite de 1 MiB");
+            drop(srv);
+            let resp = client_t.join().unwrap();
+            if resp.contains("400 Bad Request") {
+                received += 1;
+            }
+        }
+        assert_eq!(received, 20, "llegaron {received} de 20 respuestas 400");
     }
 }
