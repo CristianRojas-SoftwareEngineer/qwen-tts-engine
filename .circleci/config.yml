@@ -299,6 +299,9 @@ jobs:
       - build_own_openblas:
           cache_key: openblas-0.3.34-dynarch-core2-linux-x64-v1
       - install_rust_unix
+      - run:
+          name: Avisos de terceros (THIRD-PARTY-LICENSES.md)
+          command: bash scripts/ci-check-licenses.sh
       - download_model
       - test_unix
 

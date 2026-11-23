@@ -65,6 +65,7 @@ La CI del repositorio es CircleCI, con cuatro workflows sobre las mismas máquin
 
 **Workflows**:
 - **`test`**: en cada push, en los cuatro sistemas (Linux x86_64, Linux ARM64, macOS ARM64 y Windows x86_64).
+  - solo en Linux x86_64, antes de las pruebas, `scripts/ci-check-licenses.sh`: compara los crates y versiones que entran en el binario de los cuatro targets (`cargo metadata` recorrido desde `qwen-app`, sin dependencias de compilación ni macros procedurales) con la tabla «Crates que entran en el binario» de `THIRD-PARTY-LICENSES.md`, y falla si falta o sobra alguno;
   - `clippy --workspace --all-targets -- -D warnings`;
   - `cargo test --workspace --release`, con el modelo Base restaurado de la caché, así que las pruebas que lo necesitan se ejecutan;
   - `--caps` y `--self-test`.
