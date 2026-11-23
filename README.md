@@ -283,7 +283,7 @@ Este proyecto está licenciado bajo **Mozilla Public License Version 2.0 (`MPL-2
 Copyright (c) 2026 Cristián Rojas Arredondo y colaboradores de qwen-tts-engine.
 
 - [`LICENSE`](LICENSE): texto completo de la MPL-2.0.
-- [`NOTICE`](NOTICE): titular, atribución al motor original en C y avisos del proyecto.
+- [`NOTICE`](NOTICE): titular, dónde obtener el código fuente, atribución al motor original en C y avisos del proyecto.
 - [`THIRD-PARTY-LICENSES.md`](THIRD-PARTY-LICENSES.md): avisos y licencias de los componentes de terceros que entran en el binario.
 
-La voz `default` incorporada en el binario es un x-vector calculado de una grabación propia del autor, cedido bajo la licencia del proyecto (MPL-2.0). Los pesos del modelo Qwen3-TTS 0.6B Base no forman parte del repositorio ni del binario y tienen su propia licencia.
+La voz `default` incorporada en el binario es un x-vector calculado de una grabación propia del autor, cedido bajo la licencia del proyecto (MPL-2.0). Los pesos del modelo Qwen3-TTS 0.6B Base no forman parte del repositorio ni del binario y tienen su propia licencia (Apache-2.0).

@@ -6,6 +6,15 @@ El proyecto se distribuye bajo la Mozilla Public License, v. 2.0 (ver
 LICENSE). Cada archivo fuente lleva la cabecera del Exhibit A de la MPL-2.0;
 no elimines ni alteres esos avisos (MPL-2.0 §3.4).
 
+Código fuente
+-------------
+El código fuente está en
+https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine. El de
+cada versión publicada está en su tag (por ejemplo, `v1.0.0`) y en el archivo
+`qwen-tts-engine-<versión>-src.tar.gz` de su release. Quien redistribuya el
+binario debe conservar este aviso o indicar de otro modo dónde obtener el
+código fuente (MPL-2.0 §3.2).
+
 Atribución
 ----------
 El motor es una implementación en Rust portada a partir del motor en C
@@ -45,7 +54,7 @@ Pesos del modelo
 ----------------
 Los pesos de Qwen3-TTS 0.6B Base no forman parte del repositorio ni del
 binario y conservan su propia licencia: la del repositorio
-`Qwen/Qwen3-TTS-12Hz-0.6B-Base` en Hugging Face.
+`Qwen/Qwen3-TTS-12Hz-0.6B-Base` en Hugging Face (Apache-2.0).
 
 Terceros
 --------

@@ -47,8 +47,8 @@ for target in "${targets[@]}"; do
 done
 sort -u "$tmp"/*.txt > "$tmp/cargo.txt"
 
-# Solo cuentan las filas de la tabla cuya primera celda es exactamente `nombre`: la fila de
-# la biblioteca estándar de Rust, que no es un crate de Cargo, queda fuera.
+# Solo cuentan las filas de esa tabla cuya primera celda es exactamente `nombre`. La tabla de
+# la biblioteca estándar de Rust va en su propia sección: sus crates no salen de `cargo metadata`.
 awk -F'|' '
     /^## / { in_table = ($0 == "## Crates que entran en el binario"); next }
     in_table && NF > 3 {

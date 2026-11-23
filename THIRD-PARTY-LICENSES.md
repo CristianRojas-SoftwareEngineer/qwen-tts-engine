@@ -25,7 +25,6 @@ Versiones del `Cargo.lock`. Los crates `serde_derive`, `syn`, `quote`, `proc-mac
 
 | Crate | Versión | Plataformas | Licencia declarada | Licencia elegida |
 |---|---|---|---|---|
-| Biblioteca estándar de Rust (`std`, `core`, `alloc` y sus dependencias internas) | Rust 1.96.0 | Todas | MIT OR Apache-2.0 | MIT |
 | `itoa` | 1.0.19 | Todas | MIT OR Apache-2.0 | MIT |
 | `libc` | 0.2.191 | Linux y macOS (dependencia unix de `memmap2`) | MIT OR Apache-2.0 | MIT |
 | `memchr` | 2.8.3 | Todas | Unlicense OR MIT | MIT |
@@ -36,24 +35,50 @@ Versiones del `Cargo.lock`. Los crates `serde_derive`, `syn`, `quote`, `proc-mac
 | `serde_json` | 1.0.154 | Todas | MIT OR Apache-2.0 | MIT |
 | `zmij` | 1.0.23 | Todas | MIT | MIT |
 
-El detalle de los avisos de la biblioteca estándar y de sus dependencias internas está en `COPYRIGHT-library.html`, que se distribuye con la documentación de la cadena de herramientas de Rust.
+## Biblioteca estándar de Rust
+
+La biblioteca estándar de Rust 1.96.0, la versión que fija `rust-toolchain.toml`, entra en el binario con sus propias dependencias, que no aparecen en el `Cargo.lock` del proyecto. Las versiones son las del `library/Cargo.lock` de Rust 1.96.0, resueltas para los cuatro targets con la feature de Cargo `backtrace`, con la que Rust compila la biblioteca estándar que distribuye. Al cambiar la versión de Rust, esta tabla se rehace con el `library/Cargo.lock` de la versión nueva.
+
+| Crate | Versión | Plataformas | Licencia declarada | Licencia elegida |
+|---|---|---|---|---|
+| `std`, `core`, `alloc`, `panic_abort`, `panic_unwind`, `unwind`, `std_detect`, `rustc-std-workspace-core` y `rustc-std-workspace-alloc` | Rust 1.96.0 | Todas | MIT OR Apache-2.0 | MIT |
+| `windows-link` (de la biblioteca de Rust) | Rust 1.96.0 | Windows | No declara; la del repositorio de Rust, MIT OR Apache-2.0 | MIT |
+| `compiler_builtins` (incluye el módulo `math`, tomado del crate `libm`) | 0.1.160 | Todas | MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0); `libm`: MIT | MIT y Apache-2.0 WITH LLVM-exception (la expresión exige las dos) |
+| `addr2line` | 0.25.1 | Todas | Apache-2.0 OR MIT | MIT |
+| `adler2` | 2.0.1 | Todas | 0BSD OR MIT OR Apache-2.0 | 0BSD |
+| `cfg-if` | 1.0.4 | Todas | MIT OR Apache-2.0 | MIT |
+| `foldhash` | 0.2.0 | Todas | Zlib | Zlib |
+| `gimli` | 0.32.3 | Todas | MIT OR Apache-2.0 | MIT |
+| `hashbrown` | 0.16.1 | Todas | MIT OR Apache-2.0 | MIT |
+| `libc` | 0.2.183 | Todas | MIT OR Apache-2.0 | MIT |
+| `memchr` | 2.7.6 | Todas | Unlicense OR MIT | MIT |
+| `miniz_oxide` | 0.8.9 | Todas | MIT OR Zlib OR Apache-2.0 | MIT |
+| `object` | 0.37.3 | Todas | Apache-2.0 OR MIT | MIT |
+| `rustc-demangle` | 0.1.27 | Todas | MIT/Apache-2.0 | MIT |
 
 ## Textos de licencia
 
 ### MIT
 
-Aplica a: `itoa`, `libc`, `memmap2`, `serde`, `serde_core`, `serde_json`, `zmij` y la biblioteca estándar de Rust. (`memchr` usa el texto de la sección siguiente.)
+Aplica a: `itoa`, `libc`, `memmap2`, `serde`, `serde_core`, `serde_json`, `zmij` y, de la biblioteca estándar de Rust, a todos los crates de su tabla salvo `adler2`, `foldhash` y `memchr`. (`memchr` usa el texto de la sección siguiente.)
 
 Avisos de copyright:
 
-- `libc`: Copyright (c) The Rust Project Developers
+- `libc` (0.2.191 y 0.2.183): Copyright (c) The Rust Project Developers
 - `memmap2`: Copyright (c) 2020 Yevhenii Reizner; Copyright (c) 2015 Dan Burkert
-- Biblioteca estándar de Rust: Copyright (c) The Rust Project Developers (ver https://thanks.rust-lang.org)
+- `std`, `core`, `alloc`, `panic_abort`, `panic_unwind`, `unwind`, `std_detect`, `rustc-std-workspace-core`, `rustc-std-workspace-alloc` y `windows-link`: Copyright (c) The Rust Project Developers (ver https://thanks.rust-lang.org)
+- `compiler_builtins` y su módulo `math` (`libm`): sus avisos, los de compiler-rt de LLVM, musl y CORE-MATH incluidos, están en la sección «`compiler_builtins`»
+- `addr2line`: Copyright (c) 2016-2018 The gimli Developers
+- `gimli`: Copyright (c) 2015 The Rust Project Developers
+- `object`: Copyright (c) 2015 The Gimli Developers
+- `hashbrown`: Copyright (c) 2016 Amanieu d'Antras
+- `miniz_oxide`: Copyright 2013-2014 RAD Game Tools and Valve Software; Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC; Copyright (c) 2017 Frommi; Copyright (c) 2017-2024 oyvindln
+- `rustc-demangle` y `cfg-if`: Copyright (c) 2014 Alex Crichton
 - `itoa` y `zmij`: sin aviso de copyright en el texto; autores: David Tolnay <dtolnay@gmail.com>
 - `serde` y `serde_core`: sin aviso de copyright en el texto; autores: Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>
 - `serde_json`: sin aviso de copyright en el texto; su `Cargo.toml` no declara autores
 
-Texto (el de `LICENSE-MIT` de `itoa`, idéntico en `serde`, `serde_core`, `serde_json`, `zmij`, `libc` y `memmap2` salvo la línea de copyright):
+Texto (el de `LICENSE-MIT` de `itoa`; el de los demás crates de esta sección dice lo mismo salvo la línea de copyright y los saltos de línea):
 
 ```text
 Permission is hereby granted, free of charge, to any
@@ -84,7 +109,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### MIT (`memchr`)
 
-Aplica a: `memchr`.
+Aplica a: `memchr`, en sus dos versiones: la 2.8.3 del proyecto y la 2.7.6 de la biblioteca estándar, que traen el mismo texto.
 
 ```text
 The MIT License (MIT)
@@ -113,7 +138,7 @@ THE SOFTWARE.
 
 ### Apache-2.0
 
-Aplica a: `safetensors`. El crate no trae archivo `NOTICE`, así que la sección 4(d) de la licencia no añade nada.
+Aplica a: `safetensors` y, con la excepción de LLVM, a `compiler_builtins` (ver la sección «`compiler_builtins`»). Ninguno de los dos trae archivo `NOTICE`, así que la sección 4(d) de la licencia no añade nada.
 
 ```text
                                  Apache License
@@ -318,6 +343,135 @@ Aplica a: `safetensors`. El crate no trae archivo `NOTICE`, así que la sección
    See the License for the specific language governing permissions and
    limitations under the License.
 
+```
+
+### `compiler_builtins`
+
+Aplica a: `compiler_builtins` y su módulo `math`, tomado del crate `libm`. `compiler_builtins` se distribuye bajo MIT y Apache-2.0 con la excepción de LLVM a la vez: el texto MIT es el de la sección «MIT» y el de Apache-2.0, el de la sección «Apache-2.0». La excepción exime a las partes de `compiler_builtins` que la compilación incrusta en el binario de las condiciones 4(a), 4(b) y 4(d) de Apache-2.0. `libm` se distribuye bajo MIT, con el texto de la sección «MIT».
+
+Excepción de LLVM y avisos de terceros, literales del `LICENSE.txt` de `compiler_builtins`:
+
+```text
+---- LLVM Exceptions to the Apache 2.0 License ----
+
+As an exception, if, as a result of your compiling your source code, portions
+of this Software are embedded into an Object form of such source code, you
+may redistribute such embedded portions in such Object form without complying
+with the conditions of Sections 4(a), 4(b) and 4(d) of the License.
+
+In addition, if you combine or link compiled forms of this Software with
+software that is licensed under the GPLv2 ("Combined Software") and if a
+court of competent jurisdiction determines that the patent provision (Section
+3), the indemnity provision (Section 9) or other Section of the License
+conflicts with the conditions of the GPLv2, you may retroactively and
+prospectively choose to deem waived or otherwise exclude such Section(s) of
+the License, but only in their entirety and only with respect to the Combined
+Software.
+------------------------------------------------------------------------------
+
+Portions of this software are derived from third-party works licensed under
+terms compatible with the above Apache-2.0 WITH LLVM-exception AND MIT
+license:
+
+* compiler-builtins is derived from LLVM's compiler-rt (https://llvm.org/).
+  Work derived from compiler-rt prior to 2019-01-19 is usable under the MIT
+  license, with the following copyright:
+
+      Copyright (c) 2009-2016 by the contributors listed in CREDITS.TXT
+
+  The relevant CREDITS.TXT is located at
+  https://github.com/llvm/llvm-project/blob/main/compiler-rt/CREDITS.TXT.
+
+* Work derived from compiler-rt after 2019-01-19 is usable under the
+  Apache-2.0 license with the LLVM exception.
+
+* The bundled `math` module is from the libm crate, usable under the MIT
+  license. For further details and copyrights, see see libm/LICENSE.txt at
+  https://github.com/rust-lang/compiler-builtins.
+
+Additionally, some source files may contain comments with specific copyrights
+or licenses.
+```
+
+Avisos de copyright, literales del `LICENSE.txt` de `libm`:
+
+```text
+This Rust library contains the following copyrights:
+
+    Copyright (c) 2018 Jorge Aparicio
+
+Portions of this software are derived from third-party works licensed under
+terms compatible with the above MIT license:
+
+* musl libc https://www.musl-libc.org/. This library contains the following
+  copyright:
+
+      Copyright © 2005-2020 Rich Felker, et al.
+
+* The CORE-MATH project https://core-math.gitlabpages.inria.fr/. CORE-MATH
+  routines are available under the MIT license on a per-file basis.
+
+The musl libc COPYRIGHT file also includes the following notice relevant to
+math portions of the library:
+
+------------------------------------------------------------------------------
+Much of the math library code (src/math/* and src/complex/*) is
+Copyright © 1993,2004 Sun Microsystems or
+Copyright © 2003-2011 David Schultz or
+Copyright © 2003-2009 Steven G. Kargl or
+Copyright © 2003-2009 Bruce D. Evans or
+Copyright © 2008 Stephen L. Moshier or
+Copyright © 2017-2018 Arm Limited
+and labelled as such in comments in the individual source files. All
+have been licensed under extremely permissive terms.
+------------------------------------------------------------------------------
+
+Copyright notices are retained in src/* files where relevant.
+```
+
+### Zlib
+
+Aplica a: `foldhash`.
+
+```text
+Copyright (c) 2024 Orson Peters
+
+This software is provided 'as-is', without any express or implied warranty. In
+no event will the authors be held liable for any damages arising from the use of
+this software.
+
+Permission is granted to anyone to use this software for any purpose, including
+commercial applications, and to alter it and redistribute it freely, subject to
+the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not claim
+    that you wrote the original software. If you use this software in a product,
+    an acknowledgment in the product documentation would be appreciated but is
+    not required.
+
+2. Altered source versions must be plainly marked as such, and must not be
+    misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source distribution.
+```
+
+### 0BSD
+
+Aplica a: `adler2`.
+
+```text
+Copyright (C) Jonas Schievink <jonasschievink@gmail.com>
+
+Permission to use, copy, modify, and/or distribute this software for
+any purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
 ### BSD-3-Clause (OpenBLAS)
