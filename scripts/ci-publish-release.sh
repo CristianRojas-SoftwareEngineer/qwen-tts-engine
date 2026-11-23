@@ -108,9 +108,11 @@ for f in "${EXPECTED[@]}"; do
         "$UPLOAD_URL?name=$f" > /dev/null
 done
 
-# La release debe listar exactamente los seis nombres esperados antes de publicarse.
-LISTED=$(api GET "$API/releases/$RELEASE_ID" | jq -r '[.assets[].name] | sort | .[]')
-WANTED=$(printf '%s\n' "${EXPECTED[@]}" | sort)
+# La release debe listar exactamente los seis nombres esperados antes de publicarse. Las dos
+# listas se ordenan con el mismo `sort` en orden de bytes (LC_ALL=C): con el locale del sistema,
+# `sort` pone `SHA256SUMS` en otro lugar que el orden por código de `jq` y la comparación falla.
+LISTED=$(api GET "$API/releases/$RELEASE_ID" | jq -r '.assets[].name' | LC_ALL=C sort)
+WANTED=$(printf '%s\n' "${EXPECTED[@]}" | LC_ALL=C sort)
 if [ "$LISTED" != "$WANTED" ]; then
     echo "ERROR: los archivos de la release no son los esperados." >&2
     echo "Esperados:" >&2; printf '%s\n' "$WANTED" >&2
