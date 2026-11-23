@@ -53,6 +53,7 @@ El protocolo de medición está en [`VERIFICATION_PLAN.md`](../VERIFICATION_PLAN
 | ARM64 | Todos los kernels en NEON, en dos variantes (`neon-dotprod` con `SDOT` y `neon`), con el orden de suma de AVX2 ([ADR-004](004-simd-baseline.md)) | macOS 1,36–1,56 → 0,25–0,26; Linux N1 5,3 → 1,61–1,69 |
 | Hilos | Sin spin-wait en los pools cuando los hilos del productor ocupan todos los núcleos físicos (`spin_budget_for`, [ADR-003](003-concurrency-pool.md)) | 4 núcleos: Linux ARM64 1,61–1,69 → 1,54–1,62, Windows 1,53–2,16 → 1,40–1,83. Con 6 núcleos empeora (0,25 → 0,43), por eso la regla |
 | Hilos | Afinidad Win32: un hilo lógico por núcleo físico (`affinity.rs`) | Ryzen 7 5825U, 8 núcleos y 16 hilos, `-j 4`, servidor, frase larga en español, ABBA ×3: sin carga, primer audio 472 → 370 ms y RTF 0,815 → 0,666; con carga, 579 → 489 ms y 1,095 → 0,967; audio idéntico |
+| Carga | Cuantización al cargar el modelo sin llamadas a `rintf`/`roundf` por peso (redondeo exacto en el propio código), capas del Talker y del Code Predictor y sus 15 `lm_head` en paralelo con el pool de `-j` hilos, y `gate_up` del Talker cuantizado sin copia intermedia. Antes se había descartado cuantizar en paralelo porque el servidor carga el modelo una vez; importa en la CLI, que lo carga en cada síntesis | Ryzen 7 5825U, `-j 4`, CLI: carga del modelo 2 205 → 624 ms; audio idéntico |
 | BLAS | OpenBLAS 0.3.34 propio, estático y con `DYNAMIC_ARCH` en Linux y Windows (`scripts/build-openblas.sh`, [ADR-002](002-blas-strategy.md)) | Neoverse V1 con Ubuntu 22.04 (kernel genérico `armv8`): RTF 1,20–1,33 → 1,12–1,21 y decoder 13,5 → 9,5 s; neutro donde la distribución ya trae `DYNAMIC_ARCH` |
 
 ### Descartadas
@@ -62,7 +63,6 @@ El protocolo de medición está en [`VERIFICATION_PLAN.md`](../VERIFICATION_PLAN
 | SwiGLU/SiLU vectorizados y su fusión con la cuantización de `down_proj` | SwiGLU es el 1,7 % del Code Predictor; repartirlo entre hilos ahorró 0,68 ms/f. El coste está en `gate_up` (37 %) y QKV (27 %) |
 | `codec_head` en INT8 | 3 MiB por frame, el 0,6 % del tráfico, y cambia la precisión de los logits de `code0` |
 | Prefill cuantizado (`matmat` Q4_0 en lugar de BF16→F32) | +4,7 semitonos en `ryan`, WER +1,8 / +2,7 puntos y prefill largo +41 % |
-| Cuantizar en paralelo al cargar el modelo | El servidor residente carga el modelo una vez |
 | `sd_pool` sin spin-wait con núcleos libres | Con `-j 4` en 8 núcleos: decoder +44 / +110 ms. Dormir el pool cuesta más que el spin-wait acotado (`4096`) |
 | Retirar `ftz_on()` de la entrada de los kernels | ~2 µs por frame frente a ~45 ms; es la única garantía de FTZ/DAZ en los hilos que no la activan al nacer |
 | Fusionar despachos del pool en el Code Predictor | Los 4 despachos por capa dependen cada uno del anterior; la espera en la barrera se recupera con el reparto dinámico |
