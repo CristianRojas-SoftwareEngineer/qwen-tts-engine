@@ -5,6 +5,7 @@
 
 use qwen_core::config::{
     HEAD_DIM, HIDDEN_SIZE, INTERMEDIATE_SIZE, KV_DIM, NUM_HEADS, NUM_KV_HEADS, NUM_LAYERS, Q_DIM,
+    RMS_NORM_EPS,
 };
 use qwen_kernels::{AlignedBuf, ComputeRuntime, Transpose};
 
@@ -98,7 +99,7 @@ pub fn talker_prefill(
     seq_len: usize,
     log: LogLevel,
 ) -> Result<(), EngineError> {
-    let eps = model.config.rms_norm_eps;
+    let eps = RMS_NORM_EPS;
     let d = runtime.dispatch;
 
     if !log.is_silent() {
@@ -267,7 +268,7 @@ pub fn talker_step(
     let pos = scratch.talker_kv.len;
     scratch.talker_kv.ensure_capacity(pos + 1);
     let kv_max = scratch.talker_kv.max_pos;
-    let eps = model.config.rms_norm_eps;
+    let eps = RMS_NORM_EPS;
     let d = runtime.dispatch;
     let pool = &runtime.pool;
     let scale = 1.0f32 / (HEAD_DIM as f32).sqrt();

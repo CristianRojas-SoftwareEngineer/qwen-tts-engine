@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use qwen_core::config::{DEFAULT_SEED, ENC_DIM, SAMPLE_RATE};
+use qwen_core::config::{DEFAULT_SEED, ENC_DIM};
 use qwen_core::{plan_script, MarkupMode, QVoiceFile, SamplingParams, Script};
 use qwen_engine::{
     clone_voice, encode_wav_bytes, write_wav, AbortHandle, CloneOptions, Delivery, EdgeRampSink,
@@ -174,7 +174,7 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
     .samples
     .unwrap();
     let ref_wav = dir.join("ref.wav");
-    write_wav(&ref_wav, &ref_samples, SAMPLE_RATE as u32).unwrap();
+    write_wav(&ref_wav, &ref_samples).unwrap();
 
     // Bytes del `QVoiceFile` de `clone_voice`: archivo completo
     let qv = clone_voice(
@@ -254,10 +254,10 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
             "{label}: samples_produced de la entrega completa"
         );
         // La entrega completa aplica las rampas de borde al codificar el WAV (sin cabecera: 44 B).
-        let buffer_pcm = encode_wav_bytes(&buffered, SAMPLE_RATE as u32)[44..].to_vec();
+        let buffer_pcm = encode_wav_bytes(&buffered)[44..].to_vec();
 
         let shared = Arc::new(Mutex::new(Vec::<u8>::new()));
-        let mut sink = EdgeRampSink::new(SharedBuf(Arc::clone(&shared)), SAMPLE_RATE as u32);
+        let mut sink = EdgeRampSink::new(SharedBuf(Arc::clone(&shared)));
         let streamed = synth
             .synthesize(
                 &mut scratch,

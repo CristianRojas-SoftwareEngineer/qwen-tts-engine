@@ -124,16 +124,16 @@ pub fn language_name(id: i32) -> Option<&'static str> {
 
 #[derive(Debug, Clone, Deserialize)]
 struct RawConfig {
-    model_type: Option<String>,
-    tts_model_type: Option<String>,
-    speaker_encoder_config: Option<RawSpeakerEncoderConfig>,
+    model_type: String,
+    tts_model_type: String,
+    speaker_encoder_config: RawSpeakerEncoderConfig,
     talker_config: RawTalkerConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct RawSpeakerEncoderConfig {
-    enc_dim: Option<usize>,
-    sample_rate: Option<usize>,
+    enc_dim: usize,
+    sample_rate: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -144,10 +144,10 @@ struct RawTalkerConfig {
     num_attention_heads: usize,
     num_key_value_heads: usize,
     head_dim: usize,
-    text_hidden_size: Option<usize>,
-    text_vocab_size: Option<usize>,
-    vocab_size: Option<usize>,
-    rms_norm_eps: Option<f32>,
+    text_hidden_size: usize,
+    text_vocab_size: usize,
+    vocab_size: usize,
+    rms_norm_eps: f32,
     code_predictor_config: RawCpConfig,
 }
 
@@ -161,117 +161,107 @@ struct RawCpConfig {
     head_dim: usize,
 }
 
-#[derive(Debug, Clone)]
-pub struct ModelConfig06B {
-    pub rms_norm_eps: f32,
-}
-
 /// Error de validación con el prefijo común de los modelos no soportados.
 fn unsupported(detail: String) -> CoreError {
     CoreError::InvalidConfig(format!("Este motor solo carga Qwen3-TTS 0.6B Base: {detail}"))
 }
 
-impl ModelConfig06B {
-    pub fn load_and_validate(model_dir: &Path) -> Result<Self, CoreError> {
-        let cfg_path = model_dir.join("config.json");
-        let raw_str = std::fs::read_to_string(&cfg_path).map_err(|e| {
-            CoreError::InvalidConfig(format!("No se puede leer {}: {e}", cfg_path.display()))
-        })?;
-        let raw: RawConfig = serde_json::from_str(&raw_str)?;
+/// Comprueba que `config.json` describe exactamente el Qwen3-TTS 0.6B Base que carga el motor.
+pub fn validate_model_config(model_dir: &Path) -> Result<(), CoreError> {
+    let cfg_path = model_dir.join("config.json");
+    let raw_str = std::fs::read_to_string(&cfg_path).map_err(|e| {
+        CoreError::InvalidConfig(format!("No se puede leer {}: {e}", cfg_path.display()))
+    })?;
+    let raw: RawConfig = serde_json::from_str(&raw_str)
+        .map_err(|e| unsupported(format!("config.json no válido: {e}")))?;
 
-        if let Some(mt) = raw.model_type.as_deref() {
-            if mt != "qwen3_tts" {
-                return Err(unsupported(format!(
-                    "model_type '{mt}' no soportado (se esperaba 'qwen3_tts')"
-                )));
-            }
-        }
-
-        let tts_model_type = raw.tts_model_type.clone().unwrap_or_default();
-
-        let tc = &raw.talker_config;
-        if tc.hidden_size != HIDDEN_SIZE || tc.intermediate_size != INTERMEDIATE_SIZE {
-            return Err(unsupported(format!(
-                "Geometría del Talker no soportada: hidden_size={} intermediate_size={} (se esperaba {HIDDEN_SIZE}/{INTERMEDIATE_SIZE})",
-                tc.hidden_size, tc.intermediate_size
-            )));
-        }
-        if tc.num_hidden_layers != NUM_LAYERS
-            || tc.num_attention_heads != NUM_HEADS
-            || tc.num_key_value_heads != NUM_KV_HEADS
-            || tc.head_dim != HEAD_DIM
-        {
-            return Err(unsupported(format!(
-                "Geometría de atención y capas del Talker no soportada: layers={} heads={} kv={} head_dim={}",
-                tc.num_hidden_layers, tc.num_attention_heads, tc.num_key_value_heads, tc.head_dim
-            )));
-        }
-        if let Some(th) = tc.text_hidden_size {
-            if th != TEXT_HIDDEN_SIZE {
-                return Err(unsupported(format!(
-                    "text_hidden_size={th} no soportado (se esperaba {TEXT_HIDDEN_SIZE})"
-                )));
-            }
-        }
-        if let Some(tv) = tc.text_vocab_size {
-            if tv != TEXT_VOCAB_SIZE {
-                return Err(unsupported(format!(
-                    "text_vocab_size={tv} no soportado (se esperaba {TEXT_VOCAB_SIZE})"
-                )));
-            }
-        }
-        if let Some(cv) = tc.vocab_size {
-            if cv != CODEC_VOCAB_SIZE {
-                return Err(unsupported(format!(
-                    "vocab_size={cv} del códec no soportado (se esperaba {CODEC_VOCAB_SIZE})"
-                )));
-            }
-        }
-
-        let cp = &tc.code_predictor_config;
-        if cp.hidden_size != CP_HIDDEN_SIZE
-            || cp.intermediate_size != CP_INTERMEDIATE_SIZE
-            || cp.num_hidden_layers != CP_NUM_LAYERS
-            || cp.num_attention_heads != CP_NUM_HEADS
-            || cp.num_key_value_heads != CP_NUM_KV_HEADS
-            || cp.head_dim != CP_HEAD_DIM
-        {
-            return Err(unsupported(format!(
-                "Geometría del Code Predictor no soportada: h={} inter={} layers={} heads={} kv={} hd={}",
-                cp.hidden_size,
-                cp.intermediate_size,
-                cp.num_hidden_layers,
-                cp.num_attention_heads,
-                cp.num_key_value_heads,
-                cp.head_dim
-            )));
-        }
-
-        if !tts_model_type.eq_ignore_ascii_case("base") {
-            return Err(unsupported(format!(
-                "tts_model_type '{tts_model_type}' no soportado (se esperaba 'base')"
-            )));
-        }
-        let Some(sec) = raw.speaker_encoder_config.as_ref() else {
-            return Err(unsupported("falta speaker_encoder_config".to_string()));
-        };
-        if let Some(ed) = sec.enc_dim {
-            if ed != ENC_DIM {
-                return Err(unsupported(format!(
-                    "enc_dim={ed} del speaker_encoder no soportado (se esperaba {ENC_DIM})"
-                )));
-            }
-        }
-        if let Some(sr) = sec.sample_rate {
-            if sr != SAMPLE_RATE {
-                return Err(unsupported(format!(
-                    "sample_rate={sr} del speaker_encoder no soportado (se esperaba {SAMPLE_RATE})"
-                )));
-            }
-        }
-
-        Ok(Self {
-            rms_norm_eps: tc.rms_norm_eps.unwrap_or(RMS_NORM_EPS),
-        })
+    if raw.model_type != "qwen3_tts" {
+        return Err(unsupported(format!(
+            "model_type '{}' no soportado (se esperaba 'qwen3_tts')",
+            raw.model_type
+        )));
     }
+
+    let tc = &raw.talker_config;
+    if tc.hidden_size != HIDDEN_SIZE || tc.intermediate_size != INTERMEDIATE_SIZE {
+        return Err(unsupported(format!(
+            "Geometría del Talker no soportada: hidden_size={} intermediate_size={} (se esperaba {HIDDEN_SIZE}/{INTERMEDIATE_SIZE})",
+            tc.hidden_size, tc.intermediate_size
+        )));
+    }
+    if tc.num_hidden_layers != NUM_LAYERS
+        || tc.num_attention_heads != NUM_HEADS
+        || tc.num_key_value_heads != NUM_KV_HEADS
+        || tc.head_dim != HEAD_DIM
+    {
+        return Err(unsupported(format!(
+            "Geometría de atención y capas del Talker no soportada: layers={} heads={} kv={} head_dim={}",
+            tc.num_hidden_layers, tc.num_attention_heads, tc.num_key_value_heads, tc.head_dim
+        )));
+    }
+    if tc.text_hidden_size != TEXT_HIDDEN_SIZE {
+        return Err(unsupported(format!(
+            "text_hidden_size={} no soportado (se esperaba {TEXT_HIDDEN_SIZE})",
+            tc.text_hidden_size
+        )));
+    }
+    if tc.text_vocab_size != TEXT_VOCAB_SIZE {
+        return Err(unsupported(format!(
+            "text_vocab_size={} no soportado (se esperaba {TEXT_VOCAB_SIZE})",
+            tc.text_vocab_size
+        )));
+    }
+    if tc.vocab_size != CODEC_VOCAB_SIZE {
+        return Err(unsupported(format!(
+            "vocab_size={} del códec no soportado (se esperaba {CODEC_VOCAB_SIZE})",
+            tc.vocab_size
+        )));
+    }
+    if tc.rms_norm_eps != RMS_NORM_EPS {
+        return Err(unsupported(format!(
+            "rms_norm_eps={} no soportado (se esperaba {RMS_NORM_EPS})",
+            tc.rms_norm_eps
+        )));
+    }
+
+    let cp = &tc.code_predictor_config;
+    if cp.hidden_size != CP_HIDDEN_SIZE
+        || cp.intermediate_size != CP_INTERMEDIATE_SIZE
+        || cp.num_hidden_layers != CP_NUM_LAYERS
+        || cp.num_attention_heads != CP_NUM_HEADS
+        || cp.num_key_value_heads != CP_NUM_KV_HEADS
+        || cp.head_dim != CP_HEAD_DIM
+    {
+        return Err(unsupported(format!(
+            "Geometría del Code Predictor no soportada: h={} inter={} layers={} heads={} kv={} hd={}",
+            cp.hidden_size,
+            cp.intermediate_size,
+            cp.num_hidden_layers,
+            cp.num_attention_heads,
+            cp.num_key_value_heads,
+            cp.head_dim
+        )));
+    }
+
+    if !raw.tts_model_type.eq_ignore_ascii_case("base") {
+        return Err(unsupported(format!(
+            "tts_model_type '{}' no soportado (se esperaba 'base')",
+            raw.tts_model_type
+        )));
+    }
+    let sec = &raw.speaker_encoder_config;
+    if sec.enc_dim != ENC_DIM {
+        return Err(unsupported(format!(
+            "enc_dim={} del speaker_encoder no soportado (se esperaba {ENC_DIM})",
+            sec.enc_dim
+        )));
+    }
+    if sec.sample_rate != SAMPLE_RATE {
+        return Err(unsupported(format!(
+            "sample_rate={} del speaker_encoder no soportado (se esperaba {SAMPLE_RATE})",
+            sec.sample_rate
+        )));
+    }
+
+    Ok(())
 }

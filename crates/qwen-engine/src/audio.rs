@@ -109,7 +109,8 @@ pub fn time_stretch(input: &[f32], rate: f32) -> Vec<f32> {
     o
 }
 
-pub fn encode_wav_bytes(samples: &[f32], sample_rate: u32) -> Vec<u8> {
+pub fn encode_wav_bytes(samples: &[f32]) -> Vec<u8> {
+    let sample_rate = SAMPLE_RATE as u32;
     let n_samples = samples.len();
     let data_bytes_usize = n_samples.saturating_mul(2);
     let data_size = u32::try_from(data_bytes_usize).unwrap_or(u32::MAX);
@@ -129,7 +130,7 @@ pub fn encode_wav_bytes(samples: &[f32], sample_rate: u32) -> Vec<u8> {
     out.extend_from_slice(b"data");
     out.extend_from_slice(&data_size.to_le_bytes());
 
-    let (fade_in, fade_out) = edge_fade_lens(sample_rate, n_samples);
+    let (fade_in, fade_out) = edge_fade_lens(n_samples);
     for (i, &orig) in samples.iter().enumerate() {
         let s = edge_fade_out(edge_fade_in(orig, i, fade_in), i, n_samples, fade_out);
         out.extend_from_slice(&f32_to_s16le_clamped(s).to_le_bytes());
@@ -139,9 +140,9 @@ pub fn encode_wav_bytes(samples: &[f32], sample_rate: u32) -> Vec<u8> {
 
 /// Longitudes de las rampas de borde de una síntesis de `n_samples` muestras: entrada de 5 ms y
 /// salida de 40 ms, cada una acotada a la mitad del audio.
-fn edge_fade_lens(sample_rate: u32, n_samples: usize) -> (usize, usize) {
-    let fade_in = ((sample_rate as usize) / 200).min(n_samples / 2);
-    let fade_out = ((sample_rate as usize) * 40 / 1000).min(n_samples / 2);
+fn edge_fade_lens(n_samples: usize) -> (usize, usize) {
+    let fade_in = (SAMPLE_RATE / 200).min(n_samples / 2);
+    let fade_out = (SAMPLE_RATE * 40 / 1000).min(n_samples / 2);
     (fade_in, fade_out)
 }
 
@@ -170,15 +171,13 @@ fn edge_fade_out(s: f32, i: usize, n_samples: usize, fade_out: usize) -> f32 {
 /// hasta acumular 80 ms, para que las longitudes de rampa sean las definitivas) y se emiten con la
 /// llamada siguiente o en `finish`.
 struct StreamEdgeRamp {
-    sample_rate: u32,
     pending: Vec<f32>,
     emitted: usize,
 }
 
 impl StreamEdgeRamp {
-    fn new(sample_rate: u32) -> Self {
+    fn new() -> Self {
         Self {
-            sample_rate,
             pending: Vec::new(),
             emitted: 0,
         }
@@ -188,7 +187,7 @@ impl StreamEdgeRamp {
     /// rampa de salida.
     fn push(&mut self, samples: &[f32], out: &mut Vec<u8>) {
         self.pending.extend_from_slice(samples);
-        let (fade_in_max, hold) = edge_fade_lens(self.sample_rate, usize::MAX);
+        let (fade_in_max, hold) = edge_fade_lens(usize::MAX);
         // Con al menos 2 × `hold` muestras en total, las rampas definitivas son las máximas y
         // ninguna muestra fuera de las últimas `hold` cae en la de salida.
         if self.emitted + self.pending.len() < 2 * hold {
@@ -207,7 +206,7 @@ impl StreamEdgeRamp {
     /// Escribe en `out` las muestras retenidas con la rampa de salida definitiva.
     fn finish(&mut self, out: &mut Vec<u8>) {
         let n_samples = self.emitted + self.pending.len();
-        let (fade_in, fade_out) = edge_fade_lens(self.sample_rate, n_samples);
+        let (fade_in, fade_out) = edge_fade_lens(n_samples);
         out.reserve(self.pending.len() * 2);
         for (j, &s) in self.pending.iter().enumerate() {
             let i = self.emitted + j;
@@ -219,8 +218,8 @@ impl StreamEdgeRamp {
     }
 }
 
-pub fn write_wav(path: &Path, samples: &[f32], sample_rate: u32) -> Result<(), EngineError> {
-    let bytes = encode_wav_bytes(samples, sample_rate);
+pub fn write_wav(path: &Path, samples: &[f32]) -> Result<(), EngineError> {
+    let bytes = encode_wav_bytes(samples);
     let f = File::create(path)?;
     let mut w = BufWriter::new(f);
     w.write_all(&bytes)?;
@@ -273,9 +272,9 @@ pub struct EdgeRampSink<W: PcmWrite> {
 }
 
 impl<W: PcmWrite> EdgeRampSink<W> {
-    pub fn new(writer: W, sample_rate: u32) -> Self {
+    pub fn new(writer: W) -> Self {
         Self {
-            ramp: StreamEdgeRamp::new(sample_rate),
+            ramp: StreamEdgeRamp::new(),
             writer,
             total_samples: 0,
         }
@@ -449,7 +448,8 @@ pub fn read_wav_24khz(path: &Path) -> Result<Vec<f32>, EngineError> {
 }
 
 /// Recorte conservador de silencio o *fade-out* final en el audio de referencia.
-pub fn trim_trailing_silence(audio: &mut Vec<f32>, sample_rate: usize, silent: bool) {
+pub fn trim_trailing_silence(audio: &mut Vec<f32>, silent: bool) {
+    let sample_rate = SAMPLE_RATE;
     let n = audio.len();
     if n < sample_rate * 3 {
         return;
@@ -507,11 +507,11 @@ mod tests {
     fn reference_pcm(samples: &[f32], volume: f32) -> Vec<u8> {
         let mut s = samples.to_vec();
         apply_gain(&mut s, volume);
-        encode_wav_bytes(&s, SAMPLE_RATE as u32)[44..].to_vec()
+        encode_wav_bytes(&s)[44..].to_vec()
     }
 
     fn streamed_pcm(samples: &[f32], volume: f32, chunk: usize) -> Vec<u8> {
-        let mut sink = EdgeRampSink::new(Vec::<u8>::new(), SAMPLE_RATE as u32);
+        let mut sink = EdgeRampSink::new(Vec::<u8>::new());
         for c in samples.chunks(chunk) {
             let mut g = c.to_vec();
             apply_gain(&mut g, volume);
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn stream_edge_ramp_holds_back_only_the_fade_out() {
-        let mut sink = EdgeRampSink::new(Vec::<u8>::new(), SAMPLE_RATE as u32);
+        let mut sink = EdgeRampSink::new(Vec::<u8>::new());
         sink.write_samples(&vec![0.5f32; 1000]).unwrap();
         assert!(sink.writer.is_empty(), "con menos de 80 ms no se emite nada");
         sink.write_samples(&vec![0.5f32; 2840]).unwrap();

@@ -4,8 +4,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use qwen_core::config::{
-    CODEBOOK_SIZE, CODEC_VOCAB_SIZE, CP_HEAD_DIM, CP_HIDDEN_SIZE, CP_INTERMEDIATE_SIZE,
-    CP_KV_DIM, CP_NUM_HEADS, CP_NUM_KV_HEADS, CP_NUM_LAYERS, CP_Q_DIM, HIDDEN_SIZE,
+    CP_HEAD_DIM, CP_HIDDEN_SIZE, CP_INTERMEDIATE_SIZE, CP_KV_DIM, CP_NUM_HEADS, CP_NUM_KV_HEADS,
+    CP_NUM_LAYERS, CP_Q_DIM, HIDDEN_SIZE, RMS_NORM_EPS,
 };
 use qwen_kernels::{AlignedBuf, ComputeRuntime, KernelDispatch};
 
@@ -35,7 +35,7 @@ fn cp_dcol2(dst: &mut [f32], src: &[f32], n: usize, p: usize) {
 /// consecutivos en `pos` y `pos + 1`.
 fn cp_step2(runtime: &ComputeRuntime, model: &Model06B, scratch: &mut SessionScratch, pos: usize) {
     debug_assert!(pos + 2 <= scratch.cp_kv.max_pos);
-    let eps = model.config.rms_norm_eps;
+    let eps = RMS_NORM_EPS;
     let attn_scale = 1.0f32 / (CP_HEAD_DIM as f32).sqrt();
     let d = runtime.dispatch;
     let pool = &runtime.pool;
@@ -202,7 +202,7 @@ fn cp_step2(runtime: &ComputeRuntime, model: &Model06B, scratch: &mut SessionScr
     scratch.cp_kv.len = pos + 2;
 }
 
-/// Carga en `dst` el embedding del código `code` de la tabla `table` del CP (ceros si el código no es válido).
+/// Carga en `dst` el embedding del código `code` de la tabla `table` del CP.
 fn cp_code_embed(
     d: &KernelDispatch,
     model: &Model06B,
@@ -210,12 +210,8 @@ fn cp_code_embed(
     code: i32,
     dst: &mut AlignedBuf<f32>,
 ) {
-    if code >= 0 && (code as usize) < CODEBOOK_SIZE {
-        let off = (code as usize) * HIDDEN_SIZE;
-        d.bf16_to_f32_vec(dst, &model.cp.codec_emb_bf16[table][off..off + HIDDEN_SIZE]);
-    } else {
-        dst.fill_zero();
-    }
+    let off = code as usize * HIDDEN_SIZE;
+    d.bf16_to_f32_vec(dst, &model.cp.codec_emb_bf16[table][off..off + HIDDEN_SIZE]);
 }
 
 fn cp_transformer_step(
@@ -224,7 +220,7 @@ fn cp_transformer_step(
     scratch: &mut SessionScratch,
     pos: usize,
 ) {
-    let eps = model.config.rms_norm_eps;
+    let eps = RMS_NORM_EPS;
     let attn_scale = 1.0f32 / (CP_HEAD_DIM as f32).sqrt();
     let d = runtime.dispatch;
     let pool = &runtime.pool;
@@ -373,17 +369,13 @@ pub fn cp_predict(
     code0: i32,
     out_codes: &mut [i32; 15],
 ) {
-    let eps = model.config.rms_norm_eps;
+    let eps = RMS_NORM_EPS;
     let d = runtime.dispatch;
 
     scratch.cp_kv.len = 0;
 
     scratch.cp_bufs.dec_x[..CP_HIDDEN_SIZE].copy_from_slice(&talker_hidden[..CP_HIDDEN_SIZE]);
-    if code0 >= 0 && (code0 as usize) < CODEC_VOCAB_SIZE {
-        lookup_codec_embed(d, model, code0, &mut scratch.cp_bufs.x1in);
-    } else {
-        scratch.cp_bufs.x1in.fill_zero();
-    }
+    lookup_codec_embed(d, model, code0, &mut scratch.cp_bufs.x1in);
 
     cp_step2(runtime, model, scratch, 0);
     let cb = &mut scratch.cp_bufs;
@@ -454,6 +446,7 @@ pub fn cp_predict(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use qwen_core::config::CODEBOOK_SIZE;
 
     /// Carga `models/qwen3-tts-0.6b-base`; `None` (y la prueba se omite) si el modelo no está.
     fn load_model() -> Option<(ComputeRuntime, Model06B)> {
@@ -639,7 +632,7 @@ mod tests {
         code0: i32,
     ) -> ([i32; 15], usize) {
         let d = runtime.dispatch;
-        let eps = model.config.rms_norm_eps;
+        let eps = RMS_NORM_EPS;
         let mut scratch = SessionScratch::new();
         scratch.cp_kv.len = 0;
         scratch.cp_bufs.dec_x[..CP_HIDDEN_SIZE].copy_from_slice(&hidden[..CP_HIDDEN_SIZE]);

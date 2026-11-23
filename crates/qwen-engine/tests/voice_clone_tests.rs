@@ -62,7 +62,9 @@ fn test_wav_validation_and_ffmpeg_hints() {
 
     // 3. Un WAV de otra frecuencia (16000 Hz) falla de forma explícita
     let wav_16k = dir.join("ref_16k.wav");
-    write_wav(&wav_16k, &vec![0.1f32; 16000], 16000).unwrap();
+    let mut bytes = encode_wav_bytes(&vec![0.1f32; 16000]);
+    bytes[24..28].copy_from_slice(&16000u32.to_le_bytes());
+    fs::write(&wav_16k, bytes).unwrap();
     let err = read_wav_24khz(&wav_16k).unwrap_err().to_string();
     assert!(
         err.contains("16000 Hz") && err.contains("ffmpeg -i"),
@@ -71,7 +73,7 @@ fn test_wav_validation_and_ffmpeg_hints() {
 
     // 4. Un WAV estéreo se rechaza
     let wav_stereo = dir.join("stereo.wav");
-    let mut bytes = encode_wav_bytes(&samples24[..2400], 24000);
+    let mut bytes = encode_wav_bytes(&samples24[..2400]);
     bytes[22..24].copy_from_slice(&2u16.to_le_bytes());
     fs::write(&wav_stereo, bytes).unwrap();
     let err = read_wav_24khz(&wav_stereo).unwrap_err().to_string();
@@ -79,12 +81,14 @@ fn test_wav_validation_and_ffmpeg_hints() {
 
     // 5. Un WAV válido a 24 kHz se lee entero
     let wav_24k = dir.join("ref_24k.wav");
-    write_wav(&wav_24k, &samples24, 24000).unwrap();
+    write_wav(&wav_24k, &samples24).unwrap();
     assert_eq!(read_wav_24khz(&wav_24k).unwrap().len(), 24000);
 
     // 6. Un WAV con sample_rate = 0 falla
     let wav_sr0 = dir.join("bad_sr0.wav");
-    fs::write(&wav_sr0, encode_wav_bytes(&samples24[..128], 0)).unwrap();
+    let mut bytes = encode_wav_bytes(&samples24[..128]);
+    bytes[24..28].copy_from_slice(&0u32.to_le_bytes());
+    fs::write(&wav_sr0, bytes).unwrap();
     assert!(read_wav_24khz(&wav_sr0).is_err());
 }
 
@@ -94,10 +98,10 @@ fn test_trim_trailing_silence_and_mel_shape() {
     for (i, v) in clip[..24000 * 3].iter_mut().enumerate() {
         *v = ((i as f32) * 0.05).sin() * 0.3;
     }
-    trim_trailing_silence(&mut clip, 24000, true);
+    trim_trailing_silence(&mut clip, true);
     assert!(clip.len() < 24000 * 5 && clip.len() >= 24000 * 3);
 
-    let (mel, n_frames) = mel_spectrogram(&clip, 24000).unwrap();
+    let (mel, n_frames) = mel_spectrogram(&clip).unwrap();
     assert!(n_frames > 250);
     assert_eq!(mel.len(), n_frames * 128);
     assert!(mel.iter().all(|v| v.is_finite()));
@@ -241,7 +245,7 @@ fn test_clone_from_default_voice_e2e() {
     .unwrap();
     let (ref_samples, t_ref) = (out_ref.samples.unwrap(), out_ref.timing);
     assert!(t_ref.frames >= 10 && !ref_samples.is_empty());
-    write_wav(&ref_wav, &ref_samples, SAMPLE_RATE as u32).unwrap();
+    write_wav(&ref_wav, &ref_samples).unwrap();
 
     // 2. Clonado solo con x-vector
     let xvec_path = dir.join("xvec.qvoice");
@@ -335,7 +339,7 @@ fn test_clone_from_default_voice_e2e() {
         .samples
         .unwrap();
     assert!(n_spoken >= 2 && composed.len() > SAMPLE_RATE);
-    let _ = encode_wav_bytes(&composed, SAMPLE_RATE as u32);
+    let _ = encode_wav_bytes(&composed);
 
     // La entrega en streaming de los tramos no aplica doble ganancia base
     let mut stream_sink = MemorySink::new(composed.len());

@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use qwen_core::config::{DEFAULT_LANGUAGE_ID, MEL_DIM, SAMPLE_RATE};
+use qwen_core::config::{DEFAULT_LANGUAGE_ID, MEL_DIM};
 use qwen_core::QVoiceFile;
 use qwen_kernels::ComputeRuntime;
 
@@ -128,7 +128,7 @@ pub fn clone_voice(
     opts: &CloneOptions,
 ) -> Result<QVoiceFile, EngineError> {
     let audio = load_ref_audio(ref_wav, opts.log.is_silent())?;
-    let (mel, n_frames) = mel_spectrogram(&audio, SAMPLE_RATE)?;
+    let (mel, n_frames) = mel_spectrogram(&audio)?;
     if !opts.log.is_silent() {
         eprintln!("Espectrograma mel: {n_frames} frames x {MEL_DIM} mels");
     }

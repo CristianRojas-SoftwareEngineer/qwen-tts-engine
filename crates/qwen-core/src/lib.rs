@@ -14,7 +14,7 @@ pub mod qvoice;
 pub mod sampling;
 pub mod tokenizer;
 
-pub use config::ModelConfig06B;
+pub use config::validate_model_config;
 pub use error::CoreError;
 pub use markup::{
     plan_script, resolve_sampling, MarkupMode, MarkupPlanner, Script, SpanSpec,

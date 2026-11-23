@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use qwen_core::config::{
-    lookup_language, DEFAULT_SEED, DEFAULT_TEMPERATURE, NUM_CODEBOOKS, SAMPLE_RATE,
+    lookup_language, DEFAULT_SEED, DEFAULT_TEMPERATURE, NUM_CODEBOOKS,
 };
 use qwen_engine::model::{DecoderWorkspace, SdStreamState};
 use qwen_engine::{
@@ -75,8 +75,8 @@ fn test_e2e_determinism_and_abort() {
     let (s2, t2) = (out2.samples.unwrap(), out2.timing);
     assert_eq!(t1.frames, t2.frames);
     assert_eq!(
-        encode_wav_bytes(&s1, SAMPLE_RATE as u32),
-        encode_wav_bytes(&s2, SAMPLE_RATE as u32),
+        encode_wav_bytes(&s1),
+        encode_wav_bytes(&s2),
         "Dos ejecuciones idénticas de Rust deben producir bytes WAV idénticos bit a bit"
     );
 

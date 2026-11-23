@@ -4,7 +4,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use qwen_core::config::{
-    CODEBOOK_DIM, CODEBOOK_SIZE, DEC_CODEBOOK_DIM, DEC_HEAD_DIM, DEC_HIDDEN_SIZE,
+    CODEBOOK_DIM, DEC_CODEBOOK_DIM, DEC_HEAD_DIM, DEC_HIDDEN_SIZE,
     DEC_INTERMEDIATE_SIZE, DEC_LATENT_DIM, DEC_NUM_HEADS, DEC_NUM_LAYERS, DEC_RMS_NORM_EPS,
     DEC_SLIDING_WINDOW, DEC_UPSAMPLE_CHANNELS, DEC_UPSAMPLE_RATES, NUM_CODEBOOKS,
 };
@@ -880,18 +880,14 @@ pub fn speech_decoder_decode_streaming(
     for f in 0..new_frames {
         let code0 = new_codes[f * NUM_CODEBOOKS];
         let vq_row = &mut vq_out[f * DEC_CODEBOOK_DIM..(f + 1) * DEC_CODEBOOK_DIM];
-        if code0 >= 0 && (code0 as usize) < CODEBOOK_SIZE {
-            let emb = &sd.codebooks[0][(code0 as usize) * CODEBOOK_DIM..][..CODEBOOK_DIM];
-            d.f32_matvec_accum(vq_row, rvq_first, emb, DEC_CODEBOOK_DIM, CODEBOOK_DIM);
-        }
+        let emb = &sd.codebooks[0][(code0 as usize) * CODEBOOK_DIM..][..CODEBOOK_DIM];
+        d.f32_matvec_accum(vq_row, rvq_first, emb, DEC_CODEBOOK_DIM, CODEBOOK_DIM);
         cb_sum.fill(0.0);
         for k in 1..NUM_CODEBOOKS {
             let code = new_codes[f * NUM_CODEBOOKS + k];
-            if code >= 0 && (code as usize) < CODEBOOK_SIZE {
-                let emb = &sd.codebooks[k][(code as usize) * CODEBOOK_DIM..][..CODEBOOK_DIM];
-                for dd in 0..CODEBOOK_DIM {
-                    cb_sum[dd] += emb[dd];
-                }
+            let emb = &sd.codebooks[k][(code as usize) * CODEBOOK_DIM..][..CODEBOOK_DIM];
+            for dd in 0..CODEBOOK_DIM {
+                cb_sum[dd] += emb[dd];
             }
         }
         d.f32_matvec_accum(vq_row, rvq_rest, &cb_sum, DEC_CODEBOOK_DIM, CODEBOOK_DIM);

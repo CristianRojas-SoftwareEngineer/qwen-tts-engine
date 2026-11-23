@@ -187,15 +187,12 @@ pub fn send_response(
         200 => "OK",
         400 => "Bad Request",
         404 => "Not Found",
-        405 => "Method Not Allowed",
-        503 => "Service Unavailable",
         _ => "Internal Server Error",
     };
     let header = format!(
         "HTTP/1.1 {status} {status_text}\r\n\
          Content-Type: {content_type}\r\n\
          Content-Length: {}\r\n\
-         Access-Control-Allow-Origin: *\r\n\
          Connection: close\r\n\r\n",
         body.len()
     );
@@ -216,15 +213,6 @@ pub fn send_error(stream: &mut TcpStream, status: u16, msg: &str) {
     send_json(stream, status, &json);
 }
 
-pub fn send_cors_options(stream: &mut TcpStream) {
-    let cors = b"HTTP/1.1 204 No Content\r\n\
-        Access-Control-Allow-Origin: *\r\n\
-        Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-        Access-Control-Allow-Headers: Content-Type\r\n\
-        Connection: close\r\n\r\n";
-    let _ = send_all(stream, cors);
-}
-
 pub fn send_chunked_header(stream: &mut TcpStream) -> std::io::Result<()> {
     let hdr = b"HTTP/1.1 200 OK\r\n\
         Content-Type: audio/pcm\r\n\
@@ -232,7 +220,6 @@ pub fn send_chunked_header(stream: &mut TcpStream) -> std::io::Result<()> {
         X-Sample-Format: s16le\r\n\
         X-Channels: 1\r\n\
         Transfer-Encoding: chunked\r\n\
-        Access-Control-Allow-Origin: *\r\n\
         Connection: close\r\n\r\n";
     send_all(stream, hdr)
 }
@@ -472,7 +459,7 @@ fn handle_tts_full(
         }
     };
 
-    let wav = encode_wav_bytes(&samples, SAMPLE_RATE as u32);
+    let wav = encode_wav_bytes(&samples);
     if send_response(stream, 200, "audio/wav", &wav).is_ok() {
         log_wav_sent(wav.len(), samples.len(), t0.elapsed().as_secs_f64());
         if let Some(ref t) = timing_opt {
@@ -497,7 +484,7 @@ fn handle_tts_stream(
     }
 
     let t0 = Instant::now();
-    let mut chunk_sink = EdgeRampSink::new(HttpChunkWriter::new(stream), SAMPLE_RATE as u32);
+    let mut chunk_sink = EdgeRampSink::new(HttpChunkWriter::new(stream));
     let res = run_synthesis(
         ctx,
         scratch,
@@ -563,11 +550,6 @@ pub fn handle_connection(
     };
 
     log_http_request(&req, peer_ip);
-
-    if req.method == "OPTIONS" {
-        send_cors_options(&mut stream);
-        return;
-    }
 
     let is_stream = match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/v1/health") => return handle_health(&mut stream),

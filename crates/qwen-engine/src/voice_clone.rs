@@ -220,12 +220,7 @@ fn build_mel_filterbank(sr: usize, n_fft: usize, n_mels: usize, fmin: f32, fmax:
 }
 
 /// Calcula el espectrograma log-mel (`n_fft=1024`, `hop=256`, `n_mels=128`, `sr=24000`).
-pub fn mel_spectrogram(audio: &[f32], sample_rate: usize) -> Result<(Vec<f32>, usize), EngineError> {
-    if sample_rate != SAMPLE_RATE {
-        return Err(EngineError::InvalidArg(format!(
-            "mel_spectrogram requiere audio de {SAMPLE_RATE} Hz (se obtuvo {sample_rate} Hz)"
-        )));
-    }
+pub fn mel_spectrogram(audio: &[f32]) -> Result<(Vec<f32>, usize), EngineError> {
     const N_FFT: usize = 1024;
     const N_MELS: usize = 128;
     const HOP_SIZE: usize = 256;
@@ -739,6 +734,6 @@ pub(crate) fn load_ref_audio(
     // La implementación oficial no recorta el silencio final de la referencia; aquí se recorta
     // porque, de oído, el clon de una grabación con silencio al final suena más consistentemente
     // bien recortado.
-    trim_trailing_silence(&mut audio, SAMPLE_RATE, silent);
+    trim_trailing_silence(&mut audio, silent);
     Ok(audio)
 }

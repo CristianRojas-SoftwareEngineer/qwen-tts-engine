@@ -9,7 +9,8 @@ use std::time::Instant;
 
 use qwen_core::config::{
     CODEC_BOS, CODEC_PAD, CODEC_THINK, CODEC_THINK_BOS, CODEC_THINK_EOS, HIDDEN_SIZE,
-    TOKEN_ASSISTANT, TOKEN_IM_START, TOKEN_NEWLINE, TOKEN_TTS_BOS, TOKEN_TTS_EOS, TOKEN_TTS_PAD,
+    RMS_NORM_EPS, TOKEN_ASSISTANT, TOKEN_IM_START, TOKEN_NEWLINE, TOKEN_TTS_BOS, TOKEN_TTS_EOS,
+    TOKEN_TTS_PAD,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -35,7 +36,7 @@ pub(crate) struct Prompt {
     pub trailing_text_delta: Vec<f32>,
 }
 
-fn embed_text_cached(
+fn embed_text_token(
     runtime: &ComputeRuntime,
     model: &Model06B,
     scratch: &mut SessionScratch,
@@ -64,9 +65,7 @@ fn embed_text_cached(
     let tb = &mut scratch.talker_bufs;
     let d = runtime.dispatch;
     let pool = &runtime.pool;
-    scratch.emb_lru.get_or_insert(tid, out, |t, dst| {
-        embed_one_text_token_compute(d, pool, model, t, &mut tb.emb_tmp1, &mut tb.emb_tmp2, dst);
-    });
+    embed_one_text_token_compute(d, pool, model, tid, &mut tb.emb_tmp1, &mut tb.emb_tmp2, out);
 }
 
 /// Elemento de la sección 2 del prompt: un token de códec o el x-vector del locutor.
@@ -134,7 +133,7 @@ pub(crate) fn build_prompt(
 
     // Sección 1: prefijo de rol (solo texto)
     for &tid in &role_prefix {
-        embed_text_cached(
+        embed_text_token(
             runtime,
             model,
             scratch,
@@ -167,7 +166,7 @@ pub(crate) fn build_prompt(
 
     // Sección 3: primer token del texto más `codec_bos`; los demás entran en los pasos del bucle.
     let dst = &mut input_embeds[pos * HIDDEN_SIZE..(pos + 1) * HIDDEN_SIZE];
-    embed_text_cached(runtime, model, scratch, text_tokens[0], dst);
+    embed_text_token(runtime, model, scratch, text_tokens[0], dst);
     for (d_val, &cb_val) in dst.iter_mut().zip(codec_bos_embed.iter()) {
         *d_val += cb_val;
     }
@@ -177,7 +176,7 @@ pub(crate) fn build_prompt(
     let mut trailing_text_delta = vec![0.0f32; n_trailing * HIDDEN_SIZE];
     for (i, &tok) in text_tokens[1..].iter().enumerate() {
         let delta = &mut trailing_text_delta[i * HIDDEN_SIZE..(i + 1) * HIDDEN_SIZE];
-        embed_text_cached(runtime, model, scratch, tok, delta);
+        embed_text_token(runtime, model, scratch, tok, delta);
         for (d_val, &pad_val) in delta.iter_mut().zip(tts_pad_embed.iter()) {
             *d_val -= pad_val;
         }
@@ -219,7 +218,7 @@ pub(crate) fn prefill(
         eprintln!("  Prefill: {:.0} ms ({} tokens)", prefill_ms, prompt.len);
     }
 
-    let eps = model.config.rms_norm_eps;
+    let eps = RMS_NORM_EPS;
     let tb = &mut scratch.talker_bufs;
     runtime.dispatch.rms_norm(
         &mut tb.last_hidden,

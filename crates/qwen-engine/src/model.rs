@@ -3,7 +3,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::ops::Deref;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,7 +17,9 @@ use qwen_core::config::{
     HEAD_DIM, HIDDEN_SIZE, INTERMEDIATE_SIZE, KV_DIM, NUM_CODEBOOKS, NUM_HEADS, NUM_LAYERS,
     Q_DIM, TEXT_HIDDEN_SIZE, TOKEN_TTS_BOS, TOKEN_TTS_EOS, TOKEN_TTS_PAD,
 };
-use qwen_core::{Bf16Ref, BpeTokenizer, F32Ref, LcgRng, MmapStore, ModelConfig06B, Sampler};
+use qwen_core::{
+    validate_model_config, Bf16Ref, BpeTokenizer, F32Ref, LcgRng, MmapStore, Sampler,
+};
 use qwen_kernels::quant::{
     quant_shape_check, quantize_bf16_to_int8, quantize_bf16_to_q4_0, quantize_gate_up_q4_0,
 };
@@ -31,43 +32,6 @@ pub const KV_INITIAL_POSITIONS: usize = 256;
 pub const ROPE_MAX_POS: usize = 8192;
 pub const CP_KV_MAX_POS: usize = 64;
 pub const SD_ROPE_MAX_POS: usize = 8000;
-pub const EMB_CACHE_CAPACITY: usize = 2048;
-
-#[derive(Clone)]
-pub struct Bf16Weight(Bf16Ref);
-
-impl Bf16Weight {
-    #[inline]
-    pub fn as_slice(&self) -> &[u16] {
-        self.0.as_slice()
-    }
-}
-
-impl Deref for Bf16Weight {
-    type Target = [u16];
-    #[inline]
-    fn deref(&self) -> &[u16] {
-        self.as_slice()
-    }
-}
-
-#[derive(Clone)]
-pub struct F32Weight(F32Ref);
-
-impl F32Weight {
-    #[inline]
-    pub fn as_slice(&self) -> &[f32] {
-        self.0.as_slice()
-    }
-}
-
-impl Deref for F32Weight {
-    type Target = [f32];
-    #[inline]
-    fn deref(&self) -> &[f32] {
-        self.as_slice()
-    }
-}
 
 /// Matriz INT8 con una escala por fila.
 pub struct Int8Weight {
@@ -78,17 +42,17 @@ pub struct Int8Weight {
 /// Pesos de una capa del Talker. Los BF16 los lee el prefill y los INT8 el decodificado paso a paso;
 /// `gate_up` entrelaza las filas de `gate_proj` (pares) y `up_proj` (impares).
 pub struct TalkerLayerWeights {
-    pub wq_bf16: Bf16Weight,
-    pub wk_bf16: Bf16Weight,
-    pub wv_bf16: Bf16Weight,
-    pub wo_bf16: Bf16Weight,
-    pub q_norm: F32Weight,
-    pub k_norm: F32Weight,
-    pub input_norm: F32Weight,
-    pub post_attn_norm: F32Weight,
-    pub gate_bf16: Bf16Weight,
-    pub up_bf16: Bf16Weight,
-    pub down_bf16: Bf16Weight,
+    pub wq_bf16: Bf16Ref,
+    pub wk_bf16: Bf16Ref,
+    pub wv_bf16: Bf16Ref,
+    pub wo_bf16: Bf16Ref,
+    pub q_norm: F32Ref,
+    pub k_norm: F32Ref,
+    pub input_norm: F32Ref,
+    pub post_attn_norm: F32Ref,
+    pub gate_bf16: Bf16Ref,
+    pub up_bf16: Bf16Ref,
+    pub down_bf16: Bf16Ref,
     pub wq: Int8Weight,
     pub wk: Int8Weight,
     pub wv: Int8Weight,
@@ -143,10 +107,10 @@ impl TalkerLayerWeights {
         let wk_bf16 = req_bf16(store, &format!("{prefix}.self_attn.k_proj.weight"))?;
         let wv_bf16 = req_bf16(store, &format!("{prefix}.self_attn.v_proj.weight"))?;
         let wo_bf16 = req_bf16(store, &format!("{prefix}.self_attn.o_proj.weight"))?;
-        let q_norm = req_f32_w(store, &format!("{prefix}.self_attn.q_norm.weight"))?;
-        let k_norm = req_f32_w(store, &format!("{prefix}.self_attn.k_norm.weight"))?;
-        let input_norm = req_f32_w(store, &format!("{prefix}.input_layernorm.weight"))?;
-        let post_attn_norm = req_f32_w(store, &format!("{prefix}.post_attention_layernorm.weight"))?;
+        let q_norm = req_f32(store, &format!("{prefix}.self_attn.q_norm.weight"))?;
+        let k_norm = req_f32(store, &format!("{prefix}.self_attn.k_norm.weight"))?;
+        let input_norm = req_f32(store, &format!("{prefix}.input_layernorm.weight"))?;
+        let post_attn_norm = req_f32(store, &format!("{prefix}.post_attention_layernorm.weight"))?;
         let gate_bf16 = req_bf16(store, &format!("{prefix}.mlp.gate_proj.weight"))?;
         let up_bf16 = req_bf16(store, &format!("{prefix}.mlp.up_proj.weight"))?;
         let down_bf16 = req_bf16(store, &format!("{prefix}.mlp.down_proj.weight"))?;
@@ -191,10 +155,10 @@ impl TalkerLayerWeights {
 
 /// Pesos de una capa del Code Predictor. Los pesos BF16 solo se leen al cuantizar durante la carga.
 pub struct CpLayerWeights {
-    pub q_norm: F32Weight,
-    pub k_norm: F32Weight,
-    pub input_norm: F32Weight,
-    pub post_attn_norm: F32Weight,
+    pub q_norm: F32Ref,
+    pub k_norm: F32Ref,
+    pub input_norm: F32Ref,
+    pub post_attn_norm: F32Ref,
     pub wq: Int8Weight,
     pub wk: Int8Weight,
     pub wv: Int8Weight,
@@ -216,10 +180,10 @@ impl CpLayerWeights {
         let wk_bf16 = req_bf16(store, &format!("{prefix}.self_attn.k_proj.weight"))?;
         let wv_bf16 = req_bf16(store, &format!("{prefix}.self_attn.v_proj.weight"))?;
         let wo_bf16 = req_bf16(store, &format!("{prefix}.self_attn.o_proj.weight"))?;
-        let q_norm = req_f32_w(store, &format!("{prefix}.self_attn.q_norm.weight"))?;
-        let k_norm = req_f32_w(store, &format!("{prefix}.self_attn.k_norm.weight"))?;
-        let input_norm = req_f32_w(store, &format!("{prefix}.input_layernorm.weight"))?;
-        let post_attn_norm = req_f32_w(store, &format!("{prefix}.post_attention_layernorm.weight"))?;
+        let q_norm = req_f32(store, &format!("{prefix}.self_attn.q_norm.weight"))?;
+        let k_norm = req_f32(store, &format!("{prefix}.self_attn.k_norm.weight"))?;
+        let input_norm = req_f32(store, &format!("{prefix}.input_layernorm.weight"))?;
+        let post_attn_norm = req_f32(store, &format!("{prefix}.post_attention_layernorm.weight"))?;
         let gate_bf16 = req_bf16(store, &format!("{prefix}.mlp.gate_proj.weight"))?;
         let up_bf16 = req_bf16(store, &format!("{prefix}.mlp.up_proj.weight"))?;
         let down_bf16 = req_bf16(store, &format!("{prefix}.mlp.down_proj.weight"))?;
@@ -242,14 +206,14 @@ impl CpLayerWeights {
 }
 
 pub struct TalkerWeights {
-    pub text_embedding_bf16: Bf16Weight,
-    pub text_proj_fc1_bf16: Bf16Weight,
-    pub text_proj_fc1_bias: F32Weight,
-    pub text_proj_fc2_bf16: Bf16Weight,
-    pub text_proj_fc2_bias: F32Weight,
-    pub codec_embedding_bf16: Bf16Weight,
-    pub codec_head_bf16: Bf16Weight,
-    pub norm: F32Weight,
+    pub text_embedding_bf16: Bf16Ref,
+    pub text_proj_fc1_bf16: Bf16Ref,
+    pub text_proj_fc1_bias: F32Ref,
+    pub text_proj_fc2_bf16: Bf16Ref,
+    pub text_proj_fc2_bias: F32Ref,
+    pub codec_embedding_bf16: Bf16Ref,
+    pub codec_head_bf16: Bf16Ref,
+    pub norm: F32Ref,
     pub layers: Vec<TalkerLayerWeights>,
     pub rope_cos: AlignedBuf<f32>,
     pub rope_sin: AlignedBuf<f32>,
@@ -275,9 +239,9 @@ impl CpLmHead {
 }
 
 pub struct CodePredictorWeights {
-    pub norm: F32Weight,
+    pub norm: F32Ref,
     pub layers: Vec<CpLayerWeights>,
-    pub codec_emb_bf16: Vec<Bf16Weight>,
+    pub codec_emb_bf16: Vec<Bf16Ref>,
     pub lm_heads: Vec<CpLmHead>,
     pub rope_cos: AlignedBuf<f32>,
     pub rope_sin: AlignedBuf<f32>,
@@ -359,7 +323,6 @@ pub struct SpeechDecoderWeights {
 
 /// Modelo Qwen3-TTS `0.6B` (`Base`) inmutable y compartible entre hilos (`Send + Sync`).
 pub struct Model06B {
-    pub config: ModelConfig06B,
     pub tokenizer: BpeTokenizer,
     pub talker: TalkerWeights,
     pub cp: CodePredictorWeights,
@@ -747,74 +710,6 @@ impl Default for SdStreamState {
     }
 }
 
-pub struct EmbLruCache {
-    keys: Vec<i32>,
-    values: AlignedBuf<f32>,
-    access: Vec<u32>,
-    capacity: usize,
-    clock: u32,
-}
-
-impl EmbLruCache {
-    pub fn new() -> Self {
-        Self {
-            keys: vec![-1; EMB_CACHE_CAPACITY],
-            values: AlignedBuf::new_zeroed(EMB_CACHE_CAPACITY * HIDDEN_SIZE),
-            access: vec![0; EMB_CACHE_CAPACITY],
-            capacity: EMB_CACHE_CAPACITY,
-            clock: 0,
-        }
-    }
-
-    pub fn get_or_insert<F>(&mut self, tid: i32, out: &mut [f32], mut compute: F)
-    where
-        F: FnMut(i32, &mut [f32]),
-    {
-        let cap = self.capacity;
-        let mask = cap - 1;
-        let idx = ((tid as u32).wrapping_mul(2_654_435_761)) as usize & mask;
-        for probe in 0..cap {
-            let slot = (idx + probe) & mask;
-            if self.keys[slot] == tid {
-                self.clock = self.clock.wrapping_add(1);
-                self.access[slot] = self.clock;
-                let base = slot * HIDDEN_SIZE;
-                out[..HIDDEN_SIZE].copy_from_slice(&self.values[base..base + HIDDEN_SIZE]);
-                return;
-            }
-            if self.keys[slot] == -1 {
-                self.keys[slot] = tid;
-                self.clock = self.clock.wrapping_add(1);
-                self.access[slot] = self.clock;
-                let base = slot * HIDDEN_SIZE;
-                compute(tid, &mut self.values[base..base + HIDDEN_SIZE]);
-                out[..HIDDEN_SIZE].copy_from_slice(&self.values[base..base + HIDDEN_SIZE]);
-                return;
-            }
-        }
-        let mut victim = 0usize;
-        let mut min_acc = u32::MAX;
-        for (i, &acc) in self.access.iter().enumerate() {
-            if acc < min_acc {
-                min_acc = acc;
-                victim = i;
-            }
-        }
-        self.keys[victim] = tid;
-        self.clock = self.clock.wrapping_add(1);
-        self.access[victim] = self.clock;
-        let base = victim * HIDDEN_SIZE;
-        compute(tid, &mut self.values[base..base + HIDDEN_SIZE]);
-        out[..HIDDEN_SIZE].copy_from_slice(&self.values[base..base + HIDDEN_SIZE]);
-    }
-}
-
-impl Default for EmbLruCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Estado mutable exclusivo de una sesión o trabajador (cachés KV, buffers de trabajo, muestreador y RNG).
 pub struct SessionScratch {
     pub talker_kv: TalkerKvCache,
@@ -823,7 +718,6 @@ pub struct SessionScratch {
     pub cp_bufs: CpBuffers,
     pub sd_stream: SdStreamState,
     pub sd_ws: DecoderWorkspace,
-    pub emb_lru: EmbLruCache,
     pub sampler: Sampler,
     pub rng: LcgRng,
     pub codec_codes: Vec<i32>,
@@ -839,7 +733,6 @@ impl SessionScratch {
             cp_bufs: CpBuffers::new(),
             sd_stream: SdStreamState::new(),
             sd_ws: DecoderWorkspace::new(),
-            emb_lru: EmbLruCache::new(),
             sampler: Sampler::new(),
             rng: LcgRng::new(0),
             codec_codes: Vec::new(),
@@ -914,12 +807,8 @@ pub struct SynthesisTiming {
     pub samples_produced: usize,
 }
 
-fn req_bf16(store: &MmapStore, name: &str) -> Result<Bf16Weight, EngineError> {
-    Ok(Bf16Weight(store.tensor_bf16_ref(name)?))
-}
-
-fn req_f32_w(store: &MmapStore, name: &str) -> Result<F32Weight, EngineError> {
-    Ok(F32Weight(store.tensor_f32_ref(name)?))
+fn req_bf16(store: &MmapStore, name: &str) -> Result<Bf16Ref, EngineError> {
+    Ok(store.tensor_bf16_ref(name)?)
 }
 
 fn req_f32(store: &MmapStore, name: &str) -> Result<F32Ref, EngineError> {
@@ -987,7 +876,7 @@ pub(crate) fn compute_text_proj_token(
 ) {
     let th = TEXT_HIDDEN_SIZE;
     let h = HIDDEN_SIZE;
-    let idx = tid.max(0) as usize;
+    let idx = tid as usize;
     let emb_row = &text_embedding_bf16[idx * th..(idx + 1) * th];
     dispatch.bf16_to_f32_vec(&mut tmp1[..th], emb_row);
 
@@ -1038,10 +927,6 @@ pub fn lookup_codec_embed(
     token_id: i32,
     out: &mut [f32],
 ) {
-    if token_id < 0 || (token_id as usize) >= CODEC_VOCAB_SIZE {
-        out[..HIDDEN_SIZE].fill(0.0);
-        return;
-    }
     let tid = token_id as usize;
     let row = &model.talker.codec_embedding_bf16[tid * HIDDEN_SIZE..(tid + 1) * HIDDEN_SIZE];
     dispatch.bf16_to_f32_vec(&mut out[..HIDDEN_SIZE], row);
@@ -1086,7 +971,7 @@ impl Model06B {
         silent: bool,
     ) -> Result<Self, EngineError> {
         let t0 = Instant::now();
-        let config = ModelConfig06B::load_and_validate(model_dir)?;
+        validate_model_config(model_dir)?;
         quant_shape_check("`hidden_size` del Talker", HIDDEN_SIZE).map_err(EngineError::Model)?;
         quant_shape_check("`q_dim` del Talker", Q_DIM).map_err(EngineError::Model)?;
         quant_shape_check("`intermediate_size` del Talker", INTERMEDIATE_SIZE)
@@ -1135,7 +1020,6 @@ impl Model06B {
         }
 
         Ok(Self {
-            config,
             tokenizer,
             talker,
             cp,
@@ -1160,12 +1044,12 @@ impl Model06B {
 
         let text_embedding_bf16 = req_bf16(store, "talker.model.text_embedding.weight")?;
         let text_proj_fc1_bf16 = req_bf16(store, "talker.text_projection.linear_fc1.weight")?;
-        let text_proj_fc1_bias = req_f32_w(store, "talker.text_projection.linear_fc1.bias")?;
+        let text_proj_fc1_bias = req_f32(store, "talker.text_projection.linear_fc1.bias")?;
         let text_proj_fc2_bf16 = req_bf16(store, "talker.text_projection.linear_fc2.weight")?;
-        let text_proj_fc2_bias = req_f32_w(store, "talker.text_projection.linear_fc2.bias")?;
+        let text_proj_fc2_bias = req_f32(store, "talker.text_projection.linear_fc2.bias")?;
         let codec_embedding_bf16 = req_bf16(store, "talker.model.codec_embedding.weight")?;
         let codec_head_bf16 = req_bf16(store, "talker.codec_head.weight")?;
-        let norm = req_f32_w(store, "talker.model.norm.weight")?;
+        let norm = req_f32(store, "talker.model.norm.weight")?;
 
         let mut layers = Vec::with_capacity(NUM_LAYERS);
         for i in 0..NUM_LAYERS {
@@ -1219,7 +1103,7 @@ impl Model06B {
                 CP_HIDDEN_SIZE, CP_NUM_LAYERS
             );
         }
-        let norm = req_f32_w(store, "talker.code_predictor.model.norm.weight")?;
+        let norm = req_f32(store, "talker.code_predictor.model.norm.weight")?;
         let mut layers = Vec::with_capacity(CP_NUM_LAYERS);
 
         for i in 0..CP_NUM_LAYERS {

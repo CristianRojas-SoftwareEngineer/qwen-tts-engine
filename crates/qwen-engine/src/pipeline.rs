@@ -150,11 +150,9 @@ pub(crate) fn build_step_embed(
 ) {
     lookup_codec_embed(dispatch, model, code0, out);
     for (g, &code_g) in cp_codes.iter().enumerate().take(15) {
-        if code_g >= 0 && (code_g as usize) < CODEBOOK_SIZE {
-            let off = (code_g as usize) * HIDDEN_SIZE;
-            let emb = &model.cp.codec_emb_bf16[g][off..off + HIDDEN_SIZE];
-            dispatch.bf16_accum_f32(out, emb);
-        }
+        let off = (code_g as usize) * HIDDEN_SIZE;
+        let emb = &model.cp.codec_emb_bf16[g][off..off + HIDDEN_SIZE];
+        dispatch.bf16_accum_f32(out, emb);
     }
     let tts_pad = model.cached_tts_pad_embed.as_slice();
     for (dst, &pad) in out[..HIDDEN_SIZE].iter_mut().zip(tts_pad[..HIDDEN_SIZE].iter()) {

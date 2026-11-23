@@ -10,7 +10,7 @@ use qwen_core::config::{
     TEXT_HIDDEN_SIZE,
 };
 use qwen_core::{
-    BpeTokenizer, LcgRng, MarkupPlanner, MmapStore, ModelConfig06B, QVoiceFile, Sampler, SpanSpec,
+    BpeTokenizer, LcgRng, MarkupPlanner, MmapStore, QVoiceFile, Sampler, SpanSpec,
 };
 
 fn repo_root() -> PathBuf {
@@ -32,12 +32,12 @@ fn synthetic_config(model_type: &str, with_speaker_encoder: bool) -> String {
         .replace("{SPK_ENC}", if with_speaker_encoder { SPK_ENC } else { "" })
 }
 
-fn load_synthetic(name: &str, config_json: &str) -> Result<ModelConfig06B, qwen_core::CoreError> {
+fn load_synthetic(name: &str, config_json: &str) -> Result<(), qwen_core::CoreError> {
     let tmp = std::env::temp_dir().join(format!("qwen_core_cfg_{name}"));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
     std::fs::write(tmp.join("config.json"), config_json).unwrap();
-    let res = ModelConfig06B::load_and_validate(&tmp);
+    let res = qwen_core::validate_model_config(&tmp);
     let _ = std::fs::remove_dir_all(&tmp);
     res
 }
@@ -45,13 +45,12 @@ fn load_synthetic(name: &str, config_json: &str) -> Result<ModelConfig06B, qwen_
 #[test]
 fn test_config_only_base_loads_and_rejects_others() {
     // Base carga (sin distinguir mayúsculas en `tts_model_type`)
-    let cfg = load_synthetic("base_ok", &synthetic_config("base", true)).expect("Base válida");
-    assert_eq!(cfg.rms_norm_eps, qwen_core::config::RMS_NORM_EPS);
+    load_synthetic("base_ok", &synthetic_config("base", true)).expect("Base válida");
     load_synthetic("base_upper", &synthetic_config("BASE", true)).expect("BASE válida");
 
     // Todo rechazo lleva el prefijo genérico seguido de la comprobación que falló
     let prefix = "Este motor solo carga Qwen3-TTS 0.6B Base: ";
-    let err = load_synthetic("not_base", &synthetic_config("not_base", false)).unwrap_err();
+    let err = load_synthetic("not_base", &synthetic_config("not_base", true)).unwrap_err();
     assert_eq!(
         err.to_string(),
         format!("{prefix}tts_model_type 'not_base' no soportado (se esperaba 'base')")
@@ -62,7 +61,7 @@ fn test_config_only_base_loads_and_rejects_others() {
     assert!(err.to_string().starts_with(prefix));
     // `base` sin encoder de locutor tampoco
     let err = load_synthetic("base_no_spk", &synthetic_config("base", false)).unwrap_err();
-    assert_eq!(err.to_string(), format!("{prefix}falta speaker_encoder_config"));
+    assert!(err.to_string().starts_with(prefix) && err.to_string().contains("speaker_encoder_config"), "se obtuvo: {err}");
 
     // Validación negativa: geometría distinta de la 0.6B y tipos que no son Base
     let base_ok = synthetic_config("base", true);
@@ -72,12 +71,14 @@ fn test_config_only_base_loads_and_rejects_others() {
     let bad_type = base_ok.replace("\"base\"", "\"other_type\"");
     let err = load_synthetic("bad_type", &bad_type).unwrap_err();
     assert!(err.to_string().starts_with(prefix));
+    let bad_eps = base_ok.replace("\"rms_norm_eps\":1e-6,\"rope_theta\"", "\"rms_norm_eps\":1e-5,\"rope_theta\"");
+    let err = load_synthetic("bad_eps", &bad_eps).unwrap_err();
+    assert!(err.to_string().starts_with(prefix) && err.to_string().contains("rms_norm_eps"), "se obtuvo: {err}");
 
     // El checkpoint Base real (si está presente) carga
     let base_dir = repo_root().join("models/qwen3-tts-0.6b-base");
     if base_dir.exists() {
-        let cfg_base = ModelConfig06B::load_and_validate(&base_dir).expect("0.6b Base válida");
-        assert_eq!(cfg_base.rms_norm_eps, qwen_core::config::RMS_NORM_EPS);
+        qwen_core::validate_model_config(&base_dir).expect("0.6b Base válida");
     } else {
         eprintln!("Se omite la comprobación de la configuración Base real (falta el modelo)");
     }

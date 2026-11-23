@@ -16,7 +16,7 @@ use crate::cli::CliArgs;
 use crate::request;
 
 fn write_output_wav(cfg: &CliArgs, audio: &[f32]) -> Result<(), String> {
-    write_wav(Path::new(&cfg.output), audio, SAMPLE_RATE as u32).map_err(|e| e.to_string())?;
+    write_wav(Path::new(&cfg.output), audio).map_err(|e| e.to_string())?;
     if !cfg.silent {
         eprintln!(
             "Escrito {} ({} muestras, {:.2}s)",
@@ -36,7 +36,7 @@ pub fn run(cfg: &CliArgs, synth: &Synthesizer<'_>) -> Result<i32, String> {
 
     // PCM crudo por stdout (--stdout)
     if cfg.stdout_pcm {
-        let mut sink = EdgeRampSink::new(StdoutWriter, SAMPLE_RATE as u32);
+        let mut sink = EdgeRampSink::new(StdoutWriter);
         synth
             .synthesize(
                 &mut scratch,
