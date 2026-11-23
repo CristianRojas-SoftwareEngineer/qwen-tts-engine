@@ -1,6 +1,6 @@
 # Contrato de Interfaz Pública (`INTERFACE_CONTRACT.md`)
 
-> Referencia normativa de las tres interfaces públicas de **Qwen TTS Engine** (`qwen-tts-engine`): binario CLI (`qwen_tts`), servidor HTTP (`--serve`) y API Rust embebida (`qwen-engine`, `qwen-core`, `qwen-kernels`), además de variables de entorno y logs operativos.
+> Referencia normativa de las tres interfaces de **Qwen TTS Engine** (`qwen-tts-engine`): binario CLI (`qwen_tts`), servidor HTTP (`--serve`) y API Rust embebida (`qwen-engine`, `qwen-core`, `qwen-kernels`), además de variables de entorno y logs operativos. Las dos primeras son el contrato de uso, que las secciones 5 y 6 detallan y versionan; la API Rust es inestable y queda fuera del versionado.
 
 > **Alcance**: Exclusivo para **Qwen3-TTS 0.6B Base**. Cualquier otro checkpoint se rechaza al cargar; una opción que el motor no define es un error de uso.
 
@@ -126,6 +126,8 @@ Toda petición se valida en `ValidatedTtsRequest::parse` antes de sintetizar:
 
 ## 3. API Rust embebida (`qwen-engine`, `qwen-core`, `qwen-kernels`)
 
+> **Inestable**: los crates no se publican y esta API puede cambiar en cualquier versión. Queda fuera del versionado de la sección 6.
+
 La biblioteca comparte `ComputeRuntime`, `Model06B` y `Voice` entre hilos (todos inmutables durante la síntesis) mientras cada síntesis usa un `SessionScratch` mutable exclusivo. Una única entrada pública sintetiza: `Synthesizer::synthesize(scratch, &req, &abort, &script, delivery)`.
 
 Los tipos de la petición viven en `qwen-core` (`Script`, `SamplingParams`, `plan_script`, `resolve_sampling`, `effective_language`) y los del motor en `qwen-engine` (`Voice`, `SynthesisRequest`, `Synthesizer`, `Delivery`, `AudioSink`, `EdgeRampSink`).
@@ -248,3 +250,46 @@ Formato actual de las líneas de diagnóstico que el motor escribe en `stderr`. 
 - **Cancelación HTTP** (`http.rs`):
   `[HTTP] TTS cancelado: el cliente se desconectó tras <sec> s`
   `[HTTP] TTS stream cancelado: el cliente se desconectó tras <sec> s`
+
+---
+
+## 5. Garantías para clientes de proceso y HTTP
+
+Lo que un programa que usa el motor como proceso o por HTTP puede asumir. Cada garantía de esta sección, salvo las obligaciones del cliente, la comprueba una prueba de integración que lanza el binario (`crates/qwen-app/tests/contract_tests.rs`). El texto de los mensajes (`error`, `stderr`, `stdout`, logs) no forma parte del contrato.
+
+- **Proceso**:
+  - Código de salida `0` en éxito y `1` en error de uso, validación o carga.
+  - `--self-test` sale `0` si no hay fallos y `1` si los hay; `--caps` sale `0`; un flag desconocido sale distinto de `0`.
+  - El clonado (`-d <modelo> --ref-audio <wav> --save-voice <archivo>`, sin `--text`) sale `0` y deja un `.qvoice` v6 de 4112 bytes, sin idioma si no se pasó `-l`.
+  - Una combinación no válida de opciones de voz sale `1` antes de cargar el modelo. Una referencia de clonado que no sea WAV PCM mono de 16 bits a 24 kHz sale `1` antes de cargar el modelo.
+  - `--serve` no termina por sí solo y escucha en `--host` (por defecto `127.0.0.1`).
+- **`--watch-stdin`**: al cerrarse la entrada estándar, el proceso termina con `0` y abandona el trabajo en curso. En el clonado, si la entrada se cierra antes de terminar, no queda un `.qvoice` válido. El código de salida no distingue un abandono de un éxito: el cliente confirma el resultado por el archivo.
+- **Estados HTTP**:
+  - `200` con éxito.
+  - `400` ante cualquier petición inválida: JSON inválido, cuerpo de más de 1 MiB, `Content-Length` inválido, campo desconocido o no admitido en esa ruta, texto vacío o de más de 8192 bytes, idioma desconocido, `voice` distinta de la voz de arranque o valor fuera de rango.
+  - `404` ante una ruta o un método desconocidos.
+  - `500` ante un fallo interno antes de enviar la cabecera de éxito.
+  - No emite otros estados.
+- **Cuerpo de error**: un objeto JSON con la clave `error` (cadena), con `Content-Type: application/json`, enviado entero antes de cerrar la conexión aunque el cliente siga enviando el cuerpo de la petición. El valor de `error` es texto para personas y puede cambiar.
+- **`POST /v1/tts/stream`**: `200` con `Transfer-Encoding: chunked`, `Content-Type: audio/pcm`, `X-Sample-Rate: 24000`, `X-Sample-Format: s16le` y `X-Channels: 1`. Cada fragmento lleva un número par de bytes. El éxito se señala con el fragmento final de tamaño cero; si la generación falla o se corta tras la cabecera, el servidor cierra la conexión sin ese fragmento.
+- **`POST /v1/tts`**: `200` con un WAV (`audio/wav`, 24 kHz, s16le, mono) cuyo PCM es el mismo que el de `/v1/tts/stream` para la misma petición.
+- **Salud y voces**: `GET /v1/health` responde `200` y `{"status":"ok"}`. `GET /v1/voices` responde `{"voices":[{"name","language"}]}` con la voz de arranque, y `language` es `null` si la voz no declara idioma. La voz de arranque es la que carga el servidor al arrancar (`--load-voice <archivo>` o, sin esa opción, la voz `default` incorporada) y es la única que atiende. `voice` es opcional en la petición y, si viene, debe coincidir (sin distinguir mayúsculas) con su nombre.
+- **Idioma**: los diez nombres de la tabla de `-l` (`English`, `German`, `Spanish`, `Chinese`, `Japanese`, `French`, `Korean`, `Russian`, `Italian`, `Portuguese`), sin distinguir mayúsculas. Regla única: el pedido; si no hay, el de la voz; si tampoco, español.
+- **Atención**: una conexión a la vez, sin cola; la segunda espera. Un cliente que se desconecta cancela la generación antes del siguiente fotograma y el servidor sigue atendiendo.
+- **Petición**: la lista de campos de cada ruta es cerrada. Mismos texto, voz, parámetros y semilla dan el mismo audio en la misma máquina y con la misma ruta de kernels.
+- **Entorno**: los hilos salen de `-j`. `QWEN_KERNELS` admite `auto` y `scalar`; cualquier otro valor sale con `1`.
+- **Obligaciones del cliente** (sin prueba, porque dependen de él):
+  - No cerrar solo la mitad de escritura del socket tras enviar la petición: el servidor lo interpreta como una desconexión.
+  - En Linux y macOS, no definir las variables de hilos de OpenBLAS (`OPENBLAS_NUM_THREADS`, `GOTO_NUM_THREADS`, `OMP_NUM_THREADS`): OpenBLAS las lee antes de `main` y pueden limitar sus hilos. En Windows el motor las ignora.
+
+---
+
+## 6. Versionado
+
+Las versiones siguen el [versionado semántico](https://semver.org/lang/es/) sobre el contrato de uso: la sección 5, los flags de la sección 1, las rutas y los campos de la sección 2 y el formato `.qvoice` (`SPEC_06B.md` §3.1).
+
+- Un cambio incompatible en cualquiera de ellos sube la versión **mayor**.
+- Una garantía nueva y compatible sube la versión **menor**.
+- Una corrección sube el **parche**.
+
+Quedan fuera del versionado y pueden cambiar en cualquier versión: la API Rust (sección 3) y el texto de los mensajes y de los logs (sección 4.3).

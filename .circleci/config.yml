@@ -191,6 +191,8 @@ jobs:
     docker:
       - image: cimg/base:current
     resource_class: arm.large
+    environment:
+      QWEN_TTS_REQUIRE_MODEL: "1"
     steps:
       - checkout
       - build_own_openblas
@@ -202,6 +204,8 @@ jobs:
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
+    environment:
+      QWEN_TTS_REQUIRE_MODEL: "1"
     steps:
       - checkout
       - install_rust_unix
@@ -212,6 +216,8 @@ jobs:
     executor:
       name: win/server-2022
       size: large
+    environment:
+      QWEN_TTS_REQUIRE_MODEL: "1"
     steps:
       - prepare_windows
       - run:
