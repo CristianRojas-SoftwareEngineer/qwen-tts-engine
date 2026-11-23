@@ -11,14 +11,8 @@ use crate::dispatch::KernelChoice;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CpuCaps {
     pub arch: &'static str,
-    pub sse2: bool,
-    pub avx: bool,
     pub avx2: bool,
     pub fma: bool,
-    pub avx512f: bool,
-    pub avx512bw: bool,
-    pub avx512vnni: bool,
-    pub avx512bf16: bool,
     pub neon: bool,
     pub dotprod: bool,
 }
@@ -29,14 +23,8 @@ impl CpuCaps {
         {
             Self {
                 arch: "x86-64",
-                sse2: std::arch::is_x86_feature_detected!("sse2"),
-                avx: std::arch::is_x86_feature_detected!("avx"),
                 avx2: std::arch::is_x86_feature_detected!("avx2"),
                 fma: std::arch::is_x86_feature_detected!("fma"),
-                avx512f: std::arch::is_x86_feature_detected!("avx512f"),
-                avx512bw: std::arch::is_x86_feature_detected!("avx512bw"),
-                avx512vnni: std::arch::is_x86_feature_detected!("avx512vnni"),
-                avx512bf16: std::arch::is_x86_feature_detected!("avx512bf16"),
                 neon: false,
                 dotprod: false,
             }
@@ -122,14 +110,8 @@ impl CpuCaps {
 
         if self.arch == "x86-64" {
             let mut feats = Vec::new();
-            if self.sse2 { feats.push("sse2"); }
-            if self.avx { feats.push("avx"); }
             if self.avx2 { feats.push("avx2"); }
             if self.fma { feats.push("fma"); }
-            if self.avx512f { feats.push("avx512f"); }
-            if self.avx512bw { feats.push("avx512bw"); }
-            if self.avx512vnni { feats.push("avx512vnni"); }
-            if self.avx512bf16 { feats.push("avx512bf16"); }
             let _ = writeln!(s, "  runtime cpu:      {}", feats.join(" "));
             let _ = writeln!(
                 s,
