@@ -52,6 +52,7 @@ El protocolo de medición está en [`VERIFICATION_PLAN.md`](../VERIFICATION_PLAN
 | Audio | Mismo calendario de chunks y mismas rampas de borde en los cuatro modos | PCM idéntico en CLI, CLI `--stream`, `/v1/tts` y `/v1/tts/stream`; RTF +0,00 a +0,01 sin *streaming* |
 | ARM64 | Todos los kernels en NEON, en dos variantes (`neon-dotprod` con `SDOT` y `neon`), con el orden de suma de AVX2 ([ADR-004](004-simd-baseline.md)) | macOS 1,36–1,56 → 0,25–0,26; Linux N1 5,3 → 1,61–1,69 |
 | Hilos | Sin spin-wait en los pools cuando los hilos del productor ocupan todos los núcleos físicos (`spin_budget_for`, [ADR-003](003-concurrency-pool.md)) | 4 núcleos: Linux ARM64 1,61–1,69 → 1,54–1,62, Windows 1,53–2,16 → 1,40–1,83. Con 6 núcleos empeora (0,25 → 0,43), por eso la regla |
+| Hilos | Afinidad Win32: un hilo lógico por núcleo físico (`affinity.rs`) | Ryzen 7 5825U, 8 núcleos y 16 hilos, `-j 4`, servidor, frase larga en español, ABBA ×3: sin carga, primer audio 472 → 370 ms y RTF 0,815 → 0,666; con carga, 579 → 489 ms y 1,095 → 0,967; audio idéntico |
 | BLAS | OpenBLAS 0.3.34 propio, estático y con `DYNAMIC_ARCH` en Linux y Windows (`scripts/build-openblas.sh`, [ADR-002](002-blas-strategy.md)) | Neoverse V1 con Ubuntu 22.04 (kernel genérico `armv8`): RTF 1,20–1,33 → 1,12–1,21 y decoder 13,5 → 9,5 s; neutro donde la distribución ya trae `DYNAMIC_ARCH` |
 
 ### Descartadas

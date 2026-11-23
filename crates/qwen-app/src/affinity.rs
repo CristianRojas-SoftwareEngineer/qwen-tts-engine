@@ -138,7 +138,7 @@ pub fn pin_one_thread_per_core(silent: bool) -> usize {
     win32::pin_one_thread_per_core(silent)
 }
 
-/// Fuera de Windows no hay afinidad que fijar ni mensaje que imprimir.
+/// Fuera de Windows no se fija afinidad. Devuelve los hilos lógicos, que coinciden con los núcleos físicos en ARM64 (sin SMT); en x86_64 con SMT son el doble.
 #[cfg(not(target_os = "windows"))]
 pub fn pin_one_thread_per_core(_silent: bool) -> usize {
     std::thread::available_parallelism()

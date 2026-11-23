@@ -27,9 +27,9 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 ## Alcance y capacidades
 
 - **Síntesis local en CPU**: ejecuta **Qwen3-TTS `0.6B`** con cuantización fija (`Q4_0` + `INT8`), despacho en runtime de kernels `AVX2 + FMA` en x86-64 y NEON en ARM64 (con `SDOT` si la CPU tiene `dotprod`; ver [requisitos mínimos](#requisitos-mínimos-recomendados-síntesis-en-tiempo-real)) y *streaming* progresivo.
-- **Una sola forma de voz: la clonada**: el motor trae incorporada la voz `default` y cualquier otra la creas clonándola desde un audio de referencia (x-vector `ECAPA-TDNN`, que fija el timbre). Las voces se guardan como perfiles `.qvoice` v6 de 4 KB. Además: marcado en línea (`[laugh]`, `[sigh]`, pausas).
+- **Una sola forma de voz: la clonada**: el motor trae incorporada la voz `default` y cualquier otra la creas clonándola desde un audio de referencia (x-vector `ECAPA-TDNN`, que fija el timbre). Las voces se guardan como perfiles `.qvoice` v6 de 4 KB. Además: marcado en línea (pausas y muletillas como `[hmm]`).
 - **Tres interfaces de integración**:
-  - **CLI (`qwen_tts`)**: síntesis directa a WAV, *streaming* a WAV o `stdout` PCM crudo y creación de voces.
+  - **CLI (`qwen_tts`)**: síntesis directa a WAV, PCM crudo por `stdout` y creación de voces.
   - **Servidor HTTP (`--serve`)**: rutas `/v1/tts` y `/v1/tts/stream`, una síntesis a la vez.
   - **Biblioteca Rust (`qwen-engine`)**: API segura (`#![forbid(unsafe_code)]`) para incrustar el motor compartiendo `Arc<Model06B>` entre hilos.
 
@@ -46,7 +46,7 @@ Motor de inferencia TTS autónomo en CPU escrito en Rust estable para Qwen3-TTS 
 | Plataforma | CPU | Núcleos físicos | RAM | Disco | Estado |
 |---|---|---|---|---|---|
 | **Windows x86_64** (`x86_64-pc-windows-gnu`) | x86_64 con **AVX2 y FMA** (Intel Core de 4.ª generación / Haswell o posterior; AMD Ryzen / Zen o posterior) | **8** | 8 GB, doble canal | ~2,5 GB (el modelo) | ✅ Verificado en el equipo de referencia (AMD Ryzen 7 5825U, 8 núcleos), frase larga: RTF 0,58–0,64 sin carga y 0,89–0,92 con carga |
-| **Linux x86_64** (`x86_64-unknown-linux-gnu`) | Igual que Windows | **8** | 8 GB, doble canal | ~2,5 GB | ⚠️ Misma ruta de kernels AVX2 que Windows; requisitos esperados iguales, sin medición propia en Linux |
+| **Linux x86_64** (`x86_64-unknown-linux-gnu`) | Igual que Windows | **8** | 8 GB, doble canal | ~2,5 GB | ⚠️ Misma ruta de kernels AVX2 que Windows; requisitos esperados iguales, sin medición propia en Linux. Sin afinidad de hilos: el motor cuenta los hilos lógicos; con SMT y `-j` entre los núcleos físicos y los hilos lógicos, los hilos esperan girando |
 | **macOS ARM64** (`aarch64-apple-darwin`) | Apple Silicon (M1 o posterior) | — | 8 GB | ~2,5 GB | ✅ Sin carga: RTF 0,25–0,26 en un Apple M4 Pro virtual de 6 núcleos (CircleCI `m4pro.medium`), con todos los kernels en NEON; la ruta escalar daba 1,36–1,56 en la misma máquina. Sin medir con carga ni en otros Mac, así que no hay mínimo de núcleos verificado. |
 | **Linux ARM64** (`aarch64-unknown-linux-gnu`) | ARMv8.2 o posterior con NEON y `dotprod` (Neoverse N1/V1, Cortex-A76 o posterior); también corre en ARMv8.0, más lento | más de 4 (sin verificar) | 8 GB | ~2,5 GB | ❌ Sin tiempo real con 4 vCPU, aunque cerca: RTF 1,12–1,21 en un Arm Neoverse V1 de 4 vCPU con el OpenBLAS propio (1,20–1,33 con el de Ubuntu 22.04) y 1,54–1,62 en un Neoverse N1 de 4 vCPU; la ruta escalar daba ~5,4. Con 4 núcleos, el productor (85–118 ms por frame de 80) y el decoder se reparten las mismas CPU, igual que en x86 con 4 núcleos. No se ha podido medir con 8 vCPU: CircleCI no ofrece a este proyecto máquinas ARM más grandes. |
 
@@ -111,11 +111,11 @@ cargo build -p qwen-app --release
 ./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 --seed 4 -l English --text "Hello, world!" -o output.wav
 ```
 
-> **Nota**: sin `--load-voice` ni `--ref-audio`, el motor habla con la voz `default` incorporada (la CLI imprime `Voz: default` en `stderr`). Sin `-l`, el idioma es el de la voz cargada o, si no tiene, español. Los valores por defecto de muestreo son `temperature = 0.325` y `seed = 4`; añade `--stream` si necesitas escribir audio progresivamente conforme se decodifica.
+> **Nota**: sin `--load-voice` ni `--ref-audio`, el motor habla con la voz `default` incorporada (la CLI imprime `Voz: default` en `stderr`). Sin `-l`, el idioma es el de la voz cargada o, si no tiene, español. Los valores por defecto de muestreo son `temperature = 0.325` y `seed = 4`.
 
 ### 2. Clonación de voz
 
-El perfil guarda el timbre (x-vector) y, si das `-l`, el idioma. El audio de referencia debe ser **WAV PCM de 24 kHz mono** (si parte de MP3/MP4/OGG/FLAC, conviértelo antes con `ffmpeg -i entrada.mp3 -ar 24000 -ac 1 ref_24k.wav`).
+El perfil guarda el timbre (x-vector) y, si das `-l`, el idioma. El audio de referencia debe ser **WAV PCM mono de 16 bits a 24 kHz**; con cualquier otro formato, el error da el comando `ffmpeg` que lo convierte (por ejemplo, `ffmpeg -i entrada.mp3 -ar 24000 -ac 1 ref_24k.wav`).
 
 ```bash
 # 1. Extraer perfil .qvoice reutilizable y sintetizar el primer audio

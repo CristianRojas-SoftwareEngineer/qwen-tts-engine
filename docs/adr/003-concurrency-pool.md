@@ -34,3 +34,4 @@ Por cada frame de `80 ms`, el `Code Predictor` y el `Talker` ejecutan cientos de
 ### Riesgos y mitigación
 
 - Requiere mantener lógica propia de sincronización (`pool.rs`), cubierta por las pruebas de estrés concurrente, de pánicos (`test_compute_pool_worker_panic_propagates`) y de la regla de espera (`test_spin_budget_for_cores`) en `kernels_tests.rs`.
+- `spin_budget_for` recibe como núcleos los físicos en Windows (los de la afinidad) y los hilos lógicos fuera de Windows, que coinciden con los físicos en ARM64. En Linux x86_64 con SMT, el resultado solo cambia si `-j` es mayor o igual que los núcleos físicos y menor que los hilos lógicos.

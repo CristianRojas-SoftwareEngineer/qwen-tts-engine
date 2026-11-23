@@ -1,6 +1,6 @@
 # Especificación Técnica de Qwen3-TTS `0.6B` (`SPEC_06B.md`)
 
-> Consolida la geometría fija, el mapa de tensores `safetensors`, el formato binario propio (`.qvoice` v6) y las reglas de *prefill*, muestreo y paralingüística de **Qwen3-TTS 0.6B Base**. Pensado para ingenieros del motor y mantenedores.
+> Consolida la geometría fija, el mapa de tensores `safetensors`, el formato binario propio (`.qvoice` v6) y las reglas de *prefill*, muestreo y marcado de **Qwen3-TTS 0.6B Base**. Pensado para ingenieros del motor y mantenedores.
 
 ---
 
@@ -89,7 +89,7 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 
 ---
 
-## 4. Vocabulario, *prefill* y paralingüística
+## 4. Vocabulario, *prefill* y marcado
 
 ### 4.1 IDs de tokens especiales e idiomas
 
@@ -126,6 +126,4 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 - **Recorte de silencio final (`trim_trailing_silence`)**: activo si `n_samples >= 3 * 24000`. Escanea ventanas de `20 ms` desde el final con umbral `max(0.18 * global_rms, 0.004)`, deja `+50 ms` de margen y limita el recorte al `40 %` de la duración conservando al menos `2 s`.
 - **Refuerzo de EOS (`pipeline.rs`)**: `expected = text_content_len * 3`. Si `0 < text_content_len <= 11`: `start = expected * 3 / 2`, aplica `+1.0/frame` (tope `+15.0`) cuando `frame > start`. Si `> 11`: `start = expected * 2`, aplica `+0.5/frame` (tope `+10.0`) cuando `frame > start`. Suprime tokens `>= 2048` excepto `CODEC_EOS`, y suprime `CODEC_EOS` para `frame < 2`.
 - **Muestreo (`qwen-core/src/sampling.rs`)**: temperatura por defecto `DEFAULT_TEMPERATURE = 0.325` y semilla por defecto `DEFAULT_SEED = 4` (`qwen-core/src/config.rs`); penalización de repetición sobre `prev_tokens` → si `T < 1e-6`, argmax (decodificación voraz); si no, `softmax(logits / T)` → *top-k* → *top-p* → renormalización → LCG `seed = seed.wrapping_mul(1103515245).wrapping_add(12345)`, `r = ((seed >> 16) & 0x7FFF) / 32768.0`.
-- **Paralingüística y marcado en línea (`markup.rs`, `compose.rs`)**: `plan_script` aplica los dos pasos, también con `--stream`/`--stdout`.
-  - Paso 1 (`paralinguistic_substitute`): sustituye `[laugh]`/`[laughs]` (`"哈哈哈"`, `seed=2024, T=1.1`), `[sigh]`/`[sighs]` (`"唉"`, `seed=42, T=1.1`), `[yawn]`/`[yawns]` (`"哈啊"`, `seed=42, T=1.1`), `[wow]` (`"哇"`, `seed=2024, T=1.1`), `[giggle]`/`[giggles]` (`"嘿嘿"`, `seed=42, T=1.1`) y `[scoff]` (`"切"`, `seed=42, T=1.0`).
-  - Paso 2 (`MarkupPlanner::parse_spans`): si persisten `[pause:...]`, `[break:...]`, `[0.5]`, `|`, divide en tramos con *prefill* frío por tramo. Un tag desconocido (por ejemplo `[xyz]`) no es marcado y queda como texto.
+- **Marcado en línea (`markup.rs`, `compose.rs`)**: `plan_script` divide el texto en tramos, también con `--stdout`. Si hay `[pause:...]`, `[break:...]`, `[0.5]` o `|`, `MarkupPlanner::parse_spans` divide en tramos con *prefill* frío por tramo. Un tag desconocido (por ejemplo `[xyz]`) no es marcado y queda como texto.
