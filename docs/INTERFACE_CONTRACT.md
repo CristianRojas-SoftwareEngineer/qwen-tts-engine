@@ -117,8 +117,9 @@ Toda petición se valida en `ValidatedTtsRequest::parse` antes de sintetizar:
 
 ### 2.4 Streaming *chunked*, cancelación y cierre
 
-1. **Rampa de chunks (`/v1/tts/stream`)**: primer chunk de `2` frames (`160 ms`); los siguientes (`k = 0, 1, 2, ...`) siguen `min(chunk_frames, 4 + 2 * (k / 8))`. El decoder usa el mismo calendario también en `/v1/tts` y en la CLI.
-   - **Rampa de salida de 40 ms**: el servidor retiene los últimos 40 ms de audio y los envía con el chunk siguiente o al cerrar. Por eso el primer chunk entrega 120 ms en lugar de 160 ms.
+1. **Rampa de chunks (`/v1/tts/stream`)**: el decoder decodifica un primer chunk de `2` frames (`160 ms`); los siguientes (`k = 0, 1, 2, ...`) siguen `min(chunk_frames, 4 + 2 * (k / 8))`. Usa el mismo calendario también en `/v1/tts` y en la CLI.
+   - **Silencio inicial**: los chunks cuyo audio es de la cadena de silencio inicial (los frames del arranque cuyo `code0` pertenece a `LEADING_SILENCE_CODES`) no envían nada, así que el tamaño del primer envío depende de cuántos frames se descarten. El primer chunk que sale de la cadena envía solo su audio posterior a ella.
+   - **Rampa de salida de 40 ms**: el servidor retiene los últimos 40 ms de audio y los envía con el envío siguiente o al cerrar; por eso el primer envío tiene 40 ms menos que el audio entregado de su chunk.
 2. **Señal de cierre vs fallo**: el terminador `0\r\n\r\n` solo se envía si la generación termina sin error y con `samples > 0`. Si falla o se corta la conexión, el servidor cierra el socket **sin** enviar `0\r\n\r\n` para que el cliente detecte transferencia truncada.
 3. **Cancelación por socket**: el motor sondea desconexión del cliente antes de cada frame. El cliente **no** debe ejecutar `shutdown(SHUT_WR)` tras enviar la petición HTTP, o se interpretará como desconexión.
 
@@ -236,7 +237,8 @@ Formato actual de las líneas de diagnóstico que el motor escribe en `stderr`. 
 - **Semilla resuelta** (`request.rs`):
   `semilla: <u32>` *(o `semilla: <u32> (automática/temporal)`)*
 - **Generación en pipeline** (`pipeline.rs`):
-  `  Generados <N> frames (<S>s de audio)`
+  `  Frames de silencio inicial descartados: <K>` (solo sin `-S`; los frames de la cadena de silencio inicial cuyo audio no se entregó, también cuando valen 0; no sale si la síntesis se cancela o falla) y
+  `  Generados <N> frames (<S>s de audio)` (`N` son los frames generados y `S` los segundos de audio que entrega el decodificador, antes de `--rate`; no incluye el audio descartado)
 - **Final de la síntesis** (`pipeline.rs`, solo sin `-S`): `  EOS en el frame <N>` (el frame del primer `CODEC_EOS`; no sale si la síntesis llega al tope sin EOS) y `  Frames retenidos tras el EOS: <M>` (los frames que el Talker generó tras él: 2, o 1 si el tope lo cortó; no sale si la síntesis se cancela).
 - **Servidor HTTP al arrancar** (`http.rs`): `[HTTP] Calentamiento: <ms> ms` (o `[HTTP] Calentamiento fallido (sin efecto en las peticiones): <causa>`).
 - **Servidor HTTP al recibir una petición** (`http.rs`):

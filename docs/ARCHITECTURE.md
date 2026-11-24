@@ -95,7 +95,7 @@ AbortHandle  [Efímero por síntesis]      // Arc<AtomicBool> + poll opcional ac
    - **Paso de generación**: fija `blas.set_threads(gen_blas)` antes de iniciar el hilo decoder y lo mantiene constante hasta terminar el drenaje final.
    - **Paralelismo productor-consumidor (`std::thread::scope`)**:
      - **Hilo productor (`Talker + CodePredictor`)**: genera `[i32; 16]` por frame, comprueba `abort.is_cancelled()` antes de cada paso y empuja los códigos a `DecoderQueue`.
-     - **Hilo consumidor (`SpeechDecoder`)**: agrupa los frames en chunks según el calendario creciente (`2` en el primer chunk y `min(chunk_frames, 4 + 2 * (k / 8))` para `k = 0, 1, 2, ...` en los siguientes), ejecuta `speech_decoder_decode_streaming` con `DecoderWorkspace` + tiles en `up2`/`up3` (`256 KB`) y la atención con ventana deslizante (`causal_attention_windowed` sobre la caché KV compactable), y entrega PCM a `AudioSink`.
+     - **Hilo consumidor (`SpeechDecoder`)**: agrupa los frames en chunks según el calendario creciente (`2` en el primer chunk y `min(chunk_frames, 4 + 2 * (k / 8))` para `k = 0, 1, 2, ...` en los siguientes), ejecuta `speech_decoder_decode_streaming` con `DecoderWorkspace` + tiles en `up2`/`up3` (`256 KB`) y la atención con ventana deslizante (`causal_attention_windowed` sobre la caché KV compactable), y entrega PCM a `AudioSink`, sin el audio de los frames iniciales de la cadena de silencio inicial (los decodifica, pero no los entrega; [ADR-009](adr/009-leading-silence.md)).
      - Cualquier error de escritura en `AudioSink` activa `queue.aborted` de inmediato y `thread::scope` garantiza *join* limpio sin hilos huérfanos.
 
 ---
@@ -114,6 +114,6 @@ El tiempo de una síntesis es `prefill + max(productor, consumidor) + drenaje fi
 
 - **Productor** (`Talker + CodePredictor`, en `pool`): debe generar cada frame en menos de 80 ms para que el *streaming* no se corte. Lo limita el ancho de banda de memoria: cada frame lee ~1 GiB de pesos cuantizados.
 - **Consumidor** (`SpeechDecoder`, en `sd_pool` y BLAS): casi todo su tiempo está en las convoluciones de los bloques de *upsample* (`sgemm`).
-- **Primer audio**: lo gobierna el prefill, y después el primer chunk del decoder (2 frames).
+- **Primer audio**: lo gobierna el prefill, y después el primer chunk del decoder con audio fuera de la cadena de silencio inicial. El primer chunk decodificado es de 2 frames, pero el audio de la cadena no se entrega, así que el primer chunk entregado puede ser posterior al primero decodificado.
 
 Con 4 núcleos físicos, productor y consumidor se reparten las mismas CPU: no hay tiempo real con carga y, sin carga, x86_64 queda al límite (RTF 0,89–1,01). Las optimizaciones adoptadas y descartadas, con su efecto medido, y el rendimiento por plataforma están en [ADR-005](adr/005-cpu-inference-optimizations.md).
