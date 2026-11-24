@@ -266,6 +266,7 @@ La documentación sigue el modelo **Diátaxis** para separar guías prácticas, 
 | [`docs/adr/005-cpu-inference-optimizations.md`](docs/adr/005-cpu-inference-optimizations.md) | ADR | Mantenedores | Optimizaciones de la inferencia en CPU adoptadas y descartadas, con su efecto medido, y rendimiento por plataforma. |
 | [`docs/adr/006-single-synthesis-path.md`](docs/adr/006-single-synthesis-path.md) | ADR | Mantenedores | Un único camino de síntesis (`Synthesizer`, `Script` × `Delivery`), una regla de idioma y un servidor de un solo trabajador. |
 | [`docs/adr/007-natural-voice-stepwise-text-int8-talker.md`](docs/adr/007-natural-voice-stepwise-text-int8-talker.md) | ADR | Mantenedores | Texto por pasos, Talker `INT8` en el decodificado, clonación solo por x-vector y `.qvoice` v6, con la evidencia de cada decisión. |
+| [`docs/adr/008-end-of-synthesis.md`](docs/adr/008-end-of-synthesis.md) | ADR | Mantenedores | Final de la síntesis: retención de 2 frames tras el primer EOS y punto final del texto, con la evidencia de cada decisión. |
 
 ---
 

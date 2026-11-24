@@ -51,7 +51,7 @@
 | | `--save-voice <path>` | `None` | Guarda `.qvoice` v6; la voz se llama como el archivo (la extensión debe ser `.qvoice`; otra da `los archivos de voz deben ser .qvoice (se obtuvo <ruta>)`). Con idioma `-l` lo guarda; sin `-l` guarda «sin idioma». Sin `--text` ni `--serve`, crea el perfil y sale (`0`). Requiere `--ref-audio`. |
 | | `--load-voice <path>` | voz `default` incorporada | Carga `.qvoice` v6; la voz se llama como el archivo (sin extensión). Otra extensión o una versión distinta de la 6 → `exit 1`. Sin este flag ni `--ref-audio`, se usa la voz `default`. |
 | | Reglas de las opciones de voz (valen en todos los modos; la primera que falle da `exit 1`) | | 1) `--ref-audio` con `--load-voice`; 2) `--save-voice` sin `--ref-audio`. Una voz clonada se llama como el archivo de `--save-voice` (sin extensión) o, si no se guarda, como el WAV de `--ref-audio`. |
-| **Marcado y estilo** | Marcado en `--text` | sin flag propio | Síntesis multitramo con pausas `[pause:<s>]`, `[break:<s>]`, `[0.5]` o `\|`, y muletillas como `[hmm]`. Sirve para la entrega completa y para `--stdout` (mismo PCM, `NUMERIC_CONTRACT.md` §4, invariante 5). Un texto solo de pausas, sin nada que hablar, es un error (`Composición: nada que sintetizar`) en las dos entregas. |
+| **Marcado y estilo** | Marcado en `--text` | sin flag propio | Síntesis multitramo con pausas `[pause:<s>]`, `[break:<s>]`, `[0.5]` o `\|`, y muletillas como `[hmm]`. Sirve para la entrega completa y para `--stdout` (mismo PCM, `NUMERIC_CONTRACT.md` §4, invariante 5). Un texto solo de pausas, sin nada que hablar, es un error (`Composición: nada que sintetizar`) en las dos entregas. El texto se sintetiza con su punto final, con y sin marcado (también con `--no-compose`): si no termina en puntuación final, se le añade un `.` (`,`, `;` y `:` finales se sustituyen por `.`), y con marcado solo se cierra el último tramo hablado. |
 | | `--compose-pause <s>` | `0.12` | Pausa entre tramos hablados seguidos del texto con marcado (no se aplica junto a las muletillas, que se funden). |
 | | `--no-compose` | off | Desactiva la composición automática: el marcado de `--text` se lee como texto. |
 
@@ -188,7 +188,7 @@ synth.synthesize(
 )?;
 ```
 
-- **`Script`**: `Plain(String)` (texto sin marcado) o `Spans(Vec<SpanSpec>)` (tramos hablados y pausas). `qwen_core::plan_script(text, MarkupMode::{Auto, Literal})` es el único sitio que divide el texto en tramos.
+- **`Script`**: `Plain(String)` (texto sin marcado) o `Spans(Vec<SpanSpec>)` (tramos hablados y pausas). `qwen_core::plan_script(text, MarkupMode::{Auto, Literal})` es el único sitio que divide el texto en tramos y que fija su punto final. Quien construye un `Script` directamente (por ejemplo `Script::Plain("Hello from Rust!")`) no recibe el punto y sintetiza el texto tal cual.
 - **`Delivery`**: `Buffer` devuelve todo el audio en `SynthesisOutput::samples`, con `time_stretch` (`rate`); `Stream(&mut sink)` entrega chunks al destino y rechaza `rate != 1.0`. Los dos dan el mismo PCM (`NUMERIC_CONTRACT.md` §4, invariante 5).
 - **`SynthesisRequest`**: `language_id` (ya resuelto con `effective_language(pedido, voz)`: pedido, voz o español), `sampling: SamplingParams` (`temperature`, `top_k`, `top_p`, `rep_penalty`, `seed`), `max_frames`, `chunk_frames`, `volume`, `rate`, `compose_pause_s` y `silent: bool`. Los valores por defecto (0,325 / 50 / 1,0 / 1,05 / 4, 8192 frames, chunks de 10) están en un solo sitio.
 - **Destinos de audio**: el trait `AudioSink` (`write_samples(&mut self, &[f32])` y `finish(&mut self)`) es el único destino del camino. `MemorySink` acumula `f32`; `EdgeRampSink<W: PcmWrite>` aplica las rampas de borde (5 ms de entrada, 40 ms de salida con retención) y convierte a PCM `s16le`, y no aplica ganancia (la aplica `synthesize` antes de escribir). `PcmWrite` (`write_pcm` y `finish`) tiene escritores incluidos —`StdoutWriter` y `Vec<u8>`— o uno propio.
@@ -205,7 +205,7 @@ synth.synthesize(
   abort.cancel();
   // `synthesize` retorna `Err(EngineError::Aborted)`.
   ```
-- **Marcado y multitramo**: `plan_script(text, mode)` devuelve el `Script` y `resolve_sampling(base, seed, temperature)` aplica lo que pidió el usuario y, si no pidió nada, el valor por defecto. `Synthesizer::synthesize` compone los tramos con `compose_pause_s` entre ellos. Una composición sin nada que hablar (solo pausas) es un error.
+- **Marcado y multitramo**: `plan_script(text, mode)` devuelve el `Script`, con el punto final ya fijado (un `Script` construido a mano no lo recibe), y `resolve_sampling(base, seed, temperature)` aplica lo que pidió el usuario y, si no pidió nada, el valor por defecto. `Synthesizer::synthesize` compone los tramos con `compose_pause_s` entre ellos. Una composición sin nada que hablar (solo pausas) es un error.
 
 ---
 
@@ -237,6 +237,7 @@ Formato actual de las líneas de diagnóstico que el motor escribe en `stderr`. 
   `semilla: <u32>` *(o `semilla: <u32> (automática/temporal)`)*
 - **Generación en pipeline** (`pipeline.rs`):
   `  Generados <N> frames (<S>s de audio)`
+- **Final de la síntesis** (`pipeline.rs`, solo sin `-S`): `  EOS en el frame <N>` (el frame del primer `CODEC_EOS`; no sale si la síntesis llega al tope sin EOS) y `  Frames retenidos tras el EOS: <M>` (los frames que el Talker generó tras él: 2, o 1 si el tope lo cortó; no sale si la síntesis se cancela).
 - **Servidor HTTP al arrancar** (`http.rs`): `[HTTP] Calentamiento: <ms> ms` (o `[HTTP] Calentamiento fallido (sin efecto en las peticiones): <causa>`).
 - **Servidor HTTP al recibir una petición** (`http.rs`):
   `[HTTP] TTS: "<texto>" (voz=<nombre>, idioma=<id>, semilla=<n>)`
@@ -290,6 +291,7 @@ Las versiones siguen el [versionado semántico](https://semver.org/lang/es/) sob
 
 - Un cambio incompatible en cualquiera de ellos sube la versión **mayor**.
 - Una garantía nueva y compatible sube la versión **menor**.
+- Un cambio del audio para la misma petición (mismo texto, voz, semilla y temperatura) sube la versión **menor**: la tabla «Audio de referencia (x86-64)» de `NUMERIC_CONTRACT.md` se regenera.
 - Una corrección sube el **parche**.
 
 Quedan fuera del versionado y pueden cambiar en cualquier versión: la API Rust (sección 3) y el texto de los mensajes y de los logs (sección 4.3).

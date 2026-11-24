@@ -30,7 +30,7 @@ El caso de uso es local: una síntesis a la vez en un equipo modesto, con la CPU
    - **Velocidad**, frase larga con texto por pasos: RTF 0,62 en `Q4_0`, 0,65 en `INT8` y 0,80 en `BF16`.
    - El usuario lo eligió de oído.
    - **Memoria:** se aceptan unos 185 MiB más de RAM. El Talker tiene 440,4 M pesos, que ocupan unos 236 MiB en `Q4_0` y unos 422 MiB en `INT8` (cálculo con las dimensiones de `qwen-core/src/config.rs`).
-3. **Se conserva el refuerzo del EOS**, con un comentario que explica qué evita.
+3. **Se conserva el refuerzo del EOS**, con un comentario que explica qué evita. El final de la síntesis, cuando el Talker elige el EOS con la voz aún sonando, lo completa la retención de frames del [ADR-008](008-end-of-synthesis.md).
    - **En frases normales no actúa:** con texto por pasos y Talker `INT8`, el PCM es idéntico con y sin él en 48 de 48 síntesis y en la frase larga española de referencia.
    - **En textos muy cortos sí actúa:** son los tramos sueltos del marcado, como «Hola.» o el «Hmmm...» de `[hmm]`. Ahí el propio modelo apenas propone terminar, también en la implementación oficial: con su configuración por defecto (8 semillas), el «Hmmm...» a veces no se detiene y repite.
    - **El motor alineado con el oficial reproduce lo mismo** (sin diferencias, p ≥ 0,07). Ni la cuantización ni el prompt lo causan.
@@ -49,7 +49,7 @@ Decisiones de implementación derivadas: `SpeechDecoderWeights.codebooks` no es 
 
 ## Qué se conserva y por qué
 
-- **El refuerzo del EOS**, por la investigación de los textos cortos (decisión 3): es la defensa ante una debilidad del propio modelo.
+- **El refuerzo del EOS**, por la investigación de los textos cortos (decisión 3): es la defensa ante una debilidad del propio modelo. El final que el refuerzo adelanta lo completa la retención del [ADR-008](008-end-of-synthesis.md).
 - **El recorte del silencio final** de la referencia (decisión 7).
 - **El argmax del Code Predictor**, **la penalización por aparición** y **la temperatura 0,325** (decisión 8).
 
@@ -70,6 +70,7 @@ Decisiones de implementación derivadas: `SpeechDecoderWeights.codebooks` no es 
 En algunas frases la última sílaba sale con voz crepitante, de tono más bajo y sonido áspero.
 
 - También ocurre en la implementación oficial (2 de 2 tomas) y en el motor anterior (4 de 6); en otras frases, 1 de 20 tomas.
+- Tampoco depende del punto final del texto: con y sin punto, los rasgos de voz no difieren ([ADR-008](008-end-of-synthesis.md), limitaciones).
 - No lo corrigen ni un símbolo de relleno al final del texto ni subir la temperatura a 0,7 o 0,9: con 12 semillas por grupo, los rasgos de voz medidos con Praat (*jitter*, HNR y fracción sin voz) no difieren (Mann-Whitney bilateral).
 
 ---
