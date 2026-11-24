@@ -4,6 +4,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use qwen_core::config::{
     lookup_language, DEFAULT_SEED, DEFAULT_TEMPERATURE, NUM_CODEBOOKS,
@@ -17,6 +18,11 @@ use qwen_engine::{
 use qwen_core::Script;
 use qwen_kernels::ComputeRuntime;
 
+/// Las pruebas con el modelo comparten el número de hilos de BLAS, que es global al proceso: si
+/// dos síntesis corren a la vez, el orden de las sumas cambia y los bits dejan de coincidir. Se
+/// ejecutan una a una.
+static MODEL_LOCK: Mutex<()> = Mutex::new(());
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -28,6 +34,7 @@ fn repo_root() -> PathBuf {
 
 #[test]
 fn test_e2e_determinism_and_abort() {
+    let _serial = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = repo_root();
     let model_dir = root.join("models/qwen3-tts-0.6b-base");
     if !model_dir.exists() {
@@ -104,4 +111,71 @@ fn test_e2e_determinism_and_abort() {
         speech_decoder_decode_streaming(&runtime, &model.decoder, &mut bad_st, &mut bad_ws, &bad_codes, 1),
         Err(EngineError::InvalidArg(_))
     ));
+}
+
+/// Frames que el motor retiene tras el primer EOS (el mismo valor que `EOS_HOLD_FRAMES`).
+const EOS_HOLD_FRAMES: usize = 2;
+/// Muestras por frame: 80 ms a 24 kHz.
+const SAMPLES_PER_FRAME: usize = 1920;
+
+#[test]
+fn test_eos_hold_frames() {
+    let _serial = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = repo_root();
+    let model_dir = root.join("models/qwen3-tts-0.6b-base");
+    if !model_dir.exists() {
+        eprintln!("Se omite test_eos_hold_frames (falta el modelo)");
+        return;
+    }
+
+    let runtime = ComputeRuntime::new(Some(4));
+    let model = Model06B::load(&model_dir, &runtime, true).unwrap();
+    let voice = Voice::builtin_default();
+    let synth = Synthesizer {
+        runtime: &runtime,
+        model: &model,
+        voice: &voice,
+    };
+    let abort = AbortHandle::new();
+    let lang = lookup_language("Spanish").unwrap();
+    let make_req = |max_frames: usize| SynthesisRequest {
+        language_id: lang,
+        silent: true,
+        max_frames,
+        ..Default::default()
+    };
+
+    // Tras el primer EOS se generan exactamente `EOS_HOLD_FRAMES` frames más, y cada frame
+    // aporta sus 1 920 muestras.
+    let full_req = make_req(SynthesisRequest::default().max_frames);
+    for text in ["Hola mundo", "Hmmm..."] {
+        let mut scratch = SessionScratch::new();
+        let script = Script::Plain(text.to_string());
+        let t = synth
+            .synthesize(&mut scratch, &full_req, &abort, &script, Delivery::Buffer)
+            .unwrap()
+            .timing;
+        let eos = t
+            .first_eos_frame
+            .unwrap_or_else(|| panic!("«{text}» debe terminar con un EOS"));
+        assert!(eos + EOS_HOLD_FRAMES <= full_req.max_frames);
+        assert_eq!(t.frames, eos + EOS_HOLD_FRAMES, "frames de «{text}»");
+        assert_eq!(
+            t.samples_produced,
+            t.frames * SAMPLES_PER_FRAME,
+            "muestras de «{text}»"
+        );
+        if text == "Hola mundo" {
+            // La retención no pasa del tope: con `max_frames` igual al frame del primer EOS
+            // más 1, solo cabe el frame retenido que sustituye al EOS.
+            let capped_req = make_req(eos + 1);
+            let mut scratch = SessionScratch::new();
+            let capped = synth
+                .synthesize(&mut scratch, &capped_req, &abort, &script, Delivery::Buffer)
+                .unwrap()
+                .timing;
+            assert_eq!(capped.first_eos_frame, Some(eos));
+            assert_eq!(capped.frames, capped_req.max_frames);
+        }
+    }
 }

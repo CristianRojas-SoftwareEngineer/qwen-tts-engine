@@ -11,7 +11,7 @@ use qwen_core::config::{
     CODEBOOK_SIZE, CODEC_EOS, CODEC_VOCAB_SIZE, FRAME_RATE, HIDDEN_SIZE,
     NUM_CODEBOOKS, SAMPLE_RATE,
 };
-use qwen_core::LcgRng;
+use qwen_core::{LcgRng, SamplingParams};
 use qwen_kernels::{ftz_on, ComputeRuntime, KernelDispatch};
 
 use crate::audio::{apply_gain, AudioSink};
@@ -29,6 +29,11 @@ use crate::voice::Voice;
 const STREAM_RAMP_START_FRAMES: usize = 4;
 const STREAM_RAMP_STEP_FRAMES: usize = 2;
 const STREAM_RAMP_HOLD_CHUNKS: usize = 8;
+
+/// Frames que el Talker genera tras el primer `CODEC_EOS`, con el EOS bloqueado, antes de terminar.
+/// El Talker suele elegir el EOS mientras la voz aún suena; en los frames retenidos completa la
+/// caída del sonido. El decodificador es causal, así que ese final no se puede añadir después.
+const EOS_HOLD_FRAMES: usize = 2;
 
 struct DecoderQueueState {
     codes: Vec<i32>,
@@ -138,6 +143,19 @@ pub(crate) fn apply_talker_logit_rules(
         let boost = (step * ((frame - boost_start) as f32)).min(cap);
         logits[CODEC_EOS as usize] += boost;
     }
+}
+
+/// Muestrea el `code0` del frame con los logits ya preparados en `scratch.talker_bufs.logits`.
+fn sample_code0(scratch: &mut SessionScratch, sp: &SamplingParams) -> i32 {
+    scratch.sampler.sample(
+        &mut scratch.talker_bufs.logits,
+        sp.temperature,
+        sp.top_k as i32,
+        sp.top_p,
+        sp.rep_penalty,
+        &scratch.prev_tokens,
+        &mut scratch.rng,
+    ) as i32
 }
 
 /// Construye el embedding de entrada al siguiente paso del Talker acumulando los 16 codebooks y `tts_pad`.
@@ -255,6 +273,7 @@ pub(crate) fn generate_to_sink(
     let mut cp_ms = 0.0f64;
     let mut drain_ms = 0.0f64;
     let mut was_aborted = false;
+    let mut first_eos_frame: Option<usize> = None;
 
     let mut cons_sd_stream = std::mem::take(&mut scratch.sd_stream);
     let mut cons_sd_ws = std::mem::take(&mut scratch.sd_ws);
@@ -355,6 +374,8 @@ pub(crate) fn generate_to_sink(
             }
         });
 
+        // Frames que quedan por retener tras el primer EOS (`None` mientras no ha habido EOS).
+        let mut hold_left: Option<usize> = None;
         for frame in 0..max_frames {
             if abort.is_cancelled() {
                 queue.aborted.store(true, Ordering::Release);
@@ -369,23 +390,28 @@ pub(crate) fn generate_to_sink(
                 let tb = &mut scratch.talker_bufs;
                 talker_codec_logits(runtime, model, &tb.last_hidden, &mut tb.logits);
                 apply_talker_logit_rules(&mut tb.logits, frame, text_content_len);
+                if hold_left.is_some() {
+                    tb.logits[CODEC_EOS as usize] = -1e30;
+                }
             }
 
-            let code0 = scratch.sampler.sample(
-                &mut scratch.talker_bufs.logits,
-                sp.temperature,
-                sp.top_k as i32,
-                sp.top_p,
-                sp.rep_penalty,
-                &scratch.prev_tokens,
-                &mut scratch.rng,
-            ) as i32;
+            let mut code0 = sample_code0(scratch, sp);
 
             if code0 == CODEC_EOS {
+                // Primer EOS: se descarta, se bloquea y se vuelve a muestrear el mismo frame con
+                // el siguiente número del generador; ese código es el primer frame retenido.
+                first_eos_frame = Some(frame);
+                hold_left = Some(EOS_HOLD_FRAMES);
                 if !silent {
                     eprintln!("  EOS en el frame {}", frame);
                 }
-                break;
+                {
+                    let tb = &mut scratch.talker_bufs;
+                    talker_codec_logits(runtime, model, &tb.last_hidden, &mut tb.logits);
+                    apply_talker_logit_rules(&mut tb.logits, frame, text_content_len);
+                    tb.logits[CODEC_EOS as usize] = -1e30;
+                }
+                code0 = sample_code0(scratch, sp);
             }
 
             scratch.prev_tokens.push(code0);
@@ -410,6 +436,13 @@ pub(crate) fn generate_to_sink(
 
             scratch.codec_codes.extend_from_slice(&codes);
             queue.push_frame(&codes);
+
+            if let Some(left) = hold_left {
+                if left <= 1 {
+                    break;
+                }
+                hold_left = Some(left - 1);
+            }
 
             if queue.aborted.load(Ordering::Acquire) {
                 break;
@@ -442,6 +475,13 @@ pub(crate) fn generate_to_sink(
             );
             scratch.talker_bufs.last_hidden.copy_from_slice(&lh_copy);
             talker_ms += t_tk.elapsed().as_secs_f64() * 1000.0;
+        }
+
+        if let (Some(eos), false, false) = (first_eos_frame, silent, was_aborted) {
+            eprintln!(
+                "  Frames retenidos tras el EOS: {}",
+                scratch.codec_codes.len() / NUM_CODEBOOKS - eos
+            );
         }
 
         let t_drain = Instant::now();
@@ -478,6 +518,7 @@ pub(crate) fn generate_to_sink(
             ttfa_ms,
             total_ms,
             samples_produced,
+            first_eos_frame,
         }, chunk_frames);
     }
 
@@ -493,6 +534,7 @@ pub(crate) fn generate_to_sink(
         ttfa_ms,
         total_ms,
         samples_produced,
+        first_eos_frame,
     })
 }
 
