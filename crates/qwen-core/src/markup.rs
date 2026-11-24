@@ -34,16 +34,56 @@ pub enum Script {
     Spans(Vec<SpanSpec>),
 }
 
-/// Único sitio que decide los tramos.
+/// Único sitio que decide los tramos. También fija el punto final: al texto plano o al último tramo hablado.
 pub fn plan_script(text: &str, mode: MarkupMode) -> Script {
     match mode {
-        MarkupMode::Literal => Script::Plain(text.to_string()),
+        MarkupMode::Literal => Script::Plain(close_final_sentence(text)),
         MarkupMode::Auto => {
             if MarkupPlanner::has_markup(text) {
-                Script::Spans(MarkupPlanner::parse_spans(text))
+                let mut spans = MarkupPlanner::parse_spans(text);
+                // Solo el último tramo hablado cierra la frase; las pausas finales se ignoran.
+                if let Some(SpanSpec::Utterance { text, .. }) = spans
+                    .iter_mut()
+                    .rev()
+                    .find(|s| matches!(s, SpanSpec::Utterance { .. }))
+                {
+                    *text = close_final_sentence(text);
+                }
+                Script::Spans(spans)
             } else {
-                Script::Plain(text.to_string())
+                Script::Plain(close_final_sentence(text))
             }
+        }
+    }
+}
+
+/// Cierra el texto con un punto final: el modelo cierra la entonación de una frase terminada
+/// cuando el texto acaba en puntuación final. Se ignoran los espacios y los signos de cierre
+/// (`"`, `'`, `»`, `”`, `’`, `)`) del final. Si el último carácter restante es puntuación final
+/// (`.`, `!`, `?`, `…`, `。`, `！`, `？`) o no hay ninguno, el texto no cambia; si es `,`, `;` o `:`,
+/// se sustituye por `.`; en otro caso se inserta `.` tras el último carácter que no es espacio,
+/// conservando los espacios finales.
+fn close_final_sentence(text: &str) -> String {
+    const CLOSING: [char; 6] = ['"', '\'', '»', '”', '’', ')'];
+    let Some((idx, last)) = text
+        .char_indices()
+        .rev()
+        .find(|&(_, c)| !c.is_whitespace() && !CLOSING.contains(&c))
+    else {
+        return text.to_string();
+    };
+    match last {
+        '.' | '!' | '?' | '…' | '。' | '！' | '？' => text.to_string(),
+        ',' | ';' | ':' => {
+            let mut out = String::with_capacity(text.len());
+            out.push_str(&text[..idx]);
+            out.push('.');
+            out.push_str(&text[idx + last.len_utf8()..]);
+            out
+        }
+        _ => {
+            let end = text.trim_end().len();
+            format!("{}.{}", &text[..end], &text[end..])
         }
     }
 }
@@ -255,6 +295,86 @@ mod tests {
             .iter()
             .any(|s| matches!(s, SpanSpec::Utterance { is_filler: true, .. })));
         assert!(spans.iter().any(|s| matches!(s, SpanSpec::Pause { .. })));
+    }
+
+    #[test]
+    fn close_final_sentence_cases() {
+        let changed = [
+            ("Hola mundo", "Hola mundo."),
+            ("Tengo 3", "Tengo 3."),
+            ("Hola mundo ", "Hola mundo. "),
+            ("Hola, \n", "Hola. \n"),
+            ("Hola mundo,", "Hola mundo."),
+            ("Hola;", "Hola."),
+            ("Nota:", "Nota."),
+            ("Dijo «hola»", "Dijo «hola»."),
+        ];
+        for (input, expected) in changed {
+            assert_eq!(close_final_sentence(input), expected, "entrada {input:?}");
+        }
+        let unchanged = [
+            "Hola.",
+            "¿Vienes?",
+            "¡Hola!",
+            "Hmmm...",
+            "Bien…",
+            "你好。",
+            "Dijo «hola».",
+            "(ok.)",
+            "Hola mundo.  ",
+            "",
+            "   ",
+            ")",
+        ];
+        for input in unchanged {
+            assert_eq!(close_final_sentence(input), input, "entrada {input:?}");
+        }
+    }
+
+    #[test]
+    fn plan_script_closes_final_sentence() {
+        assert_eq!(
+            plan_script("Hola [laugh] mundo", MarkupMode::Literal),
+            Script::Plain("Hola [laugh] mundo.".to_string())
+        );
+        assert_eq!(
+            plan_script("Hola mundo", MarkupMode::Auto),
+            Script::Plain("Hola mundo.".to_string())
+        );
+
+        // Solo el último tramo hablado cambia; la muletilla y las pausas quedan igual.
+        let Script::Spans(spans) = plan_script("Uno [hmm] dos [pause:0.2]", MarkupMode::Auto)
+        else {
+            panic!("se esperaba Spans");
+        };
+        let texts: Vec<(&str, bool)> = spans
+            .iter()
+            .filter_map(|s| match s {
+                SpanSpec::Utterance {
+                    text, is_filler, ..
+                } => Some((text.as_str(), *is_filler)),
+                SpanSpec::Pause { .. } => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 3, "tramos hablados: {texts:?}");
+        assert_eq!(texts[0], ("Uno", false));
+        assert!(texts[1].1, "el segundo tramo debe ser la muletilla");
+        assert_eq!(texts[2], ("dos.", false));
+        assert!(matches!(spans.last(), Some(SpanSpec::Pause { .. })));
+
+        // Un último tramo que ya termina en `!` no cambia.
+        let Script::Spans(spans) = plan_script("Uno [pause:0.2] dos!", MarkupMode::Auto) else {
+            panic!("se esperaba Spans");
+        };
+        assert!(spans
+            .iter()
+            .any(|s| matches!(s, SpanSpec::Utterance { text, .. } if text == "dos!")));
+
+        // Sin tramos hablados no hay nada que cerrar.
+        let Script::Spans(spans) = plan_script("[pause:0.3]", MarkupMode::Auto) else {
+            panic!("se esperaba Spans");
+        };
+        assert!(spans.iter().all(|s| matches!(s, SpanSpec::Pause { .. })));
     }
 
     #[test]
