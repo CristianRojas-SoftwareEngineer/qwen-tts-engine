@@ -146,7 +146,7 @@ fn test_eos_hold_frames() {
     };
 
     // Tras el primer EOS se generan exactamente `EOS_HOLD_FRAMES` frames más, y cada frame
-    // aporta sus 1 920 muestras.
+    // entregado aporta sus 1 920 muestras (los de la cadena de silencio inicial no se entregan).
     let full_req = make_req(SynthesisRequest::default().max_frames);
     for text in ["Hola mundo", "Hmmm..."] {
         let mut scratch = SessionScratch::new();
@@ -162,7 +162,7 @@ fn test_eos_hold_frames() {
         assert_eq!(t.frames, eos + EOS_HOLD_FRAMES, "frames de «{text}»");
         assert_eq!(
             t.samples_produced,
-            t.frames * SAMPLES_PER_FRAME,
+            (t.frames - t.leading_silence_frames) * SAMPLES_PER_FRAME,
             "muestras de «{text}»"
         );
         if text == "Hola mundo" {
@@ -178,4 +178,87 @@ fn test_eos_hold_frames() {
             assert_eq!(capped.frames, capped_req.max_frames);
         }
     }
+}
+
+/// `code0` de la cadena de silencio inicial (la misma lista que `LEADING_SILENCE_CODES`).
+const LEADING_SILENCE_CODES: [i32; 5] = [1995, 215, 212, 1181, 462];
+
+#[test]
+fn test_leading_silence_discard() {
+    let _serial = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = repo_root();
+    let model_dir = root.join("models/qwen3-tts-0.6b-base");
+    if !model_dir.exists() {
+        eprintln!("Se omite test_leading_silence_discard (falta el modelo)");
+        return;
+    }
+
+    let runtime = ComputeRuntime::new(Some(4));
+    let model = Model06B::load(&model_dir, &runtime, true).unwrap();
+    let voice = Voice::builtin_default();
+    let synth = Synthesizer {
+        runtime: &runtime,
+        model: &model,
+        voice: &voice,
+    };
+    let abort = AbortHandle::new();
+    let lang = lookup_language("Spanish").unwrap();
+    let script = Script::Plain("Hola mundo.".to_string());
+    let make_req = |max_frames: usize| SynthesisRequest {
+        language_id: lang,
+        silent: true,
+        max_frames,
+        ..Default::default()
+    };
+    // Frames iniciales seguidos de `codec_codes` cuyo `code0` pertenece a la cadena.
+    let chain_len = |scratch: &SessionScratch| {
+        scratch
+            .codec_codes
+            .chunks(NUM_CODEBOOKS)
+            .take_while(|frame| LEADING_SILENCE_CODES.contains(&frame[0]))
+            .count()
+    };
+
+    // Con el tope por defecto se descarta exactamente la cadena inicial.
+    let mut scratch = SessionScratch::new();
+    let t = synth
+        .synthesize(
+            &mut scratch,
+            &make_req(SynthesisRequest::default().max_frames),
+            &abort,
+            &script,
+            Delivery::Buffer,
+        )
+        .unwrap()
+        .timing;
+    assert!(
+        t.leading_silence_frames > 0,
+        "la cadena de silencio inicial de este checkpoint ha dejado de aparecer al principio de la voz default en español: revisar los ids de LEADING_SILENCE_CODES"
+    );
+    assert_eq!(t.leading_silence_frames, chain_len(&scratch));
+    assert_eq!(
+        t.samples_produced,
+        (t.frames - t.leading_silence_frames) * SAMPLES_PER_FRAME
+    );
+
+    // Si la síntesis termina sin salir de la cadena, se entrega todo su audio.
+    let mut scratch = SessionScratch::new();
+    let t = synth
+        .synthesize(
+            &mut scratch,
+            &make_req(3),
+            &abort,
+            &script,
+            Delivery::Buffer,
+        )
+        .unwrap()
+        .timing;
+    assert_eq!(t.frames, 3);
+    assert_eq!(
+        chain_len(&scratch),
+        3,
+        "los tres frames deben ser de la cadena"
+    );
+    assert_eq!(t.leading_silence_frames, 0);
+    assert_eq!(t.samples_produced, 3 * SAMPLES_PER_FRAME);
 }

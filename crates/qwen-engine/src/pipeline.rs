@@ -8,7 +8,7 @@ use std::sync::{Condvar, Mutex};
 use std::time::Instant;
 
 use qwen_core::config::{
-    CODEBOOK_SIZE, CODEC_EOS, CODEC_VOCAB_SIZE, FRAME_RATE, HIDDEN_SIZE,
+    CODEBOOK_SIZE, CODEC_EOS, CODEC_VOCAB_SIZE, HIDDEN_SIZE, HOP_SAMPLES,
     NUM_CODEBOOKS, SAMPLE_RATE,
 };
 use qwen_core::{LcgRng, SamplingParams};
@@ -34,6 +34,12 @@ const STREAM_RAMP_HOLD_CHUNKS: usize = 8;
 /// El Talker suele elegir el EOS mientras la voz aún suena; en los frames retenidos completa la
 /// caída del sonido. El decodificador es causal, así que ese final no se puede añadir después.
 const EOS_HOLD_FRAMES: usize = 2;
+
+/// `code0` de los frames de silencio digital con los que el Talker empieza una síntesis con voces
+/// de tipo x-vector: son los ids que el códec de este checkpoint asigna al silencio. El motor
+/// decodifica esos frames, para que el decodificador conserve su contexto, pero no entrega su
+/// audio. Prohibirlos al Talker lo obliga a un arranque que suena como un chasquido.
+const LEADING_SILENCE_CODES: [i32; 5] = [1995, 215, 212, 1181, 462];
 
 struct DecoderQueueState {
     codes: Vec<i32>,
@@ -267,6 +273,7 @@ pub(crate) fn generate_to_sink(
     let mut max_backlog = 0usize;
     let mut ttfa_ms: Option<f64> = None;
     let mut samples_produced = 0usize;
+    let mut leading_silence_frames = 0usize;
     let mut decoder_err: Option<EngineError> = None;
 
     let mut talker_ms = 0.0f64;
@@ -285,6 +292,33 @@ pub(crate) fn generate_to_sink(
             let mut ramp_chunks = 0usize;
             let mut chunk_codes_local = Vec::new();
             let mut first_chunk_emitted = false;
+            // Mientras `leading` sea `true`, el audio de los frames de la cadena de silencio
+            // inicial se aparta en `held` (sin ganancia) en lugar de entregarse.
+            let mut leading = true;
+            let mut held: Vec<f32> = Vec::new();
+            let mut discarded_frames = 0usize;
+
+            // Entrega muestras al destino con la ganancia aplicada. La ganancia va justo antes
+            // del destino (elemento a elemento, mismos bits que aplicarla dentro de las rampas
+            // de borde); el TTFA es la primera entrega no vacía.
+            let mut deliver = |samples: &[f32]| -> Result<(), EngineError> {
+                if samples.is_empty() {
+                    return Ok(());
+                }
+                if ttfa_ms.is_none() {
+                    ttfa_ms = Some(t_start.elapsed().as_secs_f64() * 1000.0);
+                }
+                let emit = if (req.volume - 1.0).abs() < f32::EPSILON {
+                    std::borrow::Cow::Borrowed(samples)
+                } else {
+                    let mut g = samples.to_vec();
+                    apply_gain(&mut g, req.volume);
+                    std::borrow::Cow::Owned(g)
+                };
+                sink.write_samples(&emit)?;
+                samples_produced += emit.len();
+                Ok(())
+            };
 
             loop {
                 // Mismo calendario de chunks con y sin streaming: las fronteras de
@@ -343,25 +377,32 @@ pub(crate) fn generate_to_sink(
                 ) {
                     Ok(audio) => {
                         let emit = audio.as_slice();
-                        if !emit.is_empty() {
-                            if ttfa_ms.is_none() {
-                                ttfa_ms = Some(t_start.elapsed().as_secs_f64() * 1000.0);
+                        let mut result = Ok(());
+                        if leading {
+                            // Frames iniciales seguidos cuyo `code0` pertenece a la cadena.
+                            let mut chain = 0usize;
+                            while chain < avail
+                                && LEADING_SILENCE_CODES
+                                    .contains(&chunk_codes_local[chain * NUM_CODEBOOKS])
+                            {
+                                chain += 1;
                             }
-                            // La ganancia va justo antes del destino (elemento a elemento, mismos
-                            // bits que aplicarla dentro de las rampas de borde).
-                            let emit = if (req.volume - 1.0).abs() < f32::EPSILON {
-                                std::borrow::Cow::Borrowed(emit)
+                            if chain == avail {
+                                // Todo el chunk es de la cadena: se aparta sin entregar nada.
+                                held.extend_from_slice(emit);
                             } else {
-                                let mut g = emit.to_vec();
-                                apply_gain(&mut g, req.volume);
-                                std::borrow::Cow::Owned(g)
-                            };
-                            if let Err(e) = sink.write_samples(&emit) {
-                                queue.aborted.store(true, Ordering::Release);
-                                decoder_err = Some(e);
-                            } else {
-                                samples_produced += emit.len();
+                                // El primer frame fuera de la cadena termina el descarte.
+                                leading = false;
+                                discarded_frames = held.len() / HOP_SAMPLES + chain;
+                                held.clear();
+                                result = deliver(&emit[(chain * HOP_SAMPLES).min(emit.len())..]);
                             }
+                        } else {
+                            result = deliver(emit);
+                        }
+                        if let Err(e) = result {
+                            queue.aborted.store(true, Ordering::Release);
+                            decoder_err = Some(e);
                         }
                     }
                     Err(e) => {
@@ -372,6 +413,15 @@ pub(crate) fn generate_to_sink(
                 decoder_ms += t0.elapsed().as_secs_f64() * 1000.0;
                 read_pos += avail;
             }
+
+            // La síntesis terminó sin salir de la cadena: se entrega su audio entero.
+            if leading && !held.is_empty() && !queue.aborted.load(Ordering::Acquire) {
+                if let Err(e) = deliver(&held) {
+                    queue.aborted.store(true, Ordering::Release);
+                    decoder_err = Some(e);
+                }
+            }
+            discarded_frames
         });
 
         // Frames que quedan por retener tras el primer EOS (`None` mientras no ha habido EOS).
@@ -486,7 +536,7 @@ pub(crate) fn generate_to_sink(
 
         let t_drain = Instant::now();
         queue.finish();
-        let _ = dec_handle.join();
+        leading_silence_frames = dec_handle.join().unwrap_or(0);
         drain_ms = t_drain.elapsed().as_secs_f64() * 1000.0;
     });
 
@@ -506,6 +556,7 @@ pub(crate) fn generate_to_sink(
     let frames = scratch.codec_codes.len() / NUM_CODEBOOKS;
     let total_ms = t_start.elapsed().as_secs_f64() * 1000.0;
     if !silent {
+        eprintln!("  Frames de silencio inicial descartados: {leading_silence_frames}");
         log_synthesis_summary(&SynthesisTiming {
             prefill_ms,
             talker_ms,
@@ -518,6 +569,7 @@ pub(crate) fn generate_to_sink(
             ttfa_ms,
             total_ms,
             samples_produced,
+            leading_silence_frames,
             first_eos_frame,
         }, chunk_frames);
     }
@@ -534,6 +586,7 @@ pub(crate) fn generate_to_sink(
         ttfa_ms,
         total_ms,
         samples_produced,
+        leading_silence_frames,
         first_eos_frame,
     })
 }
@@ -542,7 +595,7 @@ fn log_synthesis_summary(t: &SynthesisTiming, chunk_frames: usize) {
     eprintln!(
         "\n  Generados {} frames ({:.1}s de audio)",
         t.frames,
-        (t.frames as f64) / (FRAME_RATE as f64)
+        (t.samples_produced as f64) / (SAMPLE_RATE as f64)
     );
     if t.frames > 0 {
         eprintln!(

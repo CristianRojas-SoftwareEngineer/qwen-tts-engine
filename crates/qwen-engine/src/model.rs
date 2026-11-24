@@ -800,6 +800,8 @@ pub struct SynthesisTiming {
     pub ttfa_ms: Option<f64>,
     pub total_ms: f64,
     pub samples_produced: usize,
+    /// Frames de la cadena de silencio inicial cuyo audio no se entregó.
+    pub leading_silence_frames: usize,
     /// Frame del primer `CODEC_EOS`, o `None` si la síntesis llegó al tope sin EOS.
     pub first_eos_frame: Option<usize>,
 }
