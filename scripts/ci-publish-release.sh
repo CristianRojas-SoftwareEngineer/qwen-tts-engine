@@ -64,6 +64,8 @@ fi
 BODY_TEXT=$(cat <<TEXT
 Versión $V del motor de síntesis de voz para Qwen3-TTS 0.6B Base. Las versiones siguen el versionado semántico sobre el contrato de uso (docs/INTERFACE_CONTRACT.md, sección «Versionado»).
 
+Qué cambia en esta versión: sección [$V] de CHANGELOG.md.
+
 ## Archivos
 
 - \`qwen-tts-engine-$TAG-x86_64-pc-windows-gnu.zip\`: binario \`qwen_tts.exe\` para Windows x86_64.
