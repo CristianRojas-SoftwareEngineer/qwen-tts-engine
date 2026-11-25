@@ -3,7 +3,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use qwen_core::config::{
     effective_language, language_name, lookup_language, DEFAULT_LANGUAGE_ID, HIDDEN_SIZE,
@@ -32,14 +32,33 @@ fn synthetic_config(model_type: &str, with_speaker_encoder: bool) -> String {
         .replace("{SPK_ENC}", if with_speaker_encoder { SPK_ENC } else { "" })
 }
 
+/// Carpeta temporal de una prueba. Se borra al soltar la guarda, también si la prueba falla,
+/// porque `Drop` corre al desenrollar el pánico.
+struct TestDir(PathBuf);
+
+impl TestDir {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn load_synthetic(name: &str, config_json: &str) -> Result<(), qwen_core::CoreError> {
-    let tmp = std::env::temp_dir().join(format!("qwen_core_cfg_{name}"));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).unwrap();
-    std::fs::write(tmp.join("config.json"), config_json).unwrap();
-    let res = qwen_core::validate_model_config(&tmp);
-    let _ = std::fs::remove_dir_all(&tmp);
-    res
+    let tmp = TestDir::new(&format!("qwen_core_cfg_{name}"));
+    std::fs::write(tmp.path().join("config.json"), config_json).unwrap();
+    qwen_core::validate_model_config(tmp.path())
 }
 
 #[test]
@@ -207,11 +226,10 @@ fn qvoice_v6_bytes(lang_id: u32) -> Vec<u8> {
 }
 
 fn read_qvoice_bytes(name: &str, bytes: &[u8]) -> Result<QVoiceFile, qwen_core::CoreError> {
-    let path = std::env::temp_dir().join(format!("qwen_core_qv6_{name}.qvoice"));
+    let dir = TestDir::new(&format!("qwen_core_qv6_{name}"));
+    let path = dir.path().join(format!("qwen_core_qv6_{name}.qvoice"));
     std::fs::write(&path, bytes).unwrap();
-    let res = QVoiceFile::read_from_file(&path);
-    let _ = std::fs::remove_file(&path);
-    res
+    QVoiceFile::read_from_file(&path)
 }
 
 #[test]
@@ -221,30 +239,28 @@ fn test_qvoice_v6_roundtrip_with_and_without_language() {
         speaker_embedding: qvoice_emb(),
         lang_id: 0,
     };
-    let p1 = std::env::temp_dir().join("qwen_core_qv6_rt_plain.qvoice");
+    let dir = TestDir::new("qwen_core_qv6_roundtrip");
+    let p1 = dir.path().join("qwen_core_qv6_rt_plain.qvoice");
     plain.write_to_file(&p1).unwrap();
     assert_eq!(std::fs::metadata(&p1).unwrap().len() as usize, 4112);
     let back = QVoiceFile::read_from_file(&p1).unwrap();
     assert_eq!(back, plain);
-    let _ = std::fs::remove_file(&p1);
 
     // Con idioma válido: mismo tamaño
     let with_lang = QVoiceFile {
         speaker_embedding: qvoice_emb(),
         lang_id: 2054,
     };
-    let p2 = std::env::temp_dir().join("qwen_core_qv6_rt_lang.qvoice");
+    let p2 = dir.path().join("qwen_core_qv6_rt_lang.qvoice");
     with_lang.write_to_file(&p2).unwrap();
     assert_eq!(std::fs::metadata(&p2).unwrap().len() as usize, 4112);
     let back = QVoiceFile::read_from_file(&p2).unwrap();
     assert_eq!(back, with_lang);
-    let _ = std::fs::remove_file(&p2);
 
     // El escritor y el lector manual coinciden byte a byte
-    let p3 = std::env::temp_dir().join("qwen_core_qv6_rt_hand.qvoice");
+    let p3 = dir.path().join("qwen_core_qv6_rt_hand.qvoice");
     with_lang.write_to_file(&p3).unwrap();
     assert_eq!(std::fs::read(&p3).unwrap(), qvoice_v6_bytes(2054));
-    let _ = std::fs::remove_file(&p3);
 }
 
 #[test]

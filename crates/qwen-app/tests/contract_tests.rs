@@ -37,11 +37,31 @@ fn model_dir() -> PathBuf {
     repo_root().join("models").join("qwen3-tts-0.6b-base")
 }
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("qwen_app_contract_tests").join(name);
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+/// Carpeta temporal de una prueba. Se borra al soltar la guarda, también si la prueba falla,
+/// porque `Drop` corre al desenrollar el pánico.
+struct TestDir(PathBuf);
+
+impl TestDir {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(name);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn temp_dir(name: &str) -> TestDir {
+    TestDir::new(&format!("qwen_app_contract_tests_{name}"))
 }
 
 /// Comando base: sin las variables de hilos de OpenBLAS (el contrato pide al cliente no
@@ -177,7 +197,8 @@ fn save_voice_without_ref_audio_exits_1() {
 
 #[test]
 fn missing_model_dir_exits_1() {
-    let dir = temp_dir("missing_model");
+    let guard = temp_dir("missing_model");
+    let dir = guard.path();
     let missing = dir.join("no-existe");
     let (code, _) = run(
         &["-d", &missing.to_string_lossy(), "--text", "hola"],
@@ -465,7 +486,8 @@ fn contract_with_model() {
         return;
     }
     let model = model_arg();
-    let tmp = temp_dir("with_model");
+    let guard = temp_dir("with_model");
+    let tmp = guard.path();
 
     // 1. Referencia de clonado: la voz `default` dice una frase; sale en WAV PCM mono de
     // 16 bits a 24 kHz. De ahí se derivan una versión estéreo y otra a 48 kHz.

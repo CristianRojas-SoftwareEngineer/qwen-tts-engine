@@ -3,6 +3,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+mod common;
+
 use std::fs;
 use std::path::PathBuf;
 
@@ -28,18 +30,14 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join("qwen_engine_voice_clone_tests")
-        .join(name);
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp_dir(name: &str) -> common::TestDir {
+    common::TestDir::new(&format!("qwen_engine_voice_clone_tests_{name}"))
 }
 
 #[test]
 fn test_wav_validation_and_ffmpeg_hints() {
-    let dir = temp_dir("wav_validation");
+    let guard = temp_dir("wav_validation");
+    let dir = guard.path();
     let samples24: Vec<f32> = (0..24000).map(|i| ((i as f32) * 0.05).sin() * 0.2).collect();
 
     // 1. Un archivo que no es WAV da la pista de ffmpeg
@@ -139,7 +137,8 @@ fn test_default_voice_is_embedded() {
 
 #[test]
 fn test_voice_file_extension_and_version_errors() {
-    let dir = temp_dir("voice_errors");
+    let guard = temp_dir("voice_errors");
+    let dir = guard.path();
 
     // Una extensión distinta de .qvoice se rechaza antes de leer (ni siquiera existe el archivo)
     let bin = dir.join("voice.bin");
@@ -203,7 +202,8 @@ fn test_clone_from_default_voice_e2e() {
         return;
     }
 
-    let dir = temp_dir("e2e_clone");
+    let guard = temp_dir("e2e_clone");
+    let dir = guard.path();
     let runtime = ComputeRuntime::new(Some(4));
     let model = Model06B::load(
         &base_dir,

@@ -6,6 +6,8 @@
 //! Equivalencia entre entregas (`Buffer` frente a `Stream`), construcción de voces y bytes del
 //! perfil `.qvoice` que produce `clone_voice`.
 
+mod common;
+
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -27,13 +29,8 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join("qwen_engine_synthesis_paths_tests")
-        .join(name);
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp_dir(name: &str) -> common::TestDir {
+    common::TestDir::new(&format!("qwen_engine_synthesis_paths_tests_{name}"))
 }
 
 /// Destino de PCM compartido: permite leer lo escrito después de ceder el sink al motor.
@@ -91,7 +88,8 @@ fn expected_qvoice_bytes(qv: &QVoiceFile) -> Vec<u8> {
 
 #[test]
 fn test_voice_load_on_construction() {
-    let dir = temp_dir("voice_load");
+    let guard = temp_dir("voice_load");
+    let dir = guard.path();
 
     // Con idioma
     let lang_qv = sample_qvoice(2050);
@@ -131,7 +129,8 @@ fn test_buffer_and_stream_deliver_same_pcm_and_clone_bytes() {
         );
         return;
     };
-    let dir = temp_dir("delivery");
+    let guard = temp_dir("delivery");
+    let dir = guard.path();
     let abort = AbortHandle::new();
     let mut scratch = SessionScratch::new();
     let default_voice = Voice::builtin_default();

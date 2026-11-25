@@ -23,6 +23,8 @@ cargo test --workspace --release --target x86_64-pc-windows-gnu
 cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 ```
 
+Los temporales de las pruebas caen en `target/` (lo fija `.cargo/config.toml`) y cada prueba borra los suyos al terminar, también si falla.
+
 | Suite | Qué valida |
 |---|---|
 | `qwen-kernels/tests/kernels_tests.rs` | `AlignedBuf<64>`, batería `--self-test` (`0` fallos en `int8`/`q4_0`/`bf16`), selección de ruta con `QWEN_KERNELS` (`auto`/`scalar`), tablas disponibles por CPU (`KernelDispatch::available`), hashes de las rutas SIMD iguales a los de AVX2 (Q4_0 y kernels de coma flotante sin `libm`: mismo orden de suma en NEON), regla de spin-wait por núcleos (`spin_budget_for`), paridad escalar vs dispatch detectado (`quantize_act_int8`, `rms_norm`, `matvec_int8`, `matmat_int8`, `matmat_q4_0`) y validación de límites seguros en `KernelDispatch`, reparto de filas entre hilos bit a bit (1 frente a 4 hilos, `matvec`/`matmat` INT8 y Q4_0 y `matvec` BF16), estrés concurrente y *seguridad ante pánicos* de `ComputePool`, `FfiBlas::sgemm`, y conversión `f16`, `quantize_gate_up_int8` igual bit a bit a cuantizar la matriz entrelazada. |

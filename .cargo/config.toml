@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+# Los temporales de todo lo que lanza Cargo (pruebas, scripts de compilación, herramientas) caen
+# en `target`, así que los restos de una ejecución interrumpida quedan donde `cargo clean` los
+# retira, igual en los tres sistemas operativos, y nunca en el temporal del sistema.
+[env]
+TMP = { value = "target", force = true, relative = true }
+TEMP = { value = "target", force = true, relative = true }
+TMPDIR = { value = "target", force = true, relative = true }
