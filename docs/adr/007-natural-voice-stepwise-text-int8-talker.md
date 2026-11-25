@@ -67,11 +67,31 @@ Decisiones de implementación derivadas: `SpeechDecoderWeights.codebooks` no es 
 
 ## Limitación conocida
 
-En algunas frases la última sílaba sale con voz crepitante, de tono más bajo y sonido áspero.
+En algunas frases la última sílaba sale laringalizada (voz crepitante): más grave y con un timbre áspero o robótico. Es un comportamiento del modelo, no de este motor, y no tiene corrección en inferencia; queda como limitación documentada, sin trabajo previsto.
 
-- También ocurre en la implementación oficial (2 de 2 tomas) y en el motor anterior (4 de 6); en otras frases, 1 de 20 tomas.
-- Tampoco depende del punto final del texto: con y sin punto, los rasgos de voz no difieren ([ADR-008](008-end-of-synthesis.md), limitaciones).
-- No lo corrigen ni un símbolo de relleno al final del texto ni subir la temperatura a 0,7 o 0,9: con 12 semillas por grupo, los rasgos de voz medidos con Praat (*jitter*, HNR y fracción sin voz) no difieren (Mann-Whitney bilateral).
+**Qué es.** En la última vocal, la voz pasa a vibrar a la mitad de su frecuencia: la onda solo se repite cada dos periodos (duplicación de periodo). Con Praat, voz `default` y T 0,325:
+
+- en «…pasan correcta**mente**.» la última «e» queda en 60–72 Hz frente a 122–138 Hz del final del tramo anterior (razón 0,47–0,55); en los finales limpios la razón es 0,99;
+- la forma de onda de esa vocal se parece poco a sí misma desplazada un periodo de la voz previa (correlación 0,03–0,54) y mucho desplazada dos (0,46–0,88); en los finales limpios las dos correlaciones son altas y parecidas. Es duplicación de periodo real, no un error de octava del medidor de tono;
+- clasificar como laringalizada la vocal que cumple las dos condiciones (razón de tono menor que 2^(−1/2) y correlación mayor a dos periodos que a uno) coincide con el oído del usuario en 12 de 14 audios escuchados a ciegas.
+
+**Cuándo aparece.** Depende del texto y de la semilla. Con 12 semillas por frase, en frases que terminan en vocal átona tras consonante sorda («correcta**mente**», «resuel**to**», «lis**to**», «carpe**ta**», «remo**to**») sale en 7, 1, 4, 5 y 4 de 12; en las que terminan en vocal tónica («versi**ón**», «es**tá**»), en 0 de 12.
+
+**Dónde se decide.** Con un motor instrumentado se ramificó el muestreo del `code0` desde 4 puntos, entre 640 ms antes de la última vocal y su inicio, con 12 ramas por punto, en 4 síntesis laringalizadas y 3 limpias:
+
+- el desenlace casi no cambia: las bases laringalizadas siguen laringalizadas en 9 a 12 de 12 ramas (salvo una, 5 de 12 desde 640 ms antes) y las limpias salen limpias en 8 a 12 de 12. Las ramas sí cambian los códigos; lo que no cambia es el desenlace;
+- eligiendo siempre el `code0` más probable desde cualquiera de esos puntos, las 4 bases laringalizadas salen laringalizadas: es la opción que el modelo prefiere en ese contexto. En los frames de la vocal, el Talker elige su código con probabilidad 0,99–1;
+- en un par de ramas con el mismo contexto, una laringalizada y otra limpia, el `code0` difiere en un solo frame, dos antes de la vocal, y es idéntico durante ella; lo que cambia son las capas 1 a 15 del Code Predictor. Al intercambiar capas entre las dos, la laringalización sigue a las capas 1 a 15 y no al `code0`;
+- ninguna señal de la generación la anticipa: el texto termina de entrar unos 4 s antes de la última vocal y la probabilidad del EOS sin filtrar está en torno a 10⁻¹⁸ al empezar la vocal.
+
+**Lo que no la causa ni la corrige.**
+
+- También ocurre en la implementación oficial (2 de 2 tomas) y en el motor anterior (4 de 6), y el códec del modelo la representa: un final laringalizado real del usuario pasado por su codificador y su decodificador la conserva (49 Hz frente a 146–154 Hz).
+- No la causan la precisión del Talker (persiste en `BF16`), el `argmax` del Code Predictor (persiste muestreándolo), el decodificador, el refuerzo del EOS ni el final de la referencia de clonación.
+- No depende del punto final del texto ([ADR-008](008-end-of-synthesis.md), limitaciones).
+- No la corrigen un símbolo de relleno al final del texto ni subir la temperatura a 0,7 o 0,9.
+
+**Por qué no se corrige.** Una corrección estructural tendría que actuar solo donde nace el defecto, pero la decisión se reparte por el contexto previo, es la opción preferida del modelo y no hay señal que la anticipe: ninguna regla de muestreo la evita sin forzar al modelo. La alternativa, detectarla en el audio y regenerar desde unos 640 ms antes (1 de cada 4 intentos sale limpio), obliga en *streaming* a retener unos 2 s de audio en todas las síntesis, y se descarta. Quitarla exigiría reentrenar el modelo, que está fuera del alcance del proyecto.
 
 ---
 
