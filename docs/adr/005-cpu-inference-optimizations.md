@@ -87,26 +87,27 @@ Calendario de chunks único (fila «Mismo calendario de chunks…»): primer chu
 
 ### Rendimiento resultante
 
-Todas las filas usan `-j 4` y `--seed 4`. El equipo de referencia se midió con voz clonada en español, por la CLI y por el servidor; las máquinas de CircleCI, con la voz `default` en inglés (`scripts/ci-measure-rtf.sh`), solo sin carga. Las dos clases de equipo no se comparan entre sí:
+Todas las filas usan `-j 4` y `--seed 4`, y son RTF sobre el audio entregado. El equipo de referencia se midió con la v1.2.1 y la voz `default` (la voz clonada del usuario) en español, por la CLI y por el servidor (`/v1/tts/stream`), alternados, con el equipo libre de otros programas; las máquinas de CircleCI, con la voz `default` en inglés (`scripts/ci-measure-rtf.sh`), solo sin carga. Las dos clases de equipo no se comparan entre sí:
 
 - **Equipo de referencia**: la laptop de desarrollo, el uso real del motor. Es el único medido también con carga (1 hilo copiando 256 MiB en bucle).
 - **Máquinas de CircleCI**: máquinas virtuales para cubrir las demás arquitecturas. Los núcleos son los de la mayor máquina disponible en el plan del proyecto: 6 en macOS (`m4pro.medium`, el único Mac), 4 en Linux ARM64 (`arm.large`; `arm.xlarge`, de 8 vCPU, no está en el plan) y 4 en Windows (`large`; `medium`, de 2, no llega a sintetizar). Medidas sin carga.
 
 | Equipo | Núcleos | Qué se midió | RTF sin carga | RTF con carga | Tiempo real |
 |---|---|---|---|---|---|
-| **Referencia**: laptop Windows x86_64, AMD Ryzen 7 5825U | 8 | Frase larga en español con voz clonada, CLI y servidor (completa y *stream*); mediana de 3 intercalada | 0,66 | 0,93–0,95 | Sí |
-| CircleCI macOS, Apple M4 Pro (virtual) | 6 | Frase corta y larga, voz `default` en inglés; 3 corridas de cada una | 0,23–0,26 | sin medir | Sí |
-| CircleCI Linux ARM64, Arm Neoverse N1 (Docker `arm.large`) | 4 vCPU | Igual que macOS | 1,46–2,09 | sin medir | No |
-| CircleCI Windows x86_64 (`large`) | 4 | Igual que macOS | 0,89–0,98 | sin medir | Sí |
+| **Referencia**: laptop Windows x86_64, AMD Ryzen 7 5825U | 8 | Frase larga en español, voz `default`, CLI y servidor en *stream*; mediana de 3 alternadas | 0,67 | 0,99–1,02 | Sin carga sí; con carga al límite |
+| CircleCI macOS, Apple M4 Pro (virtual) | 6 | Frase corta y larga, voz `default` en inglés, v1.2.1; 3 corridas de cada una | 0,23–0,25 | sin medir | Sí |
+| CircleCI Linux ARM64, Arm Neoverse N1 (Docker `arm.large`) | 4 vCPU | Igual que macOS | 1,43–1,48 | sin medir | No |
+| CircleCI Windows x86_64 (`large`) | 4 | Igual que macOS | 1,16–1,28 | sin medir | No |
 
 Cómo leer los rangos:
-- En la referencia, cada extremo es la mediana de 3 de un modo (CLI, servidor completo o servidor en *stream*).
+- En la referencia, cada extremo es la mediana de 3 de un modo (CLI o servidor en *stream*). Con carga, las repeticiones sueltas van de 0,93 a 1,06.
 - En CircleCI, cada extremo es una corrida: va de la más rápida a la más lenta, mezclando la frase corta y la larga.
+- Windows de CircleCI: la misma clase de máquina daba 0,89–0,98 cuando se documentó y hoy la v1.0.0 da 1,47–1,63 en ella, así que cambió la máquina, no el motor.
 - La tanda por núcleos (`cores.py`, CLI) es aparte: con 8 núcleos dio 0,68 sin carga y 0,98 con carga.
 
 Detalles del equipo de referencia:
-- **Frase corta** (~2 s de audio): 0,76–0,77 sin carga y 1,07–1,09 con carga. Pesan el prefill y el primer chunk: la frase corta pasa de 1 con carga.
-- **Primer audio** en el servidor por `/v1/tts/stream`: 354–362 ms sin carga y 452–469 ms con carga.
+- **Frase corta** (3,04 s de audio): 0,84–0,90 sin carga y 1,16–1,19 con carga. Pesan el prefill y el primer chunk: la frase corta pasa de 1 con carga.
+- **Primer audio** en el servidor por `/v1/tts/stream`: 612–635 ms sin carga y 804–818 ms con carga. Desde la v1.2.0 el primer chunk ya no es el silencio inicial, así que llega más tarde pero ya es voz ([ADR-009](009-leading-silence.md)).
 - **Carga del modelo**: 624 ms.
 - **Memoria**: pico de 1 353 MiB de memoria comprometida privada y 2 362 MiB de *working set*.
 - **Por núcleos** (afinidad limitada, frase larga, RTF sin carga / con carga): 6 núcleos 0,93 / 1,30; 4 núcleos 1,01 / 1,49; 4 núcleos con `-j 2` 0,92 / 1,31.
@@ -114,11 +115,11 @@ Detalles del equipo de referencia:
 
 ### Positivas
 
-- Tiempo real en el equipo objetivo de 8 núcleos con carga moderada y en macOS ARM64 con margen.
+- Tiempo real con margen en el equipo objetivo de 8 núcleos libre y en macOS ARM64; con carga moderada, la frase larga queda al límite.
 - Audio determinista e idéntico entre los cuatro modos de salida; los kernels NEON dan los mismos bits que AVX2 salvo donde interviene `libm`.
 
 ### Riesgos y límites
 
-- **Con 4 núcleos no hay tiempo real con carga**; sin carga, x86_64 queda al límite (RTF 0,89–1,01) y Linux ARM64 está por encima de 1 (1,46–2,09). El productor y el decoder se reparten las mismas CPU. La palanca pendiente es ese reparto.
+- **Con 4 núcleos no hay tiempo real con carga**; sin carga, x86_64 queda al límite en el equipo de referencia limitado a 4 núcleos (RTF 1,01) y por encima de 1 en la máquina Windows de la CI (1,16–1,28), y Linux ARM64 también está por encima (1,43–1,48). El productor y el decoder se reparten las mismas CPU. La palanca pendiente es ese reparto.
 - **Linux ARM64 con 8 vCPU sin verificar**: CircleCI no ofrece a este proyecto máquinas ARM más grandes.
 - **El audio depende de la plataforma**: BLAS y `libm` redondean distinto, y el muestreo autorregresivo amplifica la diferencia. En ARM se compara con la ruta escalar de la misma máquina, no por hash con x86.

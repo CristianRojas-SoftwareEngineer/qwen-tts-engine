@@ -13,6 +13,11 @@ Cambios de cada versión de **Qwen TTS Engine** (`qwen-tts-engine`) que afectan 
 ### Corregido
 
 - **README:** la fila de Windows de «Dependencias por plataforma» decía que no hacía falta MSYS2 ni el OpenBLAS propio; solo Visual Studio sobra.
+- **Cifras de rendimiento** (README, [ADR-005](docs/adr/005-cpu-inference-optimizations.md) y `ARCHITECTURE.md`), medidas de nuevo con la v1.2.1:
+  - **Equipo de referencia:** sin carga se mantiene (RTF 0,67 en la frase larga en español). Con una carga de fondo moderada da 0,99–1,02, no 0,93–0,95, así que con carga no hay margen de tiempo real.
+  - **Máquina Windows de 4 núcleos de la CI:** da 1,16–1,28 y ya no llega a tiempo real. La v1.0.0 da hoy 1,47–1,63 en ella, así que cambió la máquina, no el motor.
+  - **macOS:** sin cambios (0,23–0,25).
+  - **Linux ARM64:** 1,43–1,48.
 
 ## [1.2.1] — 2026-11-25
 
