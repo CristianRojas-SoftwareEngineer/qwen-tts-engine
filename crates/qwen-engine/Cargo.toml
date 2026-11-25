@@ -13,3 +13,6 @@ repository.workspace = true
 [dependencies]
 qwen-kernels = { path = "../qwen-kernels" }
 qwen-core = { path = "../qwen-core" }
+
+[dev-dependencies]
+sha2 = "0.10"

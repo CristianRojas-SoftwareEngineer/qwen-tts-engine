@@ -521,6 +521,69 @@ mod tests {
         sink.writer
     }
 
+    /// Senoide de 220 Hz y amplitud 0,5 durante `secs` segundos a 24 kHz.
+    fn sine_220(secs: usize) -> Vec<f32> {
+        let sr = SAMPLE_RATE;
+        (0..secs * sr)
+            .map(|i| 0.5 * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / sr as f32).sin())
+            .collect()
+    }
+
+    /// Cruces por cero por muestra: proporcional a la frecuencia de una senoide.
+    fn zero_crossing_rate(x: &[f32]) -> f64 {
+        let n = x.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count();
+        n as f64 / x.len() as f64
+    }
+
+    #[test]
+    fn time_stretch_leaves_audio_unchanged_without_a_valid_rate() {
+        let input = sine_220(1);
+        for rate in [1.0f32, 0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(time_stretch(&input, rate), input, "rate {rate}");
+        }
+        assert!(time_stretch(&[], 0.5).is_empty());
+        // Con menos de 16 muestras no cabe una ventana de análisis.
+        let short = [0.1f32; 15];
+        assert_eq!(time_stretch(&short, 0.5), short.to_vec());
+    }
+
+    #[test]
+    fn time_stretch_clamps_the_rate_to_its_range() {
+        let input = sine_220(1);
+        assert_eq!(time_stretch(&input, 10.0), time_stretch(&input, 4.0));
+        assert_eq!(time_stretch(&input, 0.1), time_stretch(&input, 0.25));
+    }
+
+    #[test]
+    fn time_stretch_scales_duration_and_keeps_pitch() {
+        let input = sine_220(3);
+        let n_in = input.len() as f64;
+        // Ventana de análisis y salto de síntesis del WSOLA para una entrada de más de 1 024 muestras.
+        let (win, hop) = (1024.0f64, 512.0f64);
+        let rate_zc = zero_crossing_rate(&input);
+        for rate in [0.25f32, 0.5, 0.8, 1.25, 2.0, 4.0] {
+            let out = time_stretch(&input, rate);
+            // Cada salto avanza `hop * rate` muestras de entrada y escribe `hop` de salida, y la
+            // última ventana completa añade `win`: la salida dura (n_in - win) / rate + win, con
+            // el error de un salto porque el bucle termina en saltos enteros.
+            let expected = (n_in - win) / rate as f64 + win;
+            let len = out.len() as f64;
+            assert!(
+                (len - expected).abs() <= hop,
+                "rate {rate}: {len} muestras, se esperaban {expected:.0} ± {hop}"
+            );
+            // El tono se conserva: cambiar la velocidad remuestreando movería la frecuencia en el
+            // factor `rate` (20 % o más en estos casos); un 1 % separa los dos comportamientos.
+            // Se excluye una ventana en cada extremo, donde el solapamiento está incompleto.
+            let middle = &out[1024..out.len() - 1024];
+            let ratio = zero_crossing_rate(middle) / rate_zc;
+            assert!((ratio - 1.0).abs() < 0.01, "rate {rate}: la frecuencia cambió en {ratio}");
+            // La suma solapada normalizada es una media ponderada de muestras de la entrada.
+            let peak = out.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+            assert!(peak.is_finite() && peak <= 0.5 + 1e-6, "rate {rate}: pico {peak}");
+        }
+    }
+
     #[test]
     fn stream_edge_ramp_matches_full_wav_bit_exact() {
         let mut seed = 0x1234_5678u32;

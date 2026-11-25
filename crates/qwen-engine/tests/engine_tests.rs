@@ -262,3 +262,81 @@ fn test_leading_silence_discard() {
     assert_eq!(t.leading_silence_frames, 0);
     assert_eq!(t.samples_produced, 3 * SAMPLES_PER_FRAME);
 }
+
+/// Audio de referencia de x86-64: con la ruta de kernels `avx2`, `-j 4`, la semilla y la
+/// temperatura por defecto y la voz `default`, cada frase tiene que dar exactamente este PCM.
+/// El hash son los 16 primeros dígitos hexadecimales del SHA-256 del PCM s16le del WAV, sin su
+/// cabecera de 44 bytes. Si el audio cambia a propósito, la tabla de `NUMERIC_CONTRACT.md` y esta
+/// lista se regeneran juntas; si cambia sin querer, la prueba falla.
+///
+/// Los hashes son los del equipo de referencia: otra CPU x86-64 da otros, porque OpenBLAS elige
+/// su kernel según la CPU y el redondeo del prefill cambia el audio (las máquinas Windows y Linux
+/// de la CI dan hashes distintos en las cuatro frases). Por eso solo corre con
+/// `QWEN_TTS_CHECK_REFERENCE_AUDIO=1`, que se fija en el equipo de referencia; sin la variable, o
+/// con otra ruta de kernels (ARM64 o `QWEN_KERNELS=scalar`), se omite.
+#[test]
+fn test_reference_audio_hashes() {
+    use sha2::{Digest, Sha256};
+
+    if std::env::var("QWEN_TTS_CHECK_REFERENCE_AUDIO").as_deref() != Ok("1") {
+        eprintln!(
+            "Se omite test_reference_audio_hashes (solo en el equipo de referencia, con QWEN_TTS_CHECK_REFERENCE_AUDIO=1)"
+        );
+        return;
+    }
+    let _serial = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let model_dir = repo_root().join("models/qwen3-tts-0.6b-base");
+    if !model_dir.exists() {
+        eprintln!("Se omite test_reference_audio_hashes (falta el modelo)");
+        return;
+    }
+    let runtime = ComputeRuntime::new(Some(4));
+    if runtime.dispatch.name() != "avx2" {
+        eprintln!(
+            "Se omite test_reference_audio_hashes (ruta de kernels {}, la tabla es de avx2)",
+            runtime.dispatch.name()
+        );
+        return;
+    }
+    let model = Model06B::load(&model_dir, &runtime, true).unwrap();
+    let voice = Voice::builtin_default();
+    let synth = Synthesizer {
+        runtime: &runtime,
+        model: &model,
+        voice: &voice,
+    };
+
+    let cases = [
+        ("English", "Hello world, this is a quick baseline test.", "f300b0d4dcff7c32"),
+        (
+            "English",
+            "In this long synthesis benchmark, we measure sustained memory bandwidth, Talker latency, Code Predictor throughput, and streaming Speech Decoder stability across multiple seconds of continuous speech generation.",
+            "ab3ef3aabba8a8ea",
+        ),
+        ("Spanish", "Hola mundo, esta es una prueba rápida de referencia.", "3f61a303c462006e"),
+        (
+            "Spanish",
+            "En esta prueba de síntesis larga medimos el ancho de banda de memoria sostenido, la latencia del Talker, el rendimiento del Code Predictor y la estabilidad del decodificador de voz en streaming durante varios segundos de generación continua.",
+            "a57fa35f2a2aabee",
+        ),
+    ];
+    let mut mismatches = Vec::new();
+    for (language, text, expected) in cases {
+        let req = SynthesisRequest {
+            language_id: lookup_language(language).unwrap(),
+            silent: true,
+            ..Default::default()
+        };
+        let script = qwen_core::plan_script(text, qwen_core::MarkupMode::Auto);
+        let out = synth
+            .synthesize(&mut SessionScratch::new(), &req, &AbortHandle::new(), &script, Delivery::Buffer)
+            .unwrap();
+        let wav = encode_wav_bytes(&out.samples.unwrap());
+        let digest = Sha256::digest(&wav[44..]);
+        let got: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+        if got != expected {
+            mismatches.push(format!("{language} «{text}»: se esperaba {expected}, salió {got}"));
+        }
+    }
+    assert!(mismatches.is_empty(), "el audio de referencia cambió:\n{}", mismatches.join("\n"));
+}
