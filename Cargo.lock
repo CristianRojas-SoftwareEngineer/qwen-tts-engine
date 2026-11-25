@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "qwen-app"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "qwen-core",
  "qwen-engine",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "qwen-core"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "memmap2",
  "safetensors",
@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "qwen-engine"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "qwen-core",
  "qwen-kernels",
@@ -77,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "qwen-kernels"
-version = "1.2.0"
+version = "1.2.1"
 
 [[package]]
 name = "safetensors"
