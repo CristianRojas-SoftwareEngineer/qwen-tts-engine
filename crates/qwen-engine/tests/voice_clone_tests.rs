@@ -14,10 +14,9 @@ use qwen_core::{
     SpanSpec,
 };
 use qwen_engine::{
-    clone_voice, encode_wav_bytes, mel_spectrogram, AbortHandle,
-    read_wav_24khz, trim_trailing_silence, write_wav, CloneOptions,
-    Delivery, MemorySink, Model06B, SessionScratch,
-    SynthesisRequest, Synthesizer, Voice,
+    clone_voice, clone_voice_from_samples, encode_wav_bytes, mel_spectrogram,
+    preprocess_ref_audio, read_wav_24khz, write_wav, AbortHandle, CloneOptions, Delivery,
+    MemorySink, Model06B, SessionScratch, SynthesisRequest, Synthesizer, Voice,
 };
 use qwen_kernels::ComputeRuntime;
 
@@ -91,23 +90,49 @@ fn test_wav_validation_and_ffmpeg_hints() {
 }
 
 #[test]
-fn test_trim_trailing_silence_and_mel_shape() {
-    let mut clip = vec![0.0f32; 24000 * 5];
-    for (i, v) in clip[..24000 * 3].iter_mut().enumerate() {
-        *v = ((i as f32) * 0.05).sin() * 0.3;
-    }
-    trim_trailing_silence(&mut clip, true);
-    assert!(clip.len() < 24000 * 5 && clip.len() >= 24000 * 3);
+fn test_preprocess_ref_audio_and_mel_shape() {
+    // 1. Silencio inicial (1 s) + habla (1.2 s) + pausa interna larga (1 s) + habla (1.2 s) + silencio final (1 s),
+    //    con DC offset (+0.05) y volumen bajo (~0.025) para comprobar filtrado, recorte y normalización.
+    let sr = SAMPLE_RATE;
+    let mut clip = vec![0.05f32; sr * 5 + sr * 4 / 10];
+    let add_tone = |slice: &mut [f32]| {
+        for (i, v) in slice.iter_mut().enumerate() {
+            *v += ((i as f32) * 0.08).sin() * 0.025;
+        }
+    };
+    add_tone(&mut clip[sr..sr + sr * 12 / 10]);
+    add_tone(&mut clip[sr * 32 / 10..sr * 44 / 10]);
+
+    let orig_len = clip.len();
+    preprocess_ref_audio(&mut clip, true);
+
+    // Debe haber recortado los extremos y compactado la pausa interna larga, manteniendo >= 2 s.
+    assert!(clip.len() < orig_len - sr * 2, "longitud tras limpiar: {}", clip.len());
+    assert!(clip.len() >= sr * 2, "longitud mínima: {}", clip.len());
+
+    // El DC offset debe haber desaparecido (media cercana a 0) y el RMS normalizado cerca de 0.1 sin clipping.
+    let mean: f32 = clip.iter().copied().sum::<f32>() / (clip.len() as f32);
+    assert!(mean.abs() < 0.005, "DC residual demasiado alto: {mean}");
+    let rms = (clip.iter().map(|&v| v * v).sum::<f32>() / (clip.len() as f32)).sqrt();
+    let peak = clip.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+    assert!((rms - 0.1).abs() < 0.015, "RMS esperado ~0.1, obtenido {rms}");
+    assert!(peak <= 0.895, "pico excede -1 dBFS: {peak}");
 
     let (mel, n_frames) = mel_spectrogram(&clip).unwrap();
-    assert!(n_frames > 250);
+    assert!(n_frames > 180);
     assert_eq!(mel.len(), n_frames * 128);
     assert!(mel.iter().all(|v| v.is_finite()));
+
+    // 2. Silencio puro no se amplifica ni rompe el algoritmo.
+    let mut pure_silence = vec![0.0f32; sr * 2];
+    preprocess_ref_audio(&mut pure_silence, true);
+    assert_eq!(pure_silence.len(), sr * 2);
+    assert!(pure_silence.iter().all(|&v| v == 0.0));
 }
 
 /// Bits exactos (`f32::to_bits`) de los valores 0, 511 y 1023 de `assets/default_voice.xvec`.
 const DEFAULT_VOICE_BITS: [(usize, u32); 3] =
-    [(0, 0x3d00fcba), (511, 0xbe193748), (1023, 0x3d73bff4)];
+    [(0, 0x3d4ba512), (511, 0xbdc2802c), (1023, 0x3d98fb6e)];
 
 #[test]
 fn test_default_voice_is_embedded() {
@@ -122,7 +147,7 @@ fn test_default_voice_is_embedded() {
         .map(|&v| (v as f64) * (v as f64))
         .sum::<f64>()
         .sqrt();
-    assert!((norm - 10.8499).abs() < 1e-3, "norma {norm}");
+    assert!((norm - 10.8426).abs() < 1e-3, "norma {norm}");
     for (idx, bits) in DEFAULT_VOICE_BITS {
         assert_eq!(emb[idx].to_bits(), bits, "valor {idx}");
     }
@@ -256,6 +281,21 @@ fn test_clone_from_default_voice_e2e() {
         },
     )
     .unwrap();
+    let raw_ref = read_wav_24khz(&ref_wav).unwrap();
+    let xvec_from_samples = clone_voice_from_samples(
+        &runtime,
+        &model,
+        &raw_ref,
+        &CloneOptions {
+            silent: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        xvec_qv, xvec_from_samples,
+        "clone_voice y clone_voice_from_samples deben producir el mismo perfil"
+    );
     xvec_qv.write_to_file(&xvec_path).unwrap();
     let xvec_built = Voice::from_qvoice(xvec_qv.clone(), "ref".to_string());
     assert_eq!(xvec_built.name, "ref");

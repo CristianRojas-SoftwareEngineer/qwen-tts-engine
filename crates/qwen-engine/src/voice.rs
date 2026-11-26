@@ -7,13 +7,14 @@
 
 use std::path::Path;
 
-use qwen_core::config::{DEFAULT_LANGUAGE_ID, MEL_DIM};
+use qwen_core::config::{DEFAULT_LANGUAGE_ID, MEL_DIM, SAMPLE_RATE};
 use qwen_core::QVoiceFile;
 use qwen_kernels::ComputeRuntime;
 
+use crate::audio::{preprocess_ref_audio, read_wav_24khz};
 use crate::error::EngineError;
 use crate::model::Model06B;
-use crate::voice_clone::{load_ref_audio, mel_spectrogram, speaker_encoder_forward};
+use crate::voice_clone::{mel_spectrogram, speaker_encoder_forward};
 
 /// x-vector de la voz `default` incorporada (1024 `f32` little-endian).
 const DEFAULT_VOICE_XVEC: &[u8] = include_bytes!("../assets/default_voice.xvec");
@@ -109,18 +110,19 @@ impl Voice {
     }
 }
 
-/// Clona una voz desde un audio de referencia.
+/// Clona una voz desde muestras PCM `f32` mono a 24 kHz en memoria.
 ///
-/// Devuelve solo el perfil (`QVoiceFile`, con `lang_id` 0 si no se dio idioma): es lo que se
-/// guarda y de lo que se construye la voz con [`Voice::from_qvoice`]. El perfil es solo
-/// x-vector e idioma.
-pub fn clone_voice(
+/// Aplica el preprocesamiento de referencia (`preprocess_ref_audio`: pasa-altos 70 Hz,
+/// limpieza de silencios y normalización RMS) antes de extraer el x-vector. Es el camino
+/// común para referencias procedentes de archivo o de micrófono.
+pub fn clone_voice_from_samples(
     runtime: &ComputeRuntime,
     model: &Model06B,
-    ref_wav: &Path,
+    samples_24khz: &[f32],
     opts: &CloneOptions,
 ) -> Result<QVoiceFile, EngineError> {
-    let audio = load_ref_audio(ref_wav, opts.silent)?;
+    let mut audio = samples_24khz.to_vec();
+    preprocess_ref_audio(&mut audio, opts.silent);
     let (mel, n_frames) = mel_spectrogram(&audio)?;
     if !opts.silent {
         eprintln!("Espectrograma mel: {n_frames} frames x {MEL_DIM} mels");
@@ -132,4 +134,28 @@ pub fn clone_voice(
         speaker_embedding,
         lang_id: opts.language_id.map_or(0, |l| l as u32),
     })
+}
+
+/// Clona una voz desde un archivo WAV de referencia (PCM mono de 16 bits a 24 kHz).
+///
+/// Lee el WAV y delega en [`clone_voice_from_samples`]. Devuelve solo el perfil (`QVoiceFile`,
+/// con `lang_id` 0 si no se dio idioma): es lo que se guarda y de lo que se construye la voz
+/// con [`Voice::from_qvoice`].
+pub fn clone_voice(
+    runtime: &ComputeRuntime,
+    model: &Model06B,
+    ref_wav: &Path,
+    opts: &CloneOptions,
+) -> Result<QVoiceFile, EngineError> {
+    let audio = read_wav_24khz(ref_wav)?;
+    if !opts.silent {
+        eprintln!(
+            "Audio de referencia: {} ({} muestras, {} Hz, {:.2}s)",
+            ref_wav.display(),
+            audio.len(),
+            SAMPLE_RATE,
+            audio.len() as f32 / SAMPLE_RATE as f32
+        );
+    }
+    clone_voice_from_samples(runtime, model, &audio, opts)
 }

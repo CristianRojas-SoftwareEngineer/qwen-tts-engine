@@ -447,11 +447,36 @@ pub fn read_wav_24khz(path: &Path) -> Result<Vec<f32>, EngineError> {
         .collect())
 }
 
-/// Recorte conservador de silencio o *fade-out* final en el audio de referencia.
-pub fn trim_trailing_silence(audio: &mut Vec<f32>, silent: bool) {
-    let sample_rate = SAMPLE_RATE;
+/// Filtro pasa-altos Butterworth de 2.º orden a 70 Hz (24 kHz) para eliminar *DC offset*
+/// y retumbo sub-grave antes de medir energía o calcular el espectrograma mel.
+fn highpass_70hz(samples: &mut [f32]) {
+    let w0 = 2.0f64 * std::f64::consts::PI * 70.0 / (SAMPLE_RATE as f64);
+    let cos_w0 = w0.cos();
+    let alpha = w0.sin() / std::f64::consts::SQRT_2;
+    let a0 = 1.0 + alpha;
+    let b0 = ((1.0 + cos_w0) * 0.5) / a0;
+    let b1 = -(1.0 + cos_w0) / a0;
+    let b2 = b0;
+    let a1 = (-2.0 * cos_w0) / a0;
+    let a2 = (1.0 - alpha) / a0;
+
+    let mut z1 = 0.0f64;
+    let mut z2 = 0.0f64;
+    for s in samples.iter_mut() {
+        let x = *s as f64;
+        let y = b0 * x + z1;
+        z1 = b1 * x - a1 * y + z2;
+        z2 = b2 * x - a2 * y;
+        *s = y as f32;
+    }
+}
+
+/// Recorta silencios inicial y final y compacta pausas internas largas (> 260 ms → 100 ms)
+/// con un fundido cruzado de 5 ms en cada unión.
+fn compact_silences(audio: &mut Vec<f32>, silent: bool) {
     let n = audio.len();
-    if n < sample_rate * 3 {
+    let win = (SAMPLE_RATE / 50).max(1); // 20 ms = 480 muestras
+    if n < SAMPLE_RATE || n < win * 4 {
         return;
     }
     let sum: f64 = audio.iter().map(|&v| (v as f64) * (v as f64)).sum();
@@ -460,43 +485,113 @@ pub fn trim_trailing_silence(audio: &mut Vec<f32>, silent: bool) {
         return;
     }
     let thresh = (0.18f32 * global_rms).max(0.004f32);
-    let win = (sample_rate / 50).max(1);
-    let mut last_voiced_end: Option<usize> = None;
-    let mut i = n;
-    while i >= win {
-        let s: f64 = audio[i - win..i]
-            .iter()
-            .map(|&v| (v as f64) * (v as f64))
-            .sum();
-        if ((s / (win as f64)).sqrt() as f32) >= thresh {
-            last_voiced_end = Some(i);
-            break;
-        }
-        i -= win;
-    }
-    let Some(end) = last_voiced_end else {
+    let n_wins = n / win;
+    let active: Vec<bool> = (0..n_wins)
+        .map(|w| {
+            let start = w * win;
+            let s: f64 = audio[start..start + win]
+                .iter()
+                .map(|&v| (v as f64) * (v as f64))
+                .sum();
+            ((s / (win as f64)).sqrt() as f32) >= thresh
+        })
+        .collect();
+
+    let Some(first_active) = active.iter().position(|&a| a) else {
         return;
     };
-    let mut new_n = (end + sample_rate / 20).min(n);
-    let max_trim = ((n as f32) * 0.40f32) as usize;
-    if new_n < n - max_trim {
-        new_n = n - max_trim;
+    let last_active = active.iter().rposition(|&a| a).unwrap_or(first_active);
+
+    // Margen de 40 ms al inicio y 60 ms al final.
+    let start_win = first_active.saturating_sub(2);
+    let end_win = (last_active + 3).min(n_wins);
+
+    const MAX_INTERNAL_SILENCE_WINS: usize = 13; // 260 ms
+    const KEEP_HEAD_WINS: usize = 2; // 40 ms
+    const KEEP_TAIL_WINS: usize = 3; // 60 ms
+    let xfade = (SAMPLE_RATE / 200).min(win / 2); // 5 ms = 120 muestras
+
+    let mut out = Vec::with_capacity(n);
+    let mut w = start_win;
+    while w < end_win {
+        if active[w] {
+            let end_sample = if w + 1 == n_wins { n } else { (w + 1) * win };
+            out.extend_from_slice(&audio[w * win..end_sample]);
+            w += 1;
+            continue;
+        }
+        let run_start = w;
+        while w < end_win && !active[w] {
+            w += 1;
+        }
+        let run_len = w - run_start;
+        if run_len <= MAX_INTERNAL_SILENCE_WINS {
+            let end_sample = if w == n_wins { n } else { w * win };
+            out.extend_from_slice(&audio[run_start * win..end_sample]);
+        } else {
+            // Conservar 40 ms tras el tramo previo, fundir 5 ms y conservar 60 ms antes del siguiente.
+            let head_end = (run_start + KEEP_HEAD_WINS) * win;
+            out.extend_from_slice(&audio[run_start * win..head_end]);
+            let tail_start = (w - KEEP_TAIL_WINS) * win;
+            let tail_end = if w == n_wins { n } else { w * win };
+            let fade_len = xfade.min(out.len()).min(tail_end - tail_start);
+            let out_base = out.len() - fade_len;
+            for i in 0..fade_len {
+                let t = (i as f32) / (fade_len as f32);
+                out[out_base + i] = out[out_base + i] * (1.0 - t) + audio[tail_start + i] * t;
+            }
+            out.extend_from_slice(&audio[tail_start + fade_len..tail_end]);
+        }
     }
-    let min_keep = sample_rate * 2;
-    if new_n < min_keep {
-        new_n = n.min(min_keep);
-    }
-    if new_n < n {
+
+    if out.len() >= SAMPLE_RATE && out.len() < n {
         if !silent {
             eprintln!(
-                "  Clonación de voz: recortados {:.2}s de silencio o fundido final ({:.1}s -> {:.1}s)",
-                (n - new_n) as f32 / (sample_rate as f32),
-                n as f32 / (sample_rate as f32),
-                new_n as f32 / (sample_rate as f32)
+                "  Clonación de voz: silencios limpiados ({:.2}s -> {:.2}s)",
+                n as f32 / (SAMPLE_RATE as f32),
+                out.len() as f32 / (SAMPLE_RATE as f32)
             );
         }
-        audio.truncate(new_n);
+        *audio = out;
     }
+}
+
+/// Normaliza el RMS del audio de referencia hacia -20 dBFS (`0.1`) respetando un techo de pico
+/// de -1 dBFS (`0.89`) y un límite de ganancia de +26 dB (`20.0`).
+fn normalize_ref_rms(audio: &mut [f32], silent: bool) {
+    if audio.is_empty() {
+        return;
+    }
+    let sum: f64 = audio.iter().map(|&v| (v as f64) * (v as f64)).sum();
+    let rms = (sum / (audio.len() as f64)).sqrt() as f32;
+    let peak = audio.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+    if rms < 1e-6 || peak < 1e-6 {
+        return;
+    }
+    const TARGET_RMS: f32 = 0.1;
+    const MAX_PEAK: f32 = 0.89;
+    const MAX_GAIN: f32 = 20.0;
+    let gain = (TARGET_RMS / rms).min(MAX_PEAK / peak).min(MAX_GAIN);
+    if (gain - 1.0).abs() <= 0.02 {
+        return;
+    }
+    apply_gain(audio, gain);
+    if !silent {
+        eprintln!(
+            "  Clonación de voz: nivel normalizado (ganancia x{gain:.2}, RMS {rms:.4} -> {:.4})",
+            rms * gain
+        );
+    }
+}
+
+/// Preprocesa el audio de referencia (24 kHz mono) antes de extraer el x-vector:
+/// 1. Filtro pasa-altos a 70 Hz (elimina *DC offset* y retumbo sub-grave).
+/// 2. Recorte de silencios inicial/final y compactación de pausas internas largas (> 260 ms).
+/// 3. Normalización de nivel RMS hacia -20 dBFS con límite de pico a -1 dBFS.
+pub fn preprocess_ref_audio(audio: &mut Vec<f32>, silent: bool) {
+    highpass_70hz(audio);
+    compact_silences(audio, silent);
+    normalize_ref_rms(audio, silent);
 }
 
 #[cfg(test)]

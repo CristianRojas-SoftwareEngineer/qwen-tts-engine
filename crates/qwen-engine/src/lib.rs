@@ -23,7 +23,7 @@ pub mod voice;
 pub mod voice_clone;
 
 pub use audio::{
-    encode_wav_bytes, read_wav_24khz, trim_trailing_silence, write_wav, AudioSink, EdgeRampSink,
+    encode_wav_bytes, preprocess_ref_audio, read_wav_24khz, write_wav, AudioSink, EdgeRampSink,
     MemorySink, PcmWrite, StdoutWriter,
 };
 pub use error::EngineError;
@@ -34,5 +34,5 @@ pub use request::{
 };
 pub use speech_decoder::speech_decoder_decode_streaming;
 pub use synth::{Delivery, SynthesisOutput, Synthesizer};
-pub use voice::{clone_voice, ensure_qvoice_path, CloneOptions, Voice};
+pub use voice::{clone_voice, clone_voice_from_samples, ensure_qvoice_path, CloneOptions, Voice};
 pub use voice_clone::mel_spectrogram;

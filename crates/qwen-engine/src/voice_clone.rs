@@ -4,13 +4,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::f32::consts::PI;
-use std::path::Path;
 
-use qwen_core::config::{ENC_DIM, MEL_DIM, SAMPLE_RATE};
+use qwen_core::config::{ENC_DIM, MEL_DIM};
 use qwen_core::{F32Ref, MmapStore};
 use qwen_kernels::{ComputeRuntime, Transpose};
 
-use crate::audio::{read_wav_24khz, trim_trailing_silence};
 use crate::error::EngineError;
 
 pub struct SeRes2NetWeights {
@@ -714,26 +712,4 @@ pub fn speaker_encoder_forward(
         *slot = val;
     }
     out_emb
-}
-
-/// Lee el audio de referencia entero y le quita el silencio final.
-pub(crate) fn load_ref_audio(
-    ref_audio_path: &Path,
-    silent: bool,
-) -> Result<Vec<f32>, EngineError> {
-    let mut audio = read_wav_24khz(ref_audio_path)?;
-    if !silent {
-        eprintln!(
-            "Audio de referencia: {} ({} muestras, {} Hz, {:.2}s)",
-            ref_audio_path.display(),
-            audio.len(),
-            SAMPLE_RATE,
-            audio.len() as f32 / SAMPLE_RATE as f32
-        );
-    }
-    // La implementación oficial no recorta el silencio final de la referencia; aquí se recorta
-    // porque, de oído, el clon de una grabación con silencio al final suena más consistentemente
-    // bien recortado.
-    trim_trailing_silence(&mut audio, silent);
-    Ok(audio)
 }
