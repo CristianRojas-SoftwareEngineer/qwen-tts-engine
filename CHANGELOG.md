@@ -10,6 +10,12 @@ Cambios de cada versión de **Qwen TTS Engine** (`qwen-tts-engine`) que afectan 
 - **Pruebas del cambio de velocidad (`--rate`):** la duración, el tono, los límites del factor y los casos sin estiramiento de `time_stretch`.
 - **Este registro de cambios.**
 
+### Cambiado
+
+- **Preprocesamiento de la referencia de clonación:** `preprocess_ref_audio` sustituye al recorte del silencio final. Aplica un pasa-altos Butterworth de 70 Hz, recorta los silencios inicial y final, compacta las pausas de más de 260 ms a 100 ms con un fundido cruzado de 5 ms y normaliza el RMS a -20 dBFS con techo de -1 dBFS. La misma referencia da otra huella de timbre que con la v1.2.1.
+- **Voz `default` nueva:** su x-vector se extrae de nuevo de `Speech Sampler.wav`, limpiado antes con DPDFNet y pasado por el preprocesamiento anterior. La voz suena distinta.
+- **Cambia el audio de referencia:** cambian los cuatro hashes de la tabla y sus duraciones (inglés: corta 2,56 s, larga 13,68 s; español: corta 3,12 s, larga 13,52 s).
+
 ### Corregido
 
 - **README:** la fila de Windows de «Dependencias por plataforma» decía que no hacía falta MSYS2 ni el OpenBLAS propio; solo Visual Studio sobra.
