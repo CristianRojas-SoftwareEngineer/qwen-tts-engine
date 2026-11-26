@@ -21,8 +21,20 @@ fn main() {
     let res_obj = PathBuf::from(env::var("OUT_DIR").unwrap()).join("qwen_app_manifest.o");
 
     // El manifiesto fija UTF-8 como página de códigos del proceso: sin él, los argumentos y
-    // las rutas con tildes llegan mal. `windres` viene con binutils de MSYS2 UCRT64.
-    let ok = Command::new("windres")
+    // las rutas con tildes llegan mal. `windres` viene con binutils de MSYS2 UCRT64, en la
+    // carpeta de su gcc, y preprocesa el `.rc` con `gcc` buscado en el PATH. Si Cargo tiene un
+    // enlazador configurado (`RUSTC_LINKER`), se usa el `windres.exe` de su carpeta y esa
+    // carpeta va primera en el PATH de `windres`; si no, ambos salen del PATH.
+    let mut windres = Command::new("windres");
+    if let Ok(linker) = env::var("RUSTC_LINKER") {
+        let linker_dir = PathBuf::from(linker).parent().unwrap().to_path_buf();
+        let path = env::var_os("PATH").unwrap_or_default();
+        let dirs = std::iter::once(linker_dir.clone()).chain(env::split_paths(&path));
+        let path = env::join_paths(dirs).unwrap();
+        windres = Command::new(linker_dir.join("windres.exe"));
+        windres.env("PATH", path);
+    }
+    let ok = windres
         .arg("-i")
         .arg(&rc_path)
         .arg("-o")
@@ -34,8 +46,9 @@ fn main() {
         .is_ok_and(|st| st.success());
     if !ok {
         panic!(
-            "no se pudo compilar el manifiesto de Windows con `windres`: instala \
-             mingw-w64-ucrt-x86_64-binutils y pon C:\\msys64\\ucrt64\\bin en el PATH"
+            "no se pudo compilar el manifiesto de Windows con `{}`: instala \
+             mingw-w64-ucrt-x86_64-binutils y pon C:\\msys64\\ucrt64\\bin en el PATH",
+            windres.get_program().to_string_lossy()
         );
     }
     println!("cargo:rustc-link-arg={}", res_obj.display());

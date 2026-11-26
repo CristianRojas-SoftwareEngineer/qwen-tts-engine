@@ -84,7 +84,7 @@ Notas sobre estos requisitos:
 
 | Plataforma | Toolchain y bibliotecas | Notas |
 |---|---|---|
-| **Windows (`x86_64-pc-windows-gnu`)** | Rust con host `x86_64-pc-windows-gnu` solo para este repositorio: en su carpeta, `rustup toolchain install 1.96.0-x86_64-pc-windows-gnu --component clippy --target x86_64-pc-windows-gnu` y `rustup override set 1.96.0-x86_64-pc-windows-gnu`, con la versión de `channel` en `rust-toolchain.toml` (al cambiarla, repite los dos comandos con la nueva). El override no cambia el host por defecto de la máquina, así que no afecta a otros proyectos Rust que usen MSVC, y no hace falta Visual Studio. Además: MSYS2 UCRT64 (`mingw-w64-ucrt-x86_64-gcc`, `make`, `mingw-w64-ucrt-x86_64-binutils`) en `PATH` (`C:\msys64\ucrt64\bin`) y el OpenBLAS propio (abajo) | El motor enlaza un OpenBLAS 0.3.34 propio, estático y sin OpenMP ni Fortran: `OPENBLAS_LIB_DIR` es obligatoria (`C:/openblas/lib`). |
+| **Windows (`x86_64-pc-windows-gnu`)** | Rust con host `x86_64-pc-windows-gnu` solo para este repositorio: en su carpeta, `rustup toolchain install 1.96.0-x86_64-pc-windows-gnu --component clippy --target x86_64-pc-windows-gnu` y `rustup override set 1.96.0-x86_64-pc-windows-gnu`, con la versión de `channel` en `rust-toolchain.toml` (al cambiarla, repite los dos comandos con la nueva). El override no cambia el host por defecto de la máquina, así que no afecta a otros proyectos Rust que usen MSVC, y no hace falta Visual Studio. Además: MSYS2 UCRT64 (`mingw-w64-ucrt-x86_64-gcc`, `make`, `mingw-w64-ucrt-x86_64-binutils`) en `PATH` (`C:\msys64\ucrt64\bin`) o su `gcc` fijado como enlazador en la configuración de Cargo de usuario (abajo), y el OpenBLAS propio (abajo) | El motor enlaza un OpenBLAS 0.3.34 propio, estático y sin OpenMP ni Fortran: `OPENBLAS_LIB_DIR` es obligatoria (`C:/openblas/lib`). |
 | **Linux** | Rust estable + OpenBLAS propio | El motor enlaza siempre un OpenBLAS propio: `scripts/build-openblas.sh "$HOME/openblas"` (OpenBLAS 0.3.34 estático, solo BLAS, `DYNAMIC_ARCH`: elige el kernel de cada CPU al arrancar; ~4–6 min en 4 vCPU ARM) y `OPENBLAS_LIB_DIR="$HOME/openblas/lib" cargo build --release -p qwen-app`; `OPENBLAS_LIB_DIR` es obligatoria. El de la distribución puede traer solo el kernel genérico: Ubuntu 22.04 en ARM64 usa `armv8`. `qwen_tts --caps` muestra el kernel en la línea `BLAS (prefill)`. |
 | **macOS** | Rust estable + Xcode Command Line Tools | Enlaza con el framework del sistema `Accelerate`. |
 
@@ -123,6 +123,15 @@ cargo build -p qwen-app --release --target x86_64-pc-windows-gnu
 .\target\x86_64-pc-windows-gnu\release\qwen_tts.exe --caps
 .\target\x86_64-pc-windows-gnu\release\qwen_tts.exe -d models\qwen3-tts-0.6b-base -j 4 --seed 4 -l English --text "Hello, world!" -o output.wav
 ```
+
+En lugar de anteponer `C:\msys64\ucrt64\bin` al `PATH` en cada sesión, se puede fijar una vez el `gcc` de UCRT64 como enlazador en la configuración de Cargo de usuario (`%USERPROFILE%\.cargo\config.toml`). Cargo enlaza con él, y la compilación del manifiesto toma `windres` y su preprocesador de esa misma carpeta:
+
+```toml
+[target.x86_64-pc-windows-gnu]
+linker = "C:/msys64/ucrt64/bin/gcc.exe"
+```
+
+Sin ninguna de las dos cosas, rustup enlaza con su MinGW propio, que usa `msvcrt` en vez de la UCRT, y el enlazado contra el OpenBLAS propio falla con `undefined reference to __conio_common_vcprintf`.
 
 #### Linux / macOS
 

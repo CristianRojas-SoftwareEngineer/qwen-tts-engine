@@ -23,6 +23,8 @@ cargo test --workspace --release --target x86_64-pc-windows-gnu
 cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 ```
 
+La línea del `PATH` sobra si el `gcc` de UCRT64 está fijado como enlazador en la configuración de Cargo de usuario (README, «Windows (MSYS2 UCRT64)»).
+
 Los temporales de las pruebas caen en `target/` (lo fija `.cargo/config.toml`) y cada prueba borra los suyos al terminar, también si falla.
 
 | Suite | Qué valida |
