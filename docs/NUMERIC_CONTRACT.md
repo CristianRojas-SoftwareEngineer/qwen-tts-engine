@@ -100,7 +100,7 @@ Toda multiplicación cuantizada (`int8` y `q4_0`, tanto `matvec` como cada colum
 
 Tras cualquier cambio que no deba tocar el audio, el PCM tiene que coincidir con esta tabla; lo comprueba `test_reference_audio_hashes` (`crates/qwen-engine/tests/engine_tests.rs`) con `QWEN_TTS_CHECK_REFERENCE_AUDIO=1 cargo test --workspace --release` en este equipo. Otra CPU x86-64 da otros hashes (las máquinas Windows y Linux de la CI los dan distintos en las cuatro frases), así que sin la variable la prueba se omite. Se mide en Windows x86_64 (Ryzen 7 5825U, ruta `avx2`, OpenBLAS 0.3.34 propio (`scripts/build-openblas.sh`)) con `-j 4 --seed 4` y la temperatura por defecto (0,325). El hash es el de `scripts/ci-common.sh` (`pcm_hash`): los 16 primeros dígitos hexadecimales del SHA-256 del PCM, sin la cabecera WAV de 44 bytes. Es el mismo en los cuatro modos (CLI, CLI `--stdout`, `/v1/tts` y `/v1/tts/stream`) y en todas las corridas. El idioma se indica con `-l` (`Spanish` o `English`).
 
-- **Voz**: `default`, la voz incorporada en el binario (x-vector de 4096 bytes, SHA-256 `4c8a7679eb7eb6496db01f039b13f789f3a71e23bbcb58a5ec8a72bf4ed6e4e6`), sin `--load-voice`, con el modelo Base (`-d models/qwen3-tts-0.6b-base`).
+- **Voz**: `default`, la voz incorporada en el binario (x-vector de 4096 bytes, SHA-256 `4902c58e9b762ea7a4f5dcbe7c4f1b59e648ee01187b7335337c0b40dc37d1e6`), sin `--load-voice`, con el modelo Base (`-d models/qwen3-tts-0.6b-base`).
 - **Textos** (los de inglés son `TEXT_short` y `TEXT_long` de `scripts/ci-common.sh`):
   - inglés, corta: `Hello world, this is a quick baseline test.`
   - inglés, larga: `In this long synthesis benchmark, we measure sustained memory bandwidth, Talker latency, Code Predictor throughput, and streaming Speech Decoder stability across multiple seconds of continuous speech generation.`
@@ -109,9 +109,9 @@ Tras cualquier cambio que no deba tocar el audio, el PCM tiene que coincidir con
 
 | Voz | `-l` | Frase | Duración (s) | Hash del PCM |
 |---|---|---|---|---|
-| `default` | English | corta | 3,04 | `14f1f77c6c0e1435` |
-| `default` | English | larga | 12,40 | `b04de85df9cfc3ed` |
-| `default` | Spanish | corta | 3,04 | `9ffdf85cf9132e4a` |
-| `default` | Spanish | larga | 14,64 | `04879f24f0c80827` |
+| `default` | English | corta | 2,56 | `2ba9fde9eec2e482` |
+| `default` | English | larga | 13,68 | `779b2f5a5336b7b1` |
+| `default` | Spanish | corta | 3,12 | `870b236adffdca09` |
+| `default` | Spanish | larga | 13,52 | `1872daadfe6f0424` |
 
 Cambian esta tabla, y exigen regenerarla: el tamaño de bloque del prefill, cualquier cambio de redondeo en el Talker o el Code Predictor, el calendario de chunks, las rampas de borde, los frames que el Talker retiene tras el primer EOS, el descarte de la cadena de silencio inicial y el punto final que `plan_script` añade al texto. En ARM64 el audio se compara con la ruta escalar de la misma máquina (`QWEN_KERNELS=scalar`), no con esta tabla (§2.4).

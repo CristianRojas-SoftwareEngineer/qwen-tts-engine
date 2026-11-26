@@ -132,7 +132,7 @@ fn test_preprocess_ref_audio_and_mel_shape() {
 
 /// Bits exactos (`f32::to_bits`) de los valores 0, 511 y 1023 de `assets/default_voice.xvec`.
 const DEFAULT_VOICE_BITS: [(usize, u32); 3] =
-    [(0, 0x3d4ba512), (511, 0xbdc2802c), (1023, 0x3d98fb6e)];
+    [(0, 0x3d156041), (511, 0xbe10eba3), (1023, 0x3db682df)];
 
 #[test]
 fn test_default_voice_is_embedded() {
@@ -147,7 +147,7 @@ fn test_default_voice_is_embedded() {
         .map(|&v| (v as f64) * (v as f64))
         .sum::<f64>()
         .sqrt();
-    assert!((norm - 10.8426).abs() < 1e-3, "norma {norm}");
+    assert!((norm - 10.9205).abs() < 1e-3, "norma {norm}");
     for (idx, bits) in DEFAULT_VOICE_BITS {
         assert_eq!(emb[idx].to_bits(), bits, "valor {idx}");
     }

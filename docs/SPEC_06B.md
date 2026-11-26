@@ -85,7 +85,7 @@ Al especializar el motor en `0.6B`, todas estas dimensiones son constantes en co
 
 - **Tamaño**: `4112` bytes justos. El nombre de la voz es el del archivo (sin `.qvoice`).
 - **La lectura falla** (con un mensaje que nombra la ruta) si el `magic` no coincide, la versión no es `6` (las voces anteriores se vuelven a clonar), `enc_dim != 1024`, `lang_id` es inválido, el archivo está truncado o sobran bytes al final.
-- La voz `default` no es un archivo: su x-vector (`4096 B`, SHA-256 `4c8a7679…e4e6`) va embebido en el binario (`qwen-engine/assets/default_voice.xvec`).
+- La voz `default` no es un archivo: su x-vector (`4096 B`, SHA-256 `4902c58e…d1e6`) va embebido en el binario (`qwen-engine/assets/default_voice.xvec`).
 
 ---
 
