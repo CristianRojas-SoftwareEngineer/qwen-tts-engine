@@ -41,7 +41,7 @@ El caso de uso es local: una síntesis a la vez en un equipo modesto, con la CPU
 5. **Fuera la clonación ICL entera.** En la escucha final, el x-vector clona mejor y suena más natural. El ICL suena más plano y robótico y añade un ruido grave al inicio.
 6. **`.qvoice` versión 6:** `magic` `QVCE`, `version` = 6 (`u32`), `enc_dim` = 1024 (`u32`), x-vector (`1024 × f32`) y `lang_id` (`u32`); 4112 bytes justos, little-endian. Cualquier otra versión se rechaza pidiendo clonar de nuevo.
 7. **Se conserva el recorte de silencio de la referencia** (originalmente `trim_trailing_silence` en `load_ref_audio`, posteriormente ampliado a `preprocess_ref_audio` en `audio.rs` con pasa-altos 70 Hz, recorte inicial/final, compactación de pausas internas y normalización RMS). La implementación oficial no recorta; de oído, el clon de una grabación con silencio suena más consistentemente bien con el preprocesamiento.
-8. **Se conservan sin cambios** el argmax del Code Predictor, la penalización de repetición por aparición y la temperatura por defecto, 0,325: el usuario prefirió de oído la configuración actual frente a la de la implementación oficial, en 3 de 3 pares.
+8. **Se conservan sin cambios** el argmax del Code Predictor, la penalización de repetición por aparición y la temperatura por defecto, 0,325: el usuario prefirió de oído la configuración actual frente a la de la implementación oficial, en 3 de 3 pares. La temperatura por defecto la sustituye después [ADR-010](010-default-temperature-and-reference-duration.md), que la sube a 0,45.
 
 Decisiones de implementación derivadas: `SpeechDecoderWeights.codebooks` no es `Arc`, porque nada más lo comparte; el autotest comprueba el núcleo QKV `INT8`, que es el que usa el Talker; `--list-voices` muestra `no compatible` y el motivo para un archivo `.qvoice` de otra versión.
 
@@ -51,7 +51,7 @@ Decisiones de implementación derivadas: `SpeechDecoderWeights.codebooks` no es 
 
 - **El refuerzo del EOS**, por la investigación de los textos cortos (decisión 3): es la defensa ante una debilidad del propio modelo. El final que el refuerzo adelanta lo completa la retención del [ADR-008](008-end-of-synthesis.md).
 - **El recorte del silencio final** de la referencia (decisión 7).
-- **El argmax del Code Predictor**, **la penalización por aparición** y **la temperatura 0,325** (decisión 8).
+- **El argmax del Code Predictor**, **la penalización por aparición** y **la temperatura 0,325** (decisión 8; la temperatura la sustituye [ADR-010](010-default-temperature-and-reference-duration.md)).
 
 ---
 

@@ -14,7 +14,10 @@ pub const SAMPLE_RATE: usize = 24000;
 pub const FRAME_RATE: f32 = 12.5;
 pub const HOP_SAMPLES: usize = 1920;
 /// Temperatura de muestreo por defecto aplicada cuando no se especifica explícitamente en CLI, HTTP o Rust API.
-pub const DEFAULT_TEMPERATURE: f32 = 0.325;
+/// Entre 0,300 y 0,500, 0,450 es la que menos voz crujiente (*creaky voice*) añade al cierre de las
+/// frases y la que suena más natural a la escucha; con la voz `default` y en español, el crujido
+/// medido baja a la mitad respecto de 0,325.
+pub const DEFAULT_TEMPERATURE: f32 = 0.45;
 /// Semilla pseudoaleatoria por defecto aplicada cuando no se especifica explícitamente en CLI, HTTP o Rust API.
 pub const DEFAULT_SEED: u32 = 4;
 

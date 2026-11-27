@@ -59,7 +59,7 @@ SessionScratch  [Mutable, exclusivo por sesión — cero locks internos]
 
 SynthesisRequest  [Efímero por síntesis — plano, `Clone`]
  ├── language_id: i32                     // ya resuelto: pedido, voz o español
- ├── sampling: SamplingParams             // temperature (0.325), top_k, top_p, rep_penalty, seed (4)
+ ├── sampling: SamplingParams             // temperature (0.45), top_k, top_p, rep_penalty, seed (4)
  └── max_frames, chunk_frames, volume, rate, compose_pause_s, silent
 
 AbortHandle  [Efímero por síntesis]      // Arc<AtomicBool> + poll opcional acoplado por RAII (Drop); es un parámetro, no parte de la petición

@@ -6,7 +6,7 @@
 use std::net::Ipv4Addr;
 use std::ops::RangeInclusive;
 
-use qwen_core::config::CODEC_VOCAB_SIZE;
+use qwen_core::config::{CODEC_VOCAB_SIZE, DEFAULT_TEMPERATURE};
 use qwen_core::{SamplingParams, SeedChoice};
 use qwen_engine::{
     DEFAULT_CHUNK_FRAMES, DEFAULT_COMPOSE_PAUSE_S, MAX_CHUNK_FRAMES, MIN_CHUNK_FRAMES,
@@ -153,7 +153,7 @@ pub fn print_usage(prog: &str) {
     eprintln!("  -t, --text <string>        Texto a sintetizar");
     eprintln!("  -o, --output <path>        Archivo WAV de salida (por defecto: output.wav)");
     eprintln!("  -l, --language <name>      Idioma (por defecto: el de la voz; si no, Spanish)");
-    eprintln!("  -T, --temperature <float>  Temperatura de muestreo (por defecto: 0.325)");
+    eprintln!("  -T, --temperature <float>  Temperatura de muestreo (por defecto: {DEFAULT_TEMPERATURE})");
     eprintln!("  -k, --top-k <int>          Candidatos más probables entre los que se muestrea (por defecto: 50)");
     eprintln!("  -p, --top-p <float>        Probabilidad acumulada máxima de esos candidatos (por defecto: 1.0)");
     eprintln!("  -r, --rep-penalty <float>  Penalización por repetición (por defecto: 1.05)");

@@ -141,11 +141,11 @@ cargo build -p qwen-app --release
 ./target/release/qwen_tts -d models/qwen3-tts-0.6b-base -j 4 --seed 4 -l English --text "Hello, world!" -o output.wav
 ```
 
-> **Nota**: sin `--load-voice` ni `--ref-audio`, el motor habla con la voz `default` incorporada (la CLI imprime `Voz: default` en `stderr`). Sin `-l`, el idioma es el de la voz cargada o, si no tiene, español. Los valores por defecto de muestreo son `temperature = 0.325` y `seed = 4`.
+> **Nota**: sin `--load-voice` ni `--ref-audio`, el motor habla con la voz `default` incorporada (la CLI imprime `Voz: default` en `stderr`). Sin `-l`, el idioma es el de la voz cargada o, si no tiene, español. Los valores por defecto de muestreo son `temperature = 0.45` y `seed = 4`.
 
 ### 2. Clonación de voz
 
-El perfil guarda el timbre (x-vector) y, si das `-l`, el idioma. El audio de referencia debe ser **WAV PCM mono de 16 bits a 24 kHz**; con cualquier otro formato, el error da el comando `ffmpeg` que lo convierte (por ejemplo, `ffmpeg -i entrada.mp3 -ar 24000 -ac 1 ref_24k.wav`).
+El perfil guarda el timbre (x-vector) y, si das `-l`, el idioma. Se recomiendan **al menos 5 s de habla continua y limpia**: con menos, el timbre extraído se aleja del de una referencia larga, y a partir de unos 10 s ya casi no cambia ([ADR-010](docs/adr/010-default-temperature-and-reference-duration.md)). El audio de referencia debe ser **WAV PCM mono de 16 bits a 24 kHz**; con cualquier otro formato, el error da el comando `ffmpeg` que lo convierte (por ejemplo, `ffmpeg -i entrada.mp3 -ar 24000 -ac 1 ref_24k.wav`).
 
 ```bash
 # 1. Extraer perfil .qvoice reutilizable y sintetizar el primer audio
@@ -277,6 +277,7 @@ La documentación sigue el modelo **Diátaxis** para separar guías prácticas, 
 | [`docs/adr/007-natural-voice-stepwise-text-int8-talker.md`](docs/adr/007-natural-voice-stepwise-text-int8-talker.md) | ADR | Mantenedores | Texto por pasos, Talker `INT8` en el decodificado, clonación solo por x-vector y `.qvoice` v6, con la evidencia de cada decisión. |
 | [`docs/adr/008-end-of-synthesis.md`](docs/adr/008-end-of-synthesis.md) | ADR | Mantenedores | Final de la síntesis: retención de 2 frames tras el primer EOS y punto final del texto, con la evidencia de cada decisión. |
 | [`docs/adr/009-leading-silence.md`](docs/adr/009-leading-silence.md) | ADR | Mantenedores | Inicio de la voz: el motor no entrega el audio de la cadena de silencio inicial, con la evidencia de cada decisión. |
+| [`docs/adr/010-default-temperature-and-reference-duration.md`](docs/adr/010-default-temperature-and-reference-duration.md) | ADR | Mantenedores | Temperatura por defecto 0,45 (menos voz crujiente al cierre de las frases) y duración recomendada de la referencia de clonación (al menos 5 s), con la evidencia de cada decisión. |
 
 ---
 

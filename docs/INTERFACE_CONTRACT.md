@@ -25,7 +25,7 @@
 | | `-t, --text <string>` | `None` | Obligatorio salvo `--serve` y `--save-voice` sin texto. |
 | | `-o, --output <path>` | `output.wav` | Ruta de salida WAV (24 kHz, PCM s16le mono). Lleva una rampa de entrada de 5 ms y otra de salida de 40 ms; el PCM es idéntico al de `--stdout` (`NUMERIC_CONTRACT.md` §4). |
 | **Voz e idioma** | `-l, --language <name>` | el de la voz cargada o, si no tiene, `Spanish` (`2054`) | Acepta 10 idiomas *sin distinguir mayúsculas*: `english`, `german`, `spanish`, `chinese`, `japanese`, `french`, `korean`, `russian`, `italian`, `portuguese`. Una sola regla en todos los modos: el pedido (`-l`); si no hay, el idioma guardado en la voz (si es distinto de `0`; la voz `default` declara español); si tampoco, español. Desconocido → `exit 1`. |
-| **Muestreo** | `-T, --temperature <f>` | `0.325` | Rango `[0.0, 2.0]`; `0.0` = voraz (siempre el código más probable). |
+| **Muestreo** | `-T, --temperature <f>` | `0.45` | Rango `[0.0, 2.0]`; `0.0` = voraz (siempre el código más probable). |
 | | `-k, --top-k <n>` | `50` | Número de candidatos más probables entre los que se muestrea, en `[0, 3072]`. |
 | | `-p, --top-p <f>` | `1.0` | Probabilidad acumulada máxima de esos candidatos, en `[0.0, 1.0]`. |
 | | `-r, --rep-penalty <f>` | `1.05` | Penalización de repetición sobre tokens previos en `[0.5, 2.0]`. |
@@ -47,7 +47,7 @@
 
 | Categoría | Flag(s) | Por defecto | Contrato y validación |
 |---|---|---|---|
-| **Clonación** | `--ref-audio <path>` | `None` | Lee la referencia antes de cargar el modelo y exige WAV PCM mono de 16 bits a 24 kHz; cualquier otra cosa falla con el comando `ffmpeg` para convertirla. La referencia se usa entera. |
+| **Clonación** | `--ref-audio <path>` | `None` | Lee la referencia antes de cargar el modelo y exige WAV PCM mono de 16 bits a 24 kHz; cualquier otra cosa falla con el comando `ffmpeg` para convertirla. La referencia se usa entera. Se recomiendan al menos 5 s de habla continua y limpia; el motor acepta referencias más cortas, pero su timbre se aleja del de una referencia larga (ADR-010). |
 | | `--save-voice <path>` | `None` | Guarda `.qvoice` v6; la voz se llama como el archivo (la extensión debe ser `.qvoice`; otra da `los archivos de voz deben ser .qvoice (se obtuvo <ruta>)`). Con idioma `-l` lo guarda; sin `-l` guarda «sin idioma». Sin `--text` ni `--serve`, crea el perfil y sale (`0`). Requiere `--ref-audio`. |
 | | `--load-voice <path>` | voz `default` incorporada | Carga `.qvoice` v6; la voz se llama como el archivo (sin extensión). Otra extensión o una versión distinta de la 6 → `exit 1`. Sin este flag ni `--ref-audio`, se usa la voz `default`. |
 | | Reglas de las opciones de voz (valen en todos los modos; la primera que falle da `exit 1`) | | 1) `--ref-audio` con `--load-voice`; 2) `--save-voice` sin `--ref-audio`. Una voz clonada se llama como el archivo de `--save-voice` (sin extensión) o, si no se guarda, como el WAV de `--ref-audio`. |
@@ -93,7 +93,7 @@
 | `text` | `string` | *(obligatorio)* | No vacío ni solo espacios/escapes `\n`, `\t`, `\r`; `<= 8192` bytes. |
 | `voice` | `string` | *(opcional)* | Si viene, debe coincidir (sin distinguir mayúsculas) con el nombre de la voz cargada; si no, `400` con `la voz '<x>' no está cargada (cargada: '<nombre>')`. |
 | `language` | `string` | idioma de la voz cargada o, si no tiene, `Spanish` | Debe existir en `lookup_language`. Es el idioma efectivo: el pedido, el de la voz o español, la misma regla que la CLI. El log `idioma=` de las peticiones muestra el idioma efectivo. |
-| `temperature` | `number` | `0.325` | Rango válido `[0.0, 2.0]`. |
+| `temperature` | `number` | `0.45` | Rango válido `[0.0, 2.0]`. |
 | `top_k` | `integer` | `50` | Rango válido `[0, 3072]`. |
 | `top_p` | `number` | `1.0` | Rango válido `[0.0, 1.0]`. |
 | `rep_penalty` | `number` | `1.05` | Rango válido `[0.5, 2.0]`. |
@@ -191,7 +191,7 @@ synth.synthesize(
 
 - **`Script`**: `Plain(String)` (texto sin marcado) o `Spans(Vec<SpanSpec>)` (tramos hablados y pausas). `qwen_core::plan_script(text, MarkupMode::{Auto, Literal})` es el único sitio que divide el texto en tramos y que fija su punto final. Quien construye un `Script` directamente (por ejemplo `Script::Plain("Hello from Rust!")`) no recibe el punto y sintetiza el texto tal cual.
 - **`Delivery`**: `Buffer` devuelve todo el audio en `SynthesisOutput::samples`, con `time_stretch` (`rate`); `Stream(&mut sink)` entrega chunks al destino y rechaza `rate != 1.0`. Los dos dan el mismo PCM (`NUMERIC_CONTRACT.md` §4, invariante 5).
-- **`SynthesisRequest`**: `language_id` (ya resuelto con `effective_language(pedido, voz)`: pedido, voz o español), `sampling: SamplingParams` (`temperature`, `top_k`, `top_p`, `rep_penalty`, `seed`), `max_frames`, `chunk_frames`, `volume`, `rate`, `compose_pause_s` y `silent: bool`. Los valores por defecto (0,325 / 50 / 1,0 / 1,05 / 4, 8192 frames, chunks de 10) están en un solo sitio.
+- **`SynthesisRequest`**: `language_id` (ya resuelto con `effective_language(pedido, voz)`: pedido, voz o español), `sampling: SamplingParams` (`temperature`, `top_k`, `top_p`, `rep_penalty`, `seed`), `max_frames`, `chunk_frames`, `volume`, `rate`, `compose_pause_s` y `silent: bool`. Los valores por defecto (0,45 / 50 / 1,0 / 1,05 / 4, 8192 frames, chunks de 10) están en un solo sitio.
 - **Destinos de audio**: el trait `AudioSink` (`write_samples(&mut self, &[f32])` y `finish(&mut self)`) es el único destino del camino. `MemorySink` acumula `f32`; `EdgeRampSink<W: PcmWrite>` aplica las rampas de borde (5 ms de entrada, 40 ms de salida con retención) y convierte a PCM `s16le`, y no aplica ganancia (la aplica `synthesize` antes de escribir). `PcmWrite` (`write_pcm` y `finish`) tiene escritores incluidos —`StdoutWriter` y `Vec<u8>`— o uno propio.
 
 ### 3.4 Cancelación cooperativa (`AbortHandle`) y marcado

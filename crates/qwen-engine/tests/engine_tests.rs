@@ -311,13 +311,13 @@ fn test_reference_audio_hashes() {
         (
             "English",
             "In this long synthesis benchmark, we measure sustained memory bandwidth, Talker latency, Code Predictor throughput, and streaming Speech Decoder stability across multiple seconds of continuous speech generation.",
-            "779b2f5a5336b7b1",
+            "c8ea2ccbf1a7a64c",
         ),
-        ("Spanish", "Hola mundo, esta es una prueba rápida de referencia.", "870b236adffdca09"),
+        ("Spanish", "Hola mundo, esta es una prueba rápida de referencia.", "07fa8ac98e33de89"),
         (
             "Spanish",
             "En esta prueba de síntesis larga medimos el ancho de banda de memoria sostenido, la latencia del Talker, el rendimiento del Code Predictor y la estabilidad del decodificador de voz en streaming durante varios segundos de generación continua.",
-            "1872daadfe6f0424",
+            "cbf5395bd740bd3d",
         ),
     ];
     let mut mismatches = Vec::new();

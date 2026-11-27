@@ -2,6 +2,18 @@
 
 Cambios de cada versión de **Qwen TTS Engine** (`qwen-tts-engine`) que afectan a quien lo usa. Las versiones siguen el versionado semántico sobre el contrato de uso ([`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md), sección «Versionado»): un cambio del audio para la misma petición sube la versión menor.
 
+## [No publicado]
+
+### Cambiado
+
+- **Temperatura por defecto 0,45** (antes 0,325), en la CLI, el HTTP y la API Rust. Es la que menos voz crujiente añade al cierre de las frases de las medidas entre 0,300 y 0,500, y la que suena más natural a la escucha ([ADR-010](docs/adr/010-default-temperature-and-reference-duration.md)). Cambia el audio de toda petición sin temperatura explícita.
+- **Cambia el audio de referencia:** cambian tres de los cuatro hashes de la tabla y dos duraciones (inglés, larga: 12,80 s; español, larga: 14,24 s). La frase corta en inglés no cambia.
+- **La ayuda de la CLI toma la temperatura por defecto de la constante**, en lugar de repetirla escrita.
+
+### Añadido
+
+- **Duración recomendada de la referencia de clonación:** al menos 5 s de habla continua y limpia, en el README y en el contrato de `--ref-audio`. Con menos, el timbre extraído se aleja del de una referencia larga; a partir de unos 10 s ya casi no cambia. Es una recomendación: el motor sigue aceptando cualquier duración.
+
 ## [1.3.0] — 2026-11-26
 
 ### Añadido
@@ -54,6 +66,7 @@ Sin cambios en el binario ni en el audio.
 
 Primera versión publicada: CLI `qwen_tts`, servidor HTTP (`--serve`) y clonación de voz a `.qvoice` v6 para Qwen3-TTS 0.6B Base, con binarios para Windows x86_64, Linux x86_64, Linux ARM64 y macOS ARM64.
 
+[No publicado]: https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine/compare/v1.3.0...HEAD
 [1.3.0]: https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine/compare/v1.1.0...v1.2.0
